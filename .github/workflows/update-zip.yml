@@ -1,0 +1,19 @@
+# Builds the site update zip on GitHub: Actions tab → "Build update zip" → Run workflow.
+# The zip appears under the finished run, in "Artifacts". Install it from Admin → Settings → Update.
+name: Build update zip
+on:
+  workflow_dispatch:
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.2'
+      - name: Build
+        run: python3 make_update.py --no-bump
+      - uses: actions/upload-artifact@v4
+        with:
+          name: site-update
+          path: dist/*.zip

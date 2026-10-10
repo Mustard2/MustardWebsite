@@ -1,0 +1,5 @@
+# Never serve anything from this folder, even if it ends up inside public_html
+Require all denied
+<IfModule !mod_authz_core.c>
+  Deny from all
+</IfModule>

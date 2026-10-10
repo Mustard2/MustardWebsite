@@ -1,0 +1,4 @@
+# Helper files starting with "_" are only included by the admin pages
+<FilesMatch "^_">
+  Require all denied
+</FilesMatch>

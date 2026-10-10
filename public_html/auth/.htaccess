@@ -1,0 +1,4 @@
+# Helper files starting with "_" are only included by the other scripts
+<FilesMatch "^_">
+  Require all denied
+</FilesMatch>

@@ -1,0 +1,16 @@
+private/config.php
+private/data/links.json
+private/links.php
+private/sessions/
+private/logs/
+private/backups/
+public_html/media/*/
+dist/
+private/patreon.php
+private/cache/
+private/setup-code.txt
+# local test data and the site's keys: only the two empty templates belong in the repository
+private/data/*
+private/data/.*
+!private/data/models.json
+!private/data/outfits.json

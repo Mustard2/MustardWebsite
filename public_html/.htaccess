@@ -1,0 +1,44 @@
+Options -Indexes
+DirectoryIndex index.php index.html
+RewriteEngine On
+
+# Force HTTPS (also when behind Cloudflare, which may reach the server over plain HTTP)
+RewriteCond %{HTTPS} off
+RewriteCond %{HTTP:X-Forwarded-Proto} !https
+RewriteRule ^ https://%{HTTP_HOST}%{REQUEST_URI} [L,R=301]
+
+# Pages
+RewriteRule ^models/([a-z0-9-]+)$ /models/$1/ [R=301,L]
+RewriteRule ^models/([a-z0-9-]+)/$ model.php?slug=$1 [L,QSA]
+RewriteRule ^patreon-required/?$ patreon-required.php [L,QSA]
+RewriteRule ^privacy/?$ privacy.php [L,QSA]
+RewriteRule ^contacts/?$ contacts.php [L,QSA]
+RewriteRule ^account/?$ account.php [L,QSA]
+RewriteRule ^mustardui/?$ mustardui.php [L,QSA]
+RewriteRule ^docs/?$ docs.php [L,QSA]
+RewriteRule ^docs/([a-z0-9-]+)$ /docs/$1/ [R=301,L]
+RewriteRule ^docs/([a-z0-9-]+)/$ docs.php?slug=$1 [L,QSA]
+RewriteRule ^faq/?$ faq.php [L,QSA]
+RewriteRule ^sitemap\.xml$ sitemap.php [L]
+RewriteRule ^robots\.txt$ robots.php [L]
+RewriteRule ^setup/?$ setup.php [L,QSA]
+RewriteRule ^accessories/?$ outfits.php [L,QSA]
+RewriteRule ^accessories/([a-z0-9-]+)$ /accessories/$1/ [R=301,L]
+RewriteRule ^accessories/([a-z0-9-]+)/$ outfit.php?slug=$1 [L,QSA]
+
+# Downloads (patron links are checked against Patreon first)
+RewriteRule ^get/outfit/([a-z0-9-]+)/([0-9]+)/?$ auth/get.php?type=outfit&model=$1&n=$2 [L,QSA]
+RewriteRule ^get/([a-z0-9-]+)/([0-9]+)/?$ auth/get.php?model=$1&n=$2 [L,QSA]
+RewriteRule ^get/([a-z0-9-]+)/?$ auth/get.php?model=$1 [L,QSA]
+
+# Unknown pages → friendly 404
+ErrorDocument 404 /404.php
+
+<IfModule mod_headers.c>
+  # Assets carry ?v=<version> in their URL, so they can be cached for a long time
+  <FilesMatch "\.(css|js|woff2|webp|avif|jpg|jpeg|png|gif|svg|ico)$">
+    Header set Cache-Control "public, max-age=31536000, immutable"
+  </FilesMatch>
+  Header always set X-Content-Type-Options "nosniff"
+  Header always set Referrer-Policy "strict-origin-when-cross-origin"
+</IfModule>
