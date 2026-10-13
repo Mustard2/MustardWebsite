@@ -10,6 +10,7 @@ if (($_SERVER['REQUEST_METHOD'] ?? '') !== 'POST' || !m3d_check_csrf($_POST['csr
     http_response_code(400);
     exit('The page was open too long. Go back, reload it and try again.');
 }
+m3d_session_release();   // saving may post to Discord: the other pages stay usable meanwhile
 $items = m3d_items($kind);
 $at = array_search($slug, array_column($items, 'slug'), true);
 if ($at === false) { http_response_code(404); exit('Not found (deleted in another tab?).'); }

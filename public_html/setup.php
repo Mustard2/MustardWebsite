@@ -74,7 +74,7 @@ if ($post && ($_POST['do'] ?? '') === 'basics' && !$needed && m3d_is_admin($M3D)
         $ok = m3d_save_settings(['identity' => array_intersect_key($id, IDENTITY_DEFAULTS),
             'legal' => ['name' => $one('legal_name', 120), 'address' => $address, 'email' => $email], 'support_email' => $support, 'setup_done' => gmdate('c')]);
         if ($ok) m3d_redirect('/admin/');
-        $error = 'Could not write the settings file. Check that ' . basename(M3D_PRIVATE) . '/data is writable.';
+        $error = m3d_write_error();
     }
 }
 if (!$post && ($_GET['skip'] ?? '') === '1' && !$needed && m3d_is_admin($M3D)) {
@@ -84,7 +84,7 @@ if (!$post && ($_GET['skip'] ?? '') === '1' && !$needed && m3d_is_admin($M3D)) {
 
 $step = !$codeOk ? 1 : ($needed ? ($real('client_id') && $real('client_secret') && ($_GET['edit'] ?? '') !== 'keys' ? 3 : 2) : 4);
 $csrf = e(m3d_csrf());
-$steps = [1 => 'Your server', 2 => 'Patreon', 3 => 'Log in', 4 => 'The basics'];
+$steps = [1 => 'Your Server', 2 => 'Patreon', 3 => 'Log In', 4 => 'The Basics'];
 $id = m3d_identity();
 $legal = m3d_legal();
 header('Content-Type: text/html; charset=utf-8');
@@ -95,14 +95,14 @@ header('Content-Type: text/html; charset=utf-8');
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <meta name="robots" content="noindex" />
-  <title>Set up your site</title>
+  <title>Set Up Your Site</title>
 <?= head_identity() ?>  <link rel="stylesheet" href="<?= e(asset('site.css')) ?>" />
   <link rel="stylesheet" href="<?= e(asset('admin.css')) ?>" />
 <?= accent_style() ?></head>
 <body class="page-setup">
   <main id="main" class="wrap setup">
-    <p class="eyebrow">First use</p>
-    <h1>Set up your site</h1>
+    <p class="eyebrow">First Use</p>
+    <h1>Set Up Your Site</h1>
     <ol class="setup-steps">
       <?php foreach ($steps as $n => $label): ?><li class="<?= $n < $step ? 'is-done' : ($n === $step ? 'is-now' : '') ?>"<?= $n === $step ? ' aria-current="step"' : '' ?>><span><?= $n < $step ? '✓' : $n ?></span><?= e($label) ?></li><?php endforeach ?>
     </ol>
@@ -111,17 +111,17 @@ header('Content-Type: text/html; charset=utf-8');
 
     <section class="sec setup-card">
 <?php if ($step === 1): ?>
-      <h2 class="small-h">Show that this is your server</h2>
+      <h2 class="small-h">Show That This Is Your Server</h2>
       <p>To make sure nobody else can take over a freshly installed site, a code has been written into a file on your server. Open it with your host’s
         file manager (on Hostinger: hPanel → Files → File Manager):</p>
       <p class="setup-path"><code><?= e(basename(M3D_PRIVATE)) ?>/setup-code.txt</code> <span class="muted small">in the private folder, next to the site folder</span></p>
       <form method="post" class="setup-form">
         <input type="hidden" name="csrf" value="<?= $csrf ?>" /><input type="hidden" name="do" value="code" />
-        <label class="field"><span class="lbl">Setup code</span><input class="input mono" name="code" placeholder="XXXX-XXXX-XXXX" autocomplete="off" spellcheck="false" required autofocus /></label>
+        <label class="field"><span class="lbl">Setup Code</span><input class="input mono" name="code" placeholder="XXXX-XXXX-XXXX" autocomplete="off" spellcheck="false" required autofocus /></label>
         <div class="row-btns"><button class="btn btn-primary">Continue</button></div>
       </form>
 <?php elseif ($step === 2): ?>
-      <h2 class="small-h">Connect your Patreon</h2>
+      <h2 class="small-h">Connect Your Patreon</h2>
       <ol class="setup-howto">
         <li>Open <a href="https://www.patreon.com/portal/registration/register-clients" target="_blank" rel="noopener">patreon.com/portal/registration/register-clients ↗</a> and create a client (any name and description).</li>
         <li>As <b>Redirect URIs</b> enter exactly: <code class="setup-copy"><?= e($callback) ?></code></li>
@@ -130,37 +130,37 @@ header('Content-Type: text/html; charset=utf-8');
       <form method="post" class="setup-form" autocomplete="off">
         <input type="hidden" name="csrf" value="<?= $csrf ?>" /><input type="hidden" name="do" value="patreon" />
         <label class="field"><span class="lbl">Client ID</span><input class="input" name="client_id" value="<?= e($real('client_id') ? (string) $keys['client_id'] : '') ?>" spellcheck="false" required /></label>
-        <label class="field"><span class="lbl">Client secret</span><input class="input" type="password" name="client_secret" placeholder="<?= $real('client_secret') ? '•••••••• (leave empty to keep it)' : '' ?>" autocomplete="new-password" spellcheck="false" <?= $real('client_secret') ? '' : 'required' ?> /></label>
-        <label class="field"><span class="lbl">Redirect address</span><input class="input" name="redirect_uri" value="<?= e($real('redirect_uri') ? (string) $keys['redirect_uri'] : $callback) ?>" spellcheck="false" /></label>
-        <label class="field"><span class="lbl">Campaign ID (optional)<?= tip('Leave it empty: it is read from your Patreon account when you log in in the next step.') ?></span><input class="input" name="campaign_id" value="<?= e($real('campaign_id') ? (string) $keys['campaign_id'] : '') ?>" inputmode="numeric" /></label>
+        <label class="field"><span class="lbl">Client Secret</span><input class="input" type="password" name="client_secret" placeholder="<?= $real('client_secret') ? '•••••••• (leave empty to keep it)' : '' ?>" autocomplete="new-password" spellcheck="false" <?= $real('client_secret') ? '' : 'required' ?> /></label>
+        <label class="field"><span class="lbl">Redirect URI</span><input class="input" name="redirect_uri" value="<?= e($real('redirect_uri') ? (string) $keys['redirect_uri'] : $callback) ?>" spellcheck="false" /></label>
+        <label class="field"><span class="lbl">Campaign ID<?= tip('Optional: read from your Patreon account when you log in at the next step.') ?></span><input class="input" name="campaign_id" value="<?= e($real('campaign_id') ? (string) $keys['campaign_id'] : '') ?>" inputmode="numeric" /></label>
         <div class="row-btns"><button class="btn btn-primary">Continue</button></div>
       </form>
 <?php elseif ($step === 3): ?>
-      <h2 class="small-h">Log in with your Patreon account</h2>
+      <h2 class="small-h">Log In with Your Patreon Account</h2>
       <p>The account you log in with now becomes the <b>owner</b> of this site: only it can open the admin panel. Use the account of your Patreon page
         (the creator account), so the campaign is found too.</p>
       <p class="muted small">Client ID: <code><?= e((string) $keys['client_id']) ?></code> · <a href="/setup/?edit=keys">Change the keys</a></p>
-      <div class="row-btns"><a class="btn btn-patreon" href="/auth/login.php?return=%2Fsetup%2F">Log in with Patreon</a></div>
+      <div class="row-btns"><a class="btn btn-patreon" href="/auth/login.php?return=%2Fsetup%2F">Log In with Patreon</a></div>
 <?php else: ?>
-      <h2 class="small-h">The basics</h2>
+      <h2 class="small-h">The Basics</h2>
       <p>You are the owner now<?= $real('campaign_id') ? '' : ' (the campaign could not be read: enter its ID below)' ?>. A few details, all editable later in Admin → Settings:</p>
       <form method="post" class="setup-form">
         <input type="hidden" name="csrf" value="<?= $csrf ?>" /><input type="hidden" name="do" value="basics" />
         <div class="id-grid">
-          <label class="field"><span class="lbl">Site name</span><input class="input" name="name" value="<?= e($id['name']) ?>" maxlength="40" required /></label>
-          <label class="field"><span class="lbl">Part in colour (optional)<?= tip('Written exactly as in the name, e.g. “Studio” in “PixelStudio”.') ?></span><input class="input" name="highlight" value="<?= e($id['highlight']) ?>" maxlength="20" /></label>
+          <label class="field"><span class="lbl">Site Name</span><input class="input" name="name" value="<?= e($id['name']) ?>" maxlength="40" required /></label>
+          <label class="field"><span class="lbl">Highlighted Word<?= tip('Optional. Part of the name shown in the accent colour, written exactly as in the name (e.g. “Studio” in “PixelStudio”).') ?></span><input class="input" name="highlight" value="<?= e($id['highlight']) ?>" maxlength="20" /></label>
           <label class="field id-wide"><span class="lbl">Tagline</span><input class="input" name="tagline" value="<?= e($id['tagline']) ?>" maxlength="90" /></label>
-          <div class="field"><span class="lbl">Accent colour</span><span class="id-color"><input type="color" name="color" value="<?= e($id['color']) ?>" aria-label="Accent colour" /></span></div>
-          <?php if (!$real('campaign_id')): ?><label class="field"><span class="lbl">Campaign ID<?= tip('The number of your Patreon campaign: only its paying members can download. You can also add it later in Settings → Patreon.') ?></span><input class="input" name="campaign_id" inputmode="numeric" /></label><?php endif ?>
+          <div class="field"><span class="lbl">Accent Colour</span><span class="id-color"><input type="color" name="color" value="<?= e($id['color']) ?>" aria-label="Accent colour" /></span></div>
+          <?php if (!$real('campaign_id')): ?><label class="field"><span class="lbl">Campaign ID<?= tip('Your Patreon campaign number. Only its paying members can download. Can also be set later in Settings → Patreon.') ?></span><input class="input" name="campaign_id" inputmode="numeric" /></label><?php endif ?>
         </div>
-        <h3 class="setup-sub">Who runs the site <span class="muted small">shown on the privacy page, required in the EU</span></h3>
+        <h3 class="setup-sub">Who Runs the Site <span class="muted small">shown on the privacy page, required in the EU</span></h3>
         <div class="id-grid">
-          <label class="field"><span class="lbl">Full name</span><input class="input" name="legal_name" value="<?= e($legal['name']) ?>" maxlength="120" /></label>
-          <label class="field"><span class="lbl">Email</span><input class="input" type="email" name="legal_email" value="<?= e($legal['email']) ?>" maxlength="120" /></label>
-          <label class="field id-wide"><span class="lbl">Postal address</span><textarea class="input" name="legal_address" rows="3" maxlength="300"><?= e($legal['address']) ?></textarea></label>
-          <label class="field id-wide"><span class="lbl">Support email (optional)<?= tip('Shown on the Contacts page for website problems (login, broken links).') ?></span><input class="input" type="email" name="support_email" value="<?= e(m3d_support_email()) ?>" maxlength="120" /></label>
+          <label class="field"><span class="lbl">Full Name</span><input class="input" name="legal_name" value="<?= e($legal['name']) ?>" maxlength="120" /></label>
+          <label class="field"><span class="lbl">Privacy Email<?= tip('Shown on the privacy page.') ?></span><input class="input" type="email" name="legal_email" value="<?= e($legal['email']) ?>" maxlength="120" /></label>
+          <label class="field id-wide"><span class="lbl">Postal Address</span><textarea class="input" name="legal_address" rows="3" maxlength="300"><?= e($legal['address']) ?></textarea></label>
+          <label class="field id-wide"><span class="lbl">Support Email<?= tip('Optional. Shown on the Contacts page for website problems (login, broken links).') ?></span><input class="input" type="email" name="support_email" value="<?= e(m3d_support_email()) ?>" maxlength="120" /></label>
         </div>
-        <div class="row-btns"><button class="btn btn-primary">Finish and open the admin</button><a class="btn btn-ghost" href="/setup/?skip=1">Skip for now</a></div>
+        <div class="row-btns"><button class="btn btn-primary">Finish and Open the Admin</button><a class="btn btn-ghost" href="/setup/?skip=1">Skip for Now</a></div>
       </form>
 <?php endif ?>
     </section>

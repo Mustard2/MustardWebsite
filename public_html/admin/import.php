@@ -3,14 +3,14 @@
 // ones into draft models, one request per project (admin.js → initImport). Parsing in _smutbase.php.
 require __DIR__ . '/_admin.php';
 require __DIR__ . '/_smutbase.php';
-admin_require($M3D);
-if (!m3d_smutbase_on()) { header('Location: /admin/settings.php#smutbase'); exit; }   // off: Settings → SmutBase import
+admin_require($M3D, ($_SERVER['REQUEST_METHOD'] ?? '') === 'POST');   // its POSTs are JSON: logged out = the JSON error, not a redirect
+if (!m3d_smutbase_on()) { header('Location: ' . settings_url('smutbase')); exit; }   // off: Settings → SmutBase import
 
 // "What to import" (step 2): label, the model fields it fills
 const IMPORT_PARTS = [
     'description' => ['Description', ['description']],
     'features'    => ['Features', ['features']],
-    'notes'       => ['Notes (instructions, requirements, other sections)', ['notes']],
+    'notes'       => ['Notes (Instructions, Requirements, Other Sections)', ['notes']],
     'changelog'   => ['Changelog', ['changelog', 'changelogNote']],
     'pictures'    => ['Pictures', []],
 ];
@@ -88,7 +88,7 @@ if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST') {
             if (empty($m['thumb']) && !empty($m['cover'])) $m['thumb'] = $m['cover'];
 
             $item = clean_model($m, null);
-            $models = m3d_models();   // fresh: pictures took a while
+            $models = m3d_items('models', true);   // fresh: pictures took a while, edits saved meanwhile stay
             $at = $old ? array_search($old['slug'], array_column($models, 'slug'), true) : false;
             if ($at !== false) {
                 $item['order'] = $models[$at]['order'] ?? 0;
@@ -98,7 +98,21 @@ if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST') {
                 $item['order'] = max(array_map(fn($x) => (int) ($x['order'] ?? 0), $models) ?: [0]) + 1;
                 $models[] = $item;
             }
-            if (!m3d_save_items('models', $models)) throw new RuntimeException('Could not write the data file. Check that ' . basename(M3D_PRIVATE) . '/data is writable.');
+            if (!m3d_save_items('models', $models)) throw new RuntimeException(m3d_write_error('data'));
+            if ($at !== false) m3d_glb_forget([(string) ($old['model3d'] ?? '')]);   // the replaced draft's 3D file
+            if ($at !== false && $item['slug'] !== $old['slug']) {   // a draft replaced under a new address: its gallery pictures and accessories follow
+                m3d_gallery_rename_model($old['slug'], $item['slug']);
+                m3d_bugs_rename_item('models', $old['slug'], $item['slug']);   // its reports stay hidden with the draft
+                $outfits = m3d_items('outfits', true);
+                $moved = false;
+                foreach ($outfits as &$o) {
+                    if (!in_array($old['slug'], $o['models'] ?? [], true)) continue;
+                    $o['models'] = array_values(array_unique(array_map(fn($sl) => $sl === $old['slug'] ? $item['slug'] : $sl, $o['models'])));
+                    $moved = true;
+                }
+                unset($o);
+                if ($moved) m3d_save_items('outfits', $outfits);
+            }
             admin_json(['ok' => true, 'replaced' => $at !== false, 'slug' => $item['slug'], 'name' => $item['name'], 'pictures' => count($pics) + (isset($item['cover']) ? 1 : 0),
                 'videos' => $p['videos'], 'versions' => count($item['changelog'] ?? []), 'warnings' => array_values(array_unique($warn))]);
         }
@@ -108,7 +122,7 @@ if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST') {
     } catch (InvalidArgumentException $ex) {
         admin_json(['ok' => false, 'error' => $ex->getMessage()], 422);
     } catch (Throwable $ex) {
-        error_log('[site import] ' . $ex->getMessage());
+        m3d_problem('Import', $ex->getMessage());
         admin_json(['ok' => false, 'error' => $ex->getMessage()], 500);
     }
 }
@@ -119,18 +133,18 @@ admin_start('Import from SmutBase', 'models');
 ?>
     <div class="admin-head">
       <div>
+        <a class="back" href="/admin/models.php">← All Models</a>
         <h1>Import from SmutBase</h1>
-        <p class="muted small"><a href="/admin/">← Models</a></p>
       </div>
     </div>
 
     <section class="sec import-sec" data-import>
-      <h2 class="small-h">1. Find your projects<?= tip('The projects become <b>draft</b> models (only admins see them) with their description, features, sidebar sections, credits, changelog, pictures (copied to this site) and a “SmutBase” download link. Check each one in the editor, then make it public. Videos are not imported.') ?></h2>
+      <h2 class="small-h">1. Find Your Projects<?= tip('The projects become draft models (only admins see them) with their description, features, sidebar sections, credits, changelog, pictures (copied to this site) and a “SmutBase” download link. Check each one in the editor, then make it public. Videos are not imported.') ?></h2>
       <form class="import-find" data-import-find>
-        <label class="field"><span class="lbl">SmutBase profile</span>
+        <label class="field"><span class="lbl">SmutBase Profile</span>
           <input class="input" type="url" name="url" value="<?= e($profile) ?>" placeholder="https://smutba.se/user/10157/" required spellcheck="false" />
         </label>
-        <button class="btn btn-primary">Find projects</button>
+        <button class="btn btn-primary">Find Projects</button>
       </form>
       <p class="muted small import-or">or add the pages yourself<?= tip('When SmutBase doesn’t let the server in: open your profile (each page of it) and/or your project pages in the browser, press Ctrl+A (Mac ⌘A) to select the whole page, Ctrl+C to copy it, and paste it in the box. One page at a time; each one joins the list. Saved pages (Ctrl+S, “Webpage, HTML only”) can be uploaded instead, several at once.') ?></p>
       <textarea class="input import-paste" rows="2" placeholder="Paste a page here (Ctrl+V)" aria-label="Paste a SmutBase page" data-import-paste></textarea>
@@ -138,22 +152,22 @@ admin_start('Import from SmutBase', 'models');
     </section>
 
     <section class="sec import-sec" data-import-list hidden>
-      <h2 class="small-h">2. Choose what to import</h2>
+      <h2 class="small-h">2. Choose What to Import</h2>
       <div class="import-opts">
         <label class="field"><span class="lbl">Status</span>
           <select class="input" data-import-status><?php foreach (M3D_STATUSES as $k => [$label]): ?><option value="<?= e($k) ?>"><?= e($label) ?></option><?php endforeach ?></select>
         </label>
-        <label class="field"><span class="lbl">“SmutBase” download link for<?= tip('The link to the SmutBase project page, added as the download. Change it any time in the editor.') ?></span>
+        <label class="field"><span class="lbl">Who Gets the “SmutBase” Link</span>
           <select class="input" data-import-access><option value="public">Everyone</option><option value="patrons">Patrons</option></select>
         </label>
       </div>
-      <div class="import-parts" data-import-parts><span class="lbl">What to import<?= tip('Untick what you’d rather write yourself. The name, franchise, Blender version, credits and the SmutBase link always come along.') ?></span>
+      <div class="import-parts" data-import-parts><span class="lbl">What to Import<?= tip('The name, franchise, Blender version, credits and the SmutBase link always come along.') ?></span>
         <?php foreach (IMPORT_PARTS as $k => [$label]): ?><label class="check"><input type="checkbox" value="<?= e($k) ?>" checked /> <span><?= e($label) ?></span></label><?php endforeach ?>
       </div>
       <div class="table-wrap"><table class="models-table import-table">
-        <thead><tr><th class="c-check"><input type="checkbox" data-import-all aria-label="Select all new" /></th><th>Project on SmutBase</th><th>Franchise</th><th>Model</th><th>On this site</th></tr></thead>
+        <thead><tr><th class="c-check"><input type="checkbox" data-import-all aria-label="Select all new" /></th><th>Project on SmutBase</th><th>Franchise</th><th>Model</th><th>On This Site</th></tr></thead>
         <tbody data-import-rows></tbody>
       </table></div>
-      <div class="import-go"><button class="btn btn-primary" data-import-go disabled>Import selected</button> <span class="muted small" data-import-count></span></div>
+      <div class="import-go"><button class="btn btn-primary" data-import-go disabled>Import Selected</button> <span class="muted small" data-import-count></span></div>
     </section>
 <?php admin_end();

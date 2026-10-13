@@ -5,6 +5,8 @@ RemoveType .php .phtml .php3 .php4 .php5 .php7 .php8 .phar
 <FilesMatch "(?i)\.(php\d?|phtml|phar|pl|py|cgi|sh|htaccess|html?|svg|js)$">
   Require all denied
 </FilesMatch>
+# 3D previews (app/model3d.php)
+AddType model/gltf-binary .glb
 <IfModule mod_php.c>
   php_flag engine off
 </IfModule>

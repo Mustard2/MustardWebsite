@@ -10,7 +10,7 @@ $docs = m3d_docs();
 $pages = array_values(array_filter(m3d_doc_pages(), $visible));
 if (!$pages) not_found();
 
-$slug = (string) ($_GET['slug'] ?? '');
+$slug = m3d_get_text('slug');
 $home = m3d_docs_home();
 if ($slug === $home) m3d_redirect('/docs/', 301);
 if ($slug === '') $slug = $home;
@@ -40,7 +40,7 @@ layout_start($isHome ? 'Documentation' : $page['title'] . ' · Docs', (string) (
     <details class="docs-nav" open data-docs-nav>
       <summary><span class="muted small">Documentation</span> <b><?= e($page['title']) ?></b></summary>
       <div class="docs-nav-inner">
-        <input class="input docs-search" type="search" placeholder="Search the docs…" aria-label="Search the docs" data-docs-search />
+        <input class="input docs-search" type="search" placeholder="Search the docs…" aria-label="Search the docs" autocomplete="off" data-docs-search />
         <nav aria-label="Documentation">
           <?php foreach ($docs['sections'] as $sec): if (!array_filter($sec['pages'] ?? [], $visible)) continue; ?>
             <div class="docs-group" data-docs-group>
@@ -52,7 +52,7 @@ layout_start($isHome ? 'Documentation' : $page['title'] . ' · Docs', (string) (
               </ul>
             </div>
           <?php endforeach ?>
-          <p class="muted small docs-none" data-docs-none hidden>No page matches. Try the <a href="<?= e(SITE['faqs']) ?>">FAQ</a>.</p>
+          <p class="muted small docs-none" data-docs-none hidden>No page matches.<?php if (m3d_has_faq()): ?> Try the <a href="<?= e(SITE['faqs']) ?>">FAQ</a>.<?php endif ?></p>
         </nav>
         <div class="docs-nav-foot">
           <?php foreach (docs_links() as [$dlLabel, $dlUrl]): ?><?= link_html($dlLabel, $dlUrl) ?><?php endforeach ?>
@@ -65,7 +65,7 @@ layout_start($isHome ? 'Documentation' : $page['title'] . ' · Docs', (string) (
       <header class="docs-head">
         <h1><?= e($isHome ? 'Documentation' : $page['title']) ?></h1>
         <?php if (!$isHome && !empty($page['summary'])): ?><p class="lead-sm muted"><?= e($page['summary']) ?></p><?php endif ?>
-        <?= admin_edit_button('/admin/docs.php?page=' . rawurlencode($page['slug']), 'Edit page') ?>
+        <?= admin_edit_button('/admin/docs.php?page=' . rawurlencode($page['slug']), 'Edit Page') ?>
       </header>
       <?php if (!empty($page['draft'])): ?><p class="vis-banner"><?= LOCK_ICON ?><span>Draft: only admins can see this page. <a href="/admin/docs.php?page=<?= e(rawurlencode($page['slug'])) ?>">Change</a></span></p><?php endif ?>
 
@@ -92,7 +92,7 @@ layout_start($isHome ? 'Documentation' : $page['title'] . ' · Docs', (string) (
 
     <?php $toc = array_values(array_filter($toc ?? [], fn($h) => $h['level'] <= 3)); if (count($toc) > 1): ?>
       <aside class="docs-toc" aria-label="On this page">
-        <p class="docs-group-title">On this page</p>
+        <p class="docs-group-title">On This Page</p>
         <ul data-docs-toc>
           <?php foreach ($toc as $h): ?><li class="lvl-<?= (int) $h['level'] ?>"><a href="#<?= e($h['id']) ?>"><?= e($h['text']) ?></a></li><?php endforeach ?>
         </ul>

@@ -4,18 +4,22 @@ require __DIR__ . '/app/_init.php';
 $models = m3d_listed_items('models');   // drafts and unlisted password models stay out of the catalog
 if (!$models) {
     layout_start();
-    echo '<section class="wrap gate"><h1>No models yet</h1><p class="lead">Add the first one from the <a href="/admin/">admin panel</a>.</p></section>';
+    echo '<section class="wrap gate"><h1>No Models Yet</h1><p class="lead">Add the first one from the <a href="/admin/">admin panel</a>.</p></section>';
     layout_end();
     exit;
 }
 // Featured models (catalog order) → homepage slideshow; falls back to the first model. Password models never go in it.
-$heroable = array_values(array_filter($models, fn($m) => m3d_visibility($m) !== 'password')) ?: $models;
-$featured = array_values(array_filter($heroable, fn($m) => !empty($m['featured']))) ?: [$heroable[0]];
+// Every listed model behind a password: no slideshow.
+$heroable = array_values(array_filter($models, fn($m) => m3d_visibility($m) !== 'password'));
+$featured = $heroable ? (array_values(array_filter($heroable, fn($m) => !empty($m['featured']))) ?: [$heroable[0]]) : [];
 
-$statuses = array_count_values(array_map(fn($m) => (string) ($m['status'] ?? ''), $models));
-$franchises = [];
-foreach ($models as $m) $franchises[$m['franchise'] ?? ''] = ($franchises[$m['franchise'] ?? ''] ?? 0) + 1;
-// generation buttons, like the franchises: All, then each generation (newest first), then Other (models without one)
+// the Filters panel's rows (chip_row()): All, then each status / franchise / generation (newest first) with its count;
+// generation Other = models without one
+$statuses = array_count_values(array_map('m3d_status', $models));
+$statusChips = ['' => 'All'];
+foreach (M3D_STATUSES as $k => [$label]) if (!empty($statuses[$k])) $statusChips[$k] = ['label' => $label, 'count' => $statuses[$k]];
+$franchiseChips = ['' => 'All'];
+foreach (array_count_values(array_map(fn($m) => (string) ($m['franchise'] ?? ''), $models)) as $name => $n) $franchiseChips[$name] = ['label' => (string) $name, 'count' => $n];
 $generations = [];
 $noGen = 0;
 foreach ($models as $m) {
@@ -23,28 +27,34 @@ foreach ($models as $m) {
     if ($g !== '') $generations[$g] = ($generations[$g] ?? 0) + 1; else $noGen++;
 }
 uksort($generations, fn($a, $b) => (float) $b <=> (float) $a ?: strcmp((string) $a, (string) $b));
+$genChips = ['' => 'All'];
+foreach ($generations as $g => $n) $genChips[$g] = ['label' => 'Gen ' . $g, 'count' => $n];
+if ($noGen) $genChips['~other'] = ['label' => 'Other', 'count' => $noGen];
 
 layout_start('', site_tagline() . '.', 'page-home');
 ?>
+  <?php if ($featured): ?>
   <!-- Hero: featured models slideshow -->
   <section class="hero-slider wrap" data-hero aria-roledescription="carousel" aria-label="Featured characters">
     <?php foreach ($featured as $i => $f): $fUrl = '/models/' . $f['slug'] . '/'; $tag = $i === 0 ? 'h1' : 'h2'; ?>
       <article class="hero" data-hero-slide aria-roledescription="slide" aria-label="<?= $i + 1 ?> of <?= count($featured) ?>"<?= $i > 0 ? ' hidden' : '' ?>>
         <div class="hero-copy">
-          <p class="eyebrow">Featured character</p>
+          <p class="eyebrow">Featured Character</p>
           <<?= $tag ?> class="hero-title"><?= e($f['name']) ?></<?= $tag ?>>
           <p class="hero-meta">
             <span><?= e($f['franchise'] ?? '') ?></span>
             <?php if (($f['generation'] ?? '') !== ''): ?><span>Generation <?= e($f['generation']) ?></span><?php endif ?>
-            <?= status_badge($f['status'] ?? '') ?>
+            <?= status_badge(m3d_status($f)) ?>
           </p>
+          <?php // the first plain paragraph of the description (not headings, lists, boxes…), never a locked password model's; else the tagline
+            $hl = m3d_can_view('models', $f) ? md_first_text((string) ($f['description'] ?? '')) : ''; ?>
           <p class="lead">
-            <?php if (!empty($f['description'])): ?><?= md_inline((string) $f['description']) ?>
+            <?php if ($hl !== ''): ?><?= md_inline($hl) ?>
             <?php else: ?><?= e(site_tagline()) ?>.<?php endif ?>
           </p>
           <div class="hero-cta">
             <a class="btn btn-primary" href="<?= e($fUrl) ?>">View <?= e($f['name']) ?></a>
-            <a class="btn btn-ghost" href="#catalog">Browse all <?= count($models) ?> models</a>
+            <a class="btn btn-ghost" href="#catalog">Browse All <?= count($models) ?> <?= count($models) === 1 ? 'Model' : 'Models' ?></a>
           </div>
         </div>
         <?php $art = ($f['cover'] ?? '') ?: (($f['thumb'] ?? '') ?: null); $hidden = m3d_pics_hidden('models', $f);
@@ -54,7 +64,7 @@ layout_start('', site_tagline() . '.', 'page-home');
           $gStyle = implode(';', array_map(fn($k, $v) => "--g$k:$v", array_keys($gc), $gc)); ?>
         <a class="hero-art" href="<?= e($fUrl) ?>" aria-label="Open <?= e($f['name']) ?>" tabindex="-1">
           <span class="hero-glow" aria-hidden="true" style="<?= e($gStyle) ?>"></span>
-          <?= cover($f, $art, 'hero', $i === 0, $hidden) ?>
+          <?= cover($f, $art, 'hero', $i === 0, $hidden, '', '(max-width: 860px) 300px, 400px') ?>
         </a>
       </article>
     <?php endforeach ?>
@@ -70,11 +80,12 @@ layout_start('', site_tagline() . '.', 'page-home');
       </div>
     <?php endif ?>
   </section>
+  <?php endif ?>
 
   <?php $recent = recent_items(); if ($recent): ?>
   <!-- Recently added / updated (latest changelog date, last 90 days) -->
   <section class="section wrap recent-sec" aria-labelledby="recent-title">
-    <div class="section-head"><h2 class="h2 cat-title" id="recent-title">Recently Updated</h2></div>
+    <div class="section-head"><h2 class="h2 cat-title" id="recent-title">Recently Updated</h2><a class="recent-all" href="/whats-new/">See All Updates →</a></div>
     <div class="recent-grid"><?php foreach ($recent as $r) echo recent_card($r) ?></div>
   </section>
   <?php endif ?>
@@ -85,51 +96,21 @@ layout_start('', site_tagline() . '.', 'page-home');
       <div>
         <h2 class="h2 cat-title">Character Catalogue</h2>
       </div>
-      <p class="muted" data-count aria-live="polite"><?= count($models) ?> models</p>
+      <p class="muted" data-cat-count aria-live="polite"><?= count($models) ?> <?= count($models) === 1 ? 'model' : 'models' ?></p>
     </div>
 
     <div class="filters hfilters" role="search">
-      <input class="input search" type="search" placeholder="Search a character…" aria-label="Search models" data-search />
-      <button type="button" class="btn btn-ghost filter-toggle" aria-expanded="false" aria-controls="catalog-filters" aria-label="Filters" title="Filters" data-filter-toggle><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><path d="M4 6h16M7 12h10M10 18h4" stroke-linecap="round"/></svg><span class="filter-count" data-filter-count hidden></span></button>
+      <input class="input search" type="search" placeholder="Search a character…" aria-label="Search models" autocomplete="off" data-cat-search />
+      <?= filter_toggle('catalog-filters') ?>
     </div>
     <!-- status, sort, franchise and generation: closed by default, the Filters button opens them -->
-    <div class="filter-panel" id="catalog-filters" data-filter-panel hidden>
-      <div class="chips chips-gen" role="group" aria-label="Sort">
-        <span class="chips-lbl">Sort</span>
-        <?php foreach (['order' => 'Featured', 'name' => 'A–Z', 'gen' => 'Generation', 'likes' => 'Most liked', 'downloads' => 'Most downloaded'] as $k => $label): ?>
-          <button class="chip" aria-pressed="<?= $k === 'order' ? 'true' : 'false' ?>" data-pick="sort" data-value="<?= $k ?>"<?= $k === 'order' ? ' data-default' : '' ?>><?= e($label) ?></button>
-        <?php endforeach ?>
-      </div>
-      <div class="chips chips-gen" role="group" aria-label="Unlocked" data-owned-row hidden>   <!-- shown by site.js when download limits apply -->
-        <span class="chips-lbl">Unlocked</span>
-        <button class="chip" aria-pressed="true" data-pick="owned" data-value="" data-default>All</button>
-        <button class="chip" aria-pressed="false" data-pick="owned" data-value="yes">Unlocked</button>
-        <button class="chip" aria-pressed="false" data-pick="owned" data-value="no">Not yet</button>
-      </div>
-      <div class="chips chips-gen" role="group" aria-label="Status">
-        <span class="chips-lbl">Status</span>
-        <button class="chip" aria-pressed="true" data-pick="status" data-value="" data-default>All</button>
-        <?php foreach (M3D_STATUSES as $k => [$label]): if (empty($statuses[$k])) continue; ?>
-          <button class="chip" aria-pressed="false" data-pick="status" data-value="<?= e($k) ?>"><?= e($label) ?> <span><?= $statuses[$k] ?></span></button>
-        <?php endforeach ?>
-      </div>
-      <div class="chips chips-gen" role="group" aria-label="Franchise">
-        <span class="chips-lbl">Franchise</span>
-        <button class="chip" aria-pressed="true" data-pick="franchise" data-value="" data-default>All</button>
-        <?php foreach ($franchises as $name => $count): ?>
-          <button class="chip" aria-pressed="false" data-pick="franchise" data-value="<?= e($name) ?>"><?= e($name) ?> <span><?= $count ?></span></button>
-        <?php endforeach ?>
-      </div>
-      <?php if ($generations): ?>
-        <div class="chips chips-gen" role="group" aria-label="Generation">
-          <span class="chips-lbl">Generation</span>
-          <button class="chip" aria-pressed="true" data-pick="generation" data-value="" data-default>All</button>
-          <?php foreach ($generations as $g => $count): $g = (string) $g; ?>
-            <button class="chip" aria-pressed="false" data-pick="generation" data-value="<?= e($g) ?>">Gen <?= e($g) ?> <span><?= $count ?></span></button>
-          <?php endforeach ?>
-          <?php if ($noGen): ?><button class="chip" aria-pressed="false" data-pick="generation" data-value="~other">Other <span><?= $noGen ?></span></button><?php endif ?>
-        </div>
-      <?php endif ?>
+    <div class="filter-panel" id="catalog-filters" hidden>
+      <?= chip_row('Sort', 'sort', ['order' => 'Featured', 'updated' => 'Recently Updated', 'name' => 'A–Z', 'gen' => 'Generation', 'likes' => 'Most Liked', 'downloads' => 'Most Downloaded']) ?>
+      <?= liked_row('models', $models) ?>
+      <?= chip_row('Unlocked', 'owned', ['' => 'All', 'yes' => 'Unlocked', 'no' => 'Not Yet'], '', ' data-owned-row hidden') /* shown by site.js when download limits apply */ ?>
+      <?= chip_row('Status', 'status', $statusChips) ?>
+      <?= chip_row('Franchise', 'franchise', $franchiseChips) ?>
+      <?= $generations ? chip_row('Generation', 'generation', $genChips, []) : '' ?>
     </div>
 
     <div class="grid" data-grid>
@@ -137,10 +118,10 @@ layout_start('', site_tagline() . '.', 'page-home');
     </div>
     <nav class="pager" data-pager aria-label="Catalogue pages" hidden></nav>   <!-- site.js: 25 models per page -->
 
-    <div class="empty" data-empty hidden>
-      <h3>No models found</h3>
+    <div class="empty" data-cat-empty hidden>
+      <h3>No Models Found</h3>
       <p class="muted">Try another name, or clear the filters.</p>
-      <button class="btn btn-ghost" data-reset>Reset filters</button>
+      <button type="button" class="btn btn-ghost" data-cat-reset>Reset Filters</button>
     </div>
   </section>
 
@@ -167,7 +148,7 @@ layout_start('', site_tagline() . '.', 'page-home');
         <?php if ($btns): ?>
         <div class="plan-cta">
           <?php foreach ($btns as $k): ?>
-            <?php if ($k === 'login'): ?><a class="btn btn-ghost" href="/auth/login.php?return=%2F%23catalog"><?= e(PLAN_BUTTONS[$k]) ?></a>
+            <?php if ($k === 'login'): ?><a class="btn btn-ghost" rel="nofollow" href="/auth/login.php?return=%2F%23catalog"><?= e(PLAN_BUTTONS[$k]) ?></a>
             <?php else: ?><a class="btn <?= $k === 'patreon' ? 'btn-patreon' : 'btn-ghost' ?>" href="<?= e(social_url($k)) ?>"><?= e(PLAN_BUTTONS[$k]) ?></a><?php endif ?>
           <?php endforeach ?>
         </div>

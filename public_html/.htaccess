@@ -2,6 +2,13 @@ Options -Indexes
 DirectoryIndex index.php index.html
 RewriteEngine On
 
+# Scanners try the same addresses on every website (/.env, /.git/config, backup copies…): refuse them before any PHP runs.
+# Hidden files and folders (except /.well-known/, used for certificates), leftovers of an interrupted update
+# (<file>.upd-<token>, <file>.tmp-<token>) and backup / archive / log copies of files
+RewriteRule (^|/)\.(?!well-known/) - [F,L]
+RewriteRule \.(upd|upd-old|tmp)-[0-9a-f]+$ - [F,L]
+RewriteRule (\.(bak|backup|old|orig|save|swp|swo|sql|sqlite|db|log|ini|zip|tar|gz|tgz|7z|rar)|~)$ - [F,NC,L]
+
 # Force HTTPS (also when behind Cloudflare, which may reach the server over plain HTTP)
 RewriteCond %{HTTPS} off
 RewriteCond %{HTTP:X-Forwarded-Proto} !https
@@ -19,14 +26,22 @@ RewriteRule ^docs/?$ docs.php [L,QSA]
 RewriteRule ^docs/([a-z0-9-]+)$ /docs/$1/ [R=301,L]
 RewriteRule ^docs/([a-z0-9-]+)/$ docs.php?slug=$1 [L,QSA]
 RewriteRule ^faq/?$ faq.php [L,QSA]
+RewriteRule ^search/?$ search.php [L,QSA]
+RewriteRule ^whats-new/?$ whats-new.php [L,QSA]
+RewriteRule ^bugs/?$ bugs.php [L,QSA]
+RewriteRule ^bugs/report/?$ bugs.php?report=1 [L,QSA]
+RewriteRule ^bugs/([0-9]+)$ /bugs/$1/ [R=301,L]
+RewriteRule ^bugs/([0-9]+)/$ bugs.php?n=$1 [L,QSA]
 RewriteRule ^sitemap\.xml$ sitemap.php [L]
 RewriteRule ^robots\.txt$ robots.php [L]
 RewriteRule ^setup/?$ setup.php [L,QSA]
 RewriteRule ^accessories/?$ outfits.php [L,QSA]
 RewriteRule ^accessories/([a-z0-9-]+)$ /accessories/$1/ [R=301,L]
 RewriteRule ^accessories/([a-z0-9-]+)/$ outfit.php?slug=$1 [L,QSA]
+RewriteRule ^gallery/?$ gallery.php [L,QSA]
 
 # Downloads (patron links are checked against Patreon first)
+RewriteRule ^get/still/([a-f0-9]{8})/?$ auth/get-still.php?id=$1 [L,QSA]
 RewriteRule ^get/outfit/([a-z0-9-]+)/([0-9]+)/?$ auth/get.php?type=outfit&model=$1&n=$2 [L,QSA]
 RewriteRule ^get/([a-z0-9-]+)/([0-9]+)/?$ auth/get.php?model=$1&n=$2 [L,QSA]
 RewriteRule ^get/([a-z0-9-]+)/?$ auth/get.php?model=$1 [L,QSA]

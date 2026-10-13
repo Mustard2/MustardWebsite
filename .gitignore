@@ -14,5 +14,4 @@ private/data/*
 private/data/.*
 !private/data/models.json
 !private/data/outfits.json
-
-.idea/
+__pycache__/

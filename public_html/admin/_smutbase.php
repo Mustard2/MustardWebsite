@@ -12,10 +12,10 @@ const SB_PAGE_HOSTS = ['smutba.se', 'www.smutba.se'];
 const SB_IMAGE_HOSTS = '/(^|\.)(open3dlab\.com|smutba\.se)$/i';
 const SB_MAX_PIXELS = 100_000_000;   // 8K renders (33 MP) fit; bigger ones (or a server with too little memory) use the preview instead
 
-/** A SmutBase page (profile or project), as HTML. */
 /** The page SmutBase sent isn't the project page (bot check…): the admin can paste the page instead (admin.js asks for it). */
 final class SbPageMissing extends InvalidArgumentException {}
 
+/** A SmutBase page (profile or project), as HTML. */
 function sb_fetch(string $url): string
 {
     $host = strtolower((string) parse_url($url, PHP_URL_HOST));
@@ -269,7 +269,10 @@ function sb_date(string $s): string
     $s = trim($s);
     if ($s === '') return '';
     if (preg_match('#^(\d{1,2})[/.](\d{1,2})[/.](\d{4})$#', $s, $m)) return sprintf('%02d/%02d/%04d', $m[1], $m[2], $m[3]);
+    if (preg_match('#^(\d{1,2})[/.](\d{1,2})[/.](\d{2})$#', $s, $m)) return sprintf('%02d/%02d/20%02d', $m[1], $m[2], $m[3]);   // day first, like the 4-digit form
     if (preg_match('#^(\d{4})-(\d{2})-(\d{2})#', $s, $m)) return "$m[3]/$m[2]/$m[1]";
+    if (preg_match('/^(19|20)\d\d$/', $s)) return "01/01/$s";   // a year alone (strtotime reads "2022" as a time of today)
+    if (!preg_match('/(?<!\d)\d{4}(?!\d)/', $s)) return '';   // no year: words like "today" would give the import's day
     $t = strtotime(str_replace(['a.m.', 'p.m.', '.'], ['am', 'pm', ''], $s));
     return $t ? date('d/m/Y', $t) : '';
 }
@@ -290,7 +293,12 @@ function sb_changelog(array $blocks): array
             $rest = trim($m[3] ?? '');
             if ($date === '' && preg_match('#^\(?(\d{1,2}/\d{1,2}/\d{4})\)?\s*(?:[-–—:]\s*)?(.*)$#', $rest, $d)) { $date = sb_date($d[1]); $rest = trim($d[2]); }
             $cur = ['version' => $m[1], 'date' => $date, 'highlight' => mb_substr(rtrim($rest, '.'), 0, 120), 'changes' => [], 'notes' => []];
-            if (preg_match('/alpha|beta/i', $m[1] . ' ' . $rest, $st)) $cur['stage'] = strtolower($st[0]);
+            // the stage: in the version ("3.2-beta") or the note's first word ("Beta - …"); not any "alpha" in the note (alpha maps)
+            if (preg_match('/(alpha|beta)/i', $m[1], $st)) $cur['stage'] = strtolower($st[1]);
+            elseif (preg_match('/^(alpha|beta)\b[\s.:\-–—]*(.*)$/isu', $rest, $st)) {
+                $cur['stage'] = strtolower($st[1]);
+                $cur['highlight'] = mb_substr(rtrim($st[2], '.'), 0, 120);   // "Version 1.0 Beta": not "Beta" as the highlight too
+            }
             continue;
         }
         if ($tag === 'ul' || $tag === 'ol') {
@@ -401,7 +409,23 @@ function sb_project(string $html, string $url = ''): array
         }
         if ($note !== '' && $note !== '**' . str_replace('*', '', $sec['title']) . '**') $m['notes'][] = $note;
     }
-    if ($desc) $m['description'] = implode("\n\n", $desc);
+    if ($desc) {   // the description holds 5000 characters: what doesn't fit goes on in the first notes (never cut mid-sentence)
+        $keep = '';
+        $more = [];
+        foreach (explode("\n\n", implode("\n\n", $desc)) as $para) {
+            if (!$more && mb_strlen($keep) + mb_strlen($para) + 2 <= 4900) $keep .= ($keep === '' ? '' : "\n\n") . $para;
+            else $more[] = $para;
+        }
+        $m['description'] = $keep !== '' ? $keep : mb_substr((string) array_shift($more), 0, 4900);
+        $notes = [];
+        $note = '';
+        foreach ($more as $para) {
+            if ($note !== '' && mb_strlen($note) + mb_strlen($para) + 2 > 4900) { $notes[] = $note; $note = ''; }
+            $note .= ($note === '' ? '' : "\n\n") . mb_substr($para, 0, 4900);
+        }
+        if ($note !== '') $notes[] = $note;
+        $m['notes'] = array_merge($notes, $m['notes']);
+    }
     if (empty($m['blender']) && !empty($tags['software'])) {
         foreach ($tags['software'] as $s) if (preg_match('/^blender\s+(\d+\.\d+)/i', $s, $bm)) $m['blender'] = $bm[1] . ' or newer';
     }

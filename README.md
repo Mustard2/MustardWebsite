@@ -77,15 +77,28 @@ then set `'debug' => false` again.
 
 ## Updating
 
-Changes reach the server through the admin, without FTP:
+Changes reach the server through the admin, without FTP: **Admin → Settings → Update** lists the new versions of the
+chosen update channel with what changed, and installs one when you press **Install**. Nothing installs by itself.
 
-1. Build the zip on your computer (Python 3; PHP is used for a syntax check when installed):
-   ```bash
-   python3 make_update.py      # bumps the version, writes dist/site-update-<version>.zip
-   ```
-   Or on GitHub: **Actions → Build update zip → Run workflow**, then download it from the run's *Artifacts*
-   (GitHub wraps it in one more zip: unzip that once).
-2. On the site: **Admin → Settings → Update** → choose the zip → **Install update**.
+- **Stable** (default): the versions published for everyone, from the public repository
+  [Mustard2/MustardWebsite](https://github.com/Mustard2/MustardWebsite). No key needed.
+- **Development**: every change as soon as it is merged, from the private repository. Needs a GitHub key: a
+  fine-grained token with access to that repository only and *Contents: Read-only*, pasted in the Update Channel box.
+
+How the versions are made (GitHub Actions, in the private repository):
+
+- **Development release** runs on every merge to `main` that changes `public_html/`: it builds the update zip
+  (`make_update.py`, version `YYYY.MM.DD-N`) and publishes it as a release, with the `## Changelog` bullets of the
+  merged pull requests as its notes.
+- **Publish to Stable** runs only when started by hand (Actions → Publish to Stable → Run workflow, optionally with a
+  version): it copies that exact zip to the public repository with the code of that version, `CHANGELOG.md` and one
+  list of everything that changed since the last Stable version. It needs the secret `STABLE_REPO_TOKEN`: a
+  fine-grained token with *Contents: Read and write* on the public repository only.
+
+A zip can still be installed by hand (**Update from File** on the same page), e.g. one built on your computer:
+```bash
+python3 make_update.py      # bumps the version, writes dist/site-update-<version>.zip
+```
 
 The updater only writes code. It never touches `media/` (your images) or `private/` (data, settings, logs), it saves the
 current code first (**Admin → Backups**, to roll back), and it never deletes files. **Admin → Backups** also makes full

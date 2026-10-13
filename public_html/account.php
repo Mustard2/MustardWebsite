@@ -7,28 +7,28 @@ require __DIR__ . '/app/_init.php';
 $p = m3d_patron($M3D);
 $known = $p !== null && array_key_exists('total_cents', $p);
 
-layout_start('My account', 'Your Patreon membership on ' . site_name() . '.', 'page-account');
+layout_start('My Account', 'Your Patreon membership on ' . site_name() . '.', 'page-account');
 ?>
   <div class="wrap account-page">
   <?php if (!$p): ?>
     <p class="eyebrow">Account</p>
-    <h1>My account</h1>
+    <h1>My Account</h1>
     <section class="acc-card">
       <p class="lead-sm">Log in with Patreon to see your membership and downloads.</p>
-      <p><a class="btn btn-patreon" href="/auth/login.php?return=%2Faccount%2F">Log in with Patreon</a></p>
+      <p><a class="btn btn-patreon" rel="nofollow" href="/auth/login.php?return=%2Faccount%2F">Log In with Patreon</a></p>
     </section>
   <?php else:
     $owner = ($p['reason'] ?? '') === 'owner';
     $months = m3d_months_since($p['since'] ?? null);
     $cur = $p['currency'] ?? null;
     [$statusLabel, $tone] = match (true) {
-        $owner                             => ['Owner (admin)', 'violet'],
-        ($p['reason'] ?? '') === 'exception' => ['Downloads unlocked by ' . site_name(), 'violet'],
-        !empty($p['access'])               => ['Active patron', 'green'],
-        ($p['reason'] ?? '') === 'declined' => ['Payment declined', 'red'],
-        ($p['reason'] ?? '') === 'no-tier' => ['Patron without a tier', 'amber'],
-        !empty($p['member'])               => [($p['status'] ?? '') === 'former_patron' ? 'Former patron' : 'Not a paying member', 'grey'],
-        default                            => ['Not a member', 'grey'],
+        $owner                             => ['Owner (Admin)', 'violet'],
+        ($p['reason'] ?? '') === 'exception' => ['Downloads Unlocked by ' . site_name(), 'violet'],
+        !empty($p['access'])               => ['Active Patron', 'green'],
+        ($p['reason'] ?? '') === 'declined' => ['Payment Declined', 'red'],
+        ($p['reason'] ?? '') === 'no-tier' => ['Patron Without a Tier', 'amber'],
+        !empty($p['member'])               => [($p['status'] ?? '') === 'former_patron' ? 'Former Patron' : 'Not a Paying Member', 'grey'],
+        default                            => ['Not a Member', 'grey'],
     };
     $date = fn(?string $iso) => $iso && ($d = date_create_immutable($iso)) ? $d->setTimezone(new DateTimeZone('Europe/Berlin'))->format('j F Y') : '—';
     $day = fn(?int $t) => $t ? (new DateTimeImmutable('@' . $t))->setTimezone(new DateTimeZone('Europe/Berlin'))->format('j M Y') : '—';   // short, for tables
@@ -49,10 +49,16 @@ layout_start('My account', 'Your Patreon membership on ' . site_name() . '.', 'p
             if (trim((string) ($l['label'] ?? '')) === trim($label)) { $n = $i; break; }
         }
         $check = m3d_check_requirements($it, $p);
-        $why = $check['ok'] ? [] : array_map(fn($r) => $r[2], array_filter($check['rows'], fn($r) => !$r[3]));
+        // a login from before the membership details: unknown, not refused (the download asks to log in again, like auth/get.php)
+        // what blocks it: their value ("2 months"), or for the minimum tier what is needed ("needs the €10 tier or higher")
+        $why = $check['ok'] || $check['unknown'] ? [] : array_map(fn($r) => $r[0] === 'Patreon Tier' ? 'needs the ' . $r[1] : $r[2], $check['missing']);
         if (empty($p['access']) && !$owner) $why[] = 'paid tier needed';
-        return ['item' => $it, 'kind' => $kind, 'ok' => !$why, 'why' => $why,
-                'href' => $n === null ? null : ($kind === 'outfits' ? '/get/outfit/' : '/get/') . $it['slug'] . '/' . $n . '/'];
+        if (m3d_release_phase($it) === 'free') $why = [];   // past its public date: free for everyone
+        // no download while in development or before the patrons date (auth/get.php): a short label instead of the button
+        $dev = $kind === 'models' && m3d_status($it) === 'in-development' ? 'In Development'
+            : (m3d_release_phase($it) === 'soon' ? 'Coming ' . m3d_release_day((int) m3d_release($it)['patrons']) : '');
+        return ['item' => $it, 'kind' => $kind, 'ok' => !$why, 'why' => $why, 'dev' => $dev,
+                'href' => $n === null || $dev ? null : ($kind === 'outfits' ? '/get/outfit/' : '/get/') . $it['slug'] . '/' . $n . '/'];
     };
     // the name with a small picture (like the admin lists), and under it a Model / accessory-type chip (the person / hanger icons of the
     // unlock counters in the header, site.js) + the version they downloaded last
@@ -70,12 +76,12 @@ layout_start('My account', 'Your Patreon membership on ' . site_name() . '.', 'p
         $sub = '<span class="acc-sub"><span class="acc-kind acc-kind-' . $kind . '"><svg viewBox="0 0 24 24" aria-hidden="true">' . ($kind === 'outfits' ? accessory_icon_paths(m3d_accessory_type($it)) : $kindIcons[$kind]) . '</svg>'
              . ($kind === 'outfits' ? e(m3d_accessory_type($it)) : 'Model') . '</span>' . ($c['got'] !== '' ? '<span class="acc-ver">' . e($c['got']) . '</span>' : '') . $c['updTag'] . '</span>';   // updTag: on phones, in place of the Update column
         // not one big link: the update tag in the line under the name (phones) is a button
-        return '<div class="acc-item">' . $pic . '<span><a class="acc-n" href="' . $url . '">' . e($it['name']) . '</a>' . $sub . '</span></div>';
+        return '<div class="acc-item">' . $pic . '<span><a class="acc-n" href="' . $url . '">' . e($kind === 'models' ? m3d_model_name($it) : (string) $it['name']) . '</a>' . $sub . '</span></div>';
     };
     // the Download button, or "✗ Not eligible (2 months)": what the patron has where they fall short
-    $action = fn(array $t) => !$t['item'] ? '' : ($t['ok']
+    $action = fn(array $t) => !$t['item'] ? '' : (!empty($t['dev']) ? '<span class="muted small">' . e($t['dev']) . '</span>' : ($t['ok']
         ? ($t['href'] ? '<a class="btn btn-primary btn-sm" href="' . e($t['href']) . '" rel="nofollow">Download</a>' : '')
-        : '<span class="warn-text">✗ Not eligible' . ($t['why'] ? ' (' . e(implode(', ', $t['why'])) . ')' : '') . '</span>');
+        : '<span class="warn-text">✗ Not Eligible' . ($t['why'] ? ' (' . e(implode(', ', $t['why'])) . ')' : '') . '</span>'));
     // My Models: every model/outfit this patron has downloaded (once each, last downloaded first), with the link, version
     // and time of the last download, and the date of the first one (when it was unlocked). Items removed, drafts and password
     // pages not opened stay with their name only: no picture, chip, version, update or button
@@ -104,53 +110,54 @@ layout_start('My account', 'Your Patreon membership on ' . site_name() . '.', 'p
     foreach ($claimed as &$c) $c['avail'] = $c['item'] && $c['ok'] && $c['href'];   // has a Download button
     unset($c);
     $availCount = count(array_filter(array_column($claimed, 'avail')));
-    // download limits (Admin → Access): every rule that is on, with this patron's count for the ones that apply to them
+    // download limits (Admin → Access): only the rules that are on AND apply to this patron, with their count (none = no card)
     $limits = m3d_check_limits($p);
     $mine = [];
     foreach ($limits['rows'] as $row) $mine[(string) ($row['rule']['id'] ?? '')] = $row;
-    $allRules = array_values(array_filter(m3d_dl_settings()['rules'], fn($r) => !empty($r['on'])));
-    $when = fn(int $t) => (new DateTimeImmutable('@' . $t))->setTimezone(new DateTimeZone('Europe/Berlin'))->format('D j M, H:i');
+    // without a paid tier nothing downloads anyway: no card (like the "left" boxes and the header counter)
+    $allRules = $owner || !empty($p['access']) ? array_values(array_filter(m3d_dl_settings()['rules'], fn($r) => !empty($r['on']) && isset($mine[(string) ($r['id'] ?? '')]))) : [];
+    $when = fn(int $t) => (new DateTimeImmutable('@' . $t))->setTimezone(new DateTimeZone('Europe/Berlin'))->format('D j M, H:i T');
     $code = m3d_like_code((string) $p['id']);
     $liked = array_values(array_filter(m3d_models(), fn($m) => m3d_can_view('models', $m) && in_array($code, m3d_likes('models')[$m['slug']] ?? [], true)));
     $likedOutfits = array_values(array_filter(m3d_outfits(), fn($o) => m3d_can_view('outfits', $o) && in_array($code, m3d_likes('outfits')[$o['slug']] ?? [], true)));
   ?>
     <section class="acc-card acc-head">   <!-- the page title is the patron's name: everything about the login in one card -->
       <div>
-        <p class="eyebrow">My account</p>
+        <p class="eyebrow">My Account</p>
         <h1 class="acc-name"><?= e($p['name']) ?></h1>
-        <p class="acc-meta"><span class="badge tone-<?= e($tone) ?>"><?= e($statusLabel) ?></span><span class="muted small">Patreon user ID: <code><?= e($p['id'] ?? '') ?></code></span></p>
+        <p class="acc-meta"><span class="badge tone-<?= e($tone) ?>"><?= e($statusLabel) ?></span><span class="muted small">Patreon User ID: <code><?= e($p['id'] ?? '') ?></code></span></p>
       </div>
       <div class="acc-actions">
-        <a class="btn btn-ghost btn-sm" href="/auth/login.php?return=%2Faccount%2F" title="Fetch your latest membership data from Patreon">Refresh from Patreon</a>
-        <a class="btn btn-ghost btn-sm" href="/auth/logout.php?return=%2F">Log out</a>
+        <a class="btn btn-ghost btn-sm" rel="nofollow" href="/auth/login.php?return=%2Faccount%2F" title="Fetch your latest membership data from Patreon">Refresh from Patreon</a>
+        <a class="btn btn-ghost btn-sm" href="/auth/logout.php?return=%2F">Log Out</a>
       </div>
     </section>
 
     <?php if (!$owner && !$known): ?>
-      <p class="notice">Your login is from before these details were available. <a href="/auth/login.php?return=%2Faccount%2F">Refresh from Patreon</a> to see them.</p>
+      <p class="notice">Your login is from before these details were available. <a rel="nofollow" href="/auth/login.php?return=%2Faccount%2F">Refresh from Patreon</a> to see them.</p>
     <?php endif ?>
 
     <section class="acc-grid acc-dl">   <!-- downloads first: access, then what the limits leave -->
       <div class="acc-stat"><span class="muted small">Downloads</span><b class="<?= $owner || !empty($p['access']) ? 'ok-text' : 'warn-text' ?>"><?= $owner || !empty($p['access']) ? 'Unlocked' : 'Locked' ?></b><span class="muted small"><?= ($p['reason'] ?? '') === 'exception' ? 'by exception ✓' : ($owner || !empty($p['access']) ? 'paid tier ✓' : 'a paid tier is needed') ?></span></div>
       <?php if ($owner || !empty($p['access'])): $dlLeft = m3d_downloads_left($p);   // downloads left now, per kind (null = no rule: unlimited)
-        foreach (['models' => 'Model unlocks left', 'outfits' => 'Accessory unlocks left'] as $k => $lbl): $n = $dlLeft[$k] ?? null; ?>
+        foreach (['models' => 'Model Unlocks Left', 'outfits' => 'Accessory Unlocks Left'] as $k => $lbl): $n = $dlLeft[$k] ?? null; ?>
         <?php $tag = $n === null ? 'div' : 'a';   // with rules the whole box links to (and highlights) the Unlock limits ?>
-        <<?= $tag ?> class="acc-stat<?= $n === null ? '' : ' acc-link' ?>"<?= $n === null ? '' : ' href="#limits"' ?>><span class="muted small"><?= $lbl ?></span><b class="<?= $n === 0 ? 'warn-text' : 'ok-text' ?>"><?= $n === null ? 'Unlimited' : $n ?></b><?php if ($n === 0 && !empty($dlLeft['next'][$k])): ?><span class="muted small">next: <?= e((new DateTimeImmutable('@' . $dlLeft['next'][$k]))->setTimezone(new DateTimeZone('Europe/Berlin'))->format('D j M, H:i')) ?></span><?php elseif ($n !== null): ?><span class="muted small acc-link-hint">see the limits →</span><?php endif ?></<?= $tag ?>>
+        <<?= $tag ?> class="acc-stat<?= $n === null ? '' : ' acc-link' ?>"<?= $n === null ? '' : ' href="#limits"' ?>><span class="muted small"><?= $lbl ?></span><b class="<?= $n === 0 ? 'warn-text' : 'ok-text' ?>"><?= $n === null ? 'Unlimited' : $n ?></b><?php if ($n === 0 && !empty($dlLeft['next'][$k])): ?><span class="muted small">next: <?= e((new DateTimeImmutable('@' . $dlLeft['next'][$k]))->setTimezone(new DateTimeZone('Europe/Berlin'))->format('D j M, H:i T')) ?></span><?php elseif ($n !== null): ?><span class="muted small acc-link-hint">see the limits →</span><?php endif ?></<?= $tag ?>>
       <?php endforeach; endif ?>
     </section>
     <?php // a card right under the downloads row: the "left" boxes scroll to it and light it up (site.js) ?>
     <?php if ($allRules): ?>
       <section class="acc-card acc-limits" id="limits">
-        <h2>Unlock limits</h2>
+        <h2>Unlock Limits</h2>
         <?php if ($limits['exempt']): ?>
           <p class="ok-text">✓ These limits don't apply to you<?= $owner ? ' (admin)' : '' ?>.</p>
         <?php endif ?>
-        <ul class="acc-limit-list">   <!-- every row alike: status ("0/1 used", "Doesn’t apply", "No limit") | the rule, with when the next unlock frees up under it -->
+        <ul class="acc-limit-list">   <!-- every row alike: status ("0/1 used", "No limit") | the rule, with when the next unlock frees up under it -->
           <?php foreach ($allRules as $r): $row = $mine[(string) ($r['id'] ?? '')] ?? null;
-            [$status, $cls] = !$row ? ['Doesn’t apply', 'muted'] : ($limits['exempt'] ? ['No limit', 'muted'] : [(int) $row['used'] . '/' . (int) $row['max'] . ' used', $row['used'] < $row['max'] ? 'ok-text' : 'warn-text']); ?>
+            [$status, $cls] = $limits['exempt'] ? ['No Limit', 'muted'] : [(int) $row['used'] . '/' . (int) $row['max'] . ' used', $row['used'] < $row['max'] ? 'ok-text' : 'warn-text']; ?>
             <li<?= $cls === 'muted' ? ' class="is-off"' : '' ?>>
               <b class="<?= $cls ?>"><?= e($status) ?></b>
-              <span><?= e(m3d_rule_text($r, true)) ?><?php if ($row && !$limits['exempt'] && $row['used'] >= $row['max'] && $row['next']): ?><span class="muted small acc-limit-next">Next: <?= e($when($row['next'])) ?> (Berlin)</span><?php endif ?></span>
+              <span><?= e(m3d_rule_text($r, true)) ?><?php if (!$limits['exempt'] && $row['used'] >= $row['max'] && $row['next']): ?><span class="muted small acc-limit-next">Next: <?= e($when($row['next'])) ?></span><?php endif ?></span>
             </li>
           <?php endforeach ?>
         </ul>
@@ -158,10 +165,10 @@ layout_start('My account', 'Your Patreon membership on ' . site_name() . '.', 'p
     <?php endif ?>
 
     <section class="acc-grid">
-      <div class="acc-stat"><span class="muted small">Tier</span><b><?= $owner ? 'All access' : e(implode(', ', array_map(fn($t) => $t[0] . ($t[1] ? ' (' . m3d_money((int) $t[1], $cur) . ')' : ''), $p['tier_list'] ?? [])) ?: 'None') ?></b></div>
-      <div class="acc-stat"><span class="muted small">Consecutive months as a patron</span><b><?= $months !== null ? (int) $months : '—' ?></b><?php if (!empty($p['since'])): ?><span class="muted small">since <?= e($date($p['since'])) ?></span><?php endif ?></div>
-      <div class="acc-stat"><span class="muted small">Total support</span><b><?= $known ? e(m3d_money((int) $p['total_cents'], $cur)) : '—' ?></b></div>
-      <div class="acc-stat"><span class="muted small">Current pledge</span><b><?= !empty($p['entitled_cents']) ? e(m3d_money((int) $p['entitled_cents'], $cur)) : '—' ?></b><?php if ($cadence): ?><span class="muted small"><?= e($cadence) ?></span><?php endif ?></div>
+      <div class="acc-stat"><span class="muted small">Tier</span><b><?= $owner ? 'All Access' : e(implode(', ', array_map(fn($t) => $t[0] . ($t[1] ? ' (' . m3d_money((int) $t[1], $cur) . ')' : ''), $p['tier_list'] ?? [])) ?: 'None') ?></b></div>
+      <div class="acc-stat"><span class="muted small">Consecutive Months as a Patron</span><b><?= $months !== null ? (int) $months : '—' ?></b><?php if (!empty($p['since'])): ?><span class="muted small">since <?= e($date($p['since'])) ?></span><?php endif ?></div>
+      <div class="acc-stat"><span class="muted small">Total Support</span><b><?= $known ? e(m3d_money((int) $p['total_cents'], $cur)) : '—' ?></b></div>
+      <div class="acc-stat"><span class="muted small">Current Pledge</span><b><?= !empty($p['entitled_cents']) ? e(m3d_money((int) $p['entitled_cents'], $cur)) : '—' ?></b><?php if ($cadence): ?><span class="muted small"><?= e($cadence) ?></span><?php endif ?></div>
     </section>
 
     <details class="acc-sec acc-fold" id="my-models" open data-updates-seen="<?= e(json_encode(m3d_update_codes($updates))) ?>">   <!-- site.js: opening My account marks these updates as seen (the dot goes) -->
@@ -186,7 +193,7 @@ layout_start('My account', 'Your Patreon membership on ' . site_name() . '.', 'p
           <p class="muted" data-acc-empty hidden>Nothing to show here.</p>
           <div class="table-wrap">
             <table class="acc-table">
-              <thead><tr><th>Model / accessory</th><th class="hide-sm">Unlocked</th><th class="hide-sm"></th><th></th></tr></thead>
+              <thead><tr><th>Model / Accessory</th><th class="hide-sm">Unlocked</th><th class="hide-sm"></th><th></th></tr></thead>
               <tbody>
                 <?php foreach ($claimed as $c): ?>
                   <tr data-<?= $c['kind'] === 'outfits' ? 'accessories' : 'models' ?><?= $c['avail'] ? ' data-avail' : '' ?><?= $c['update'] !== null ? ' data-upd' : '' ?>>
@@ -196,8 +203,7 @@ layout_start('My account', 'Your Patreon membership on ' . site_name() . '.', 'p
                     <td class="c-actions"><?= $action($c) ?></td>
                   </tr>
                   <?php if ($c['update'] !== null):
-                    $newer = m3d_newer_versions($c['item'], $c['got'], (int) $c['lastT']);
-                    if (!empty($c['sim'])) $newer = m3d_preview_versions($c['item']);   // preview: two versions, examples where the changelog has fewer ?>
+                    $newer = m3d_newer_versions($c['item'], $c['got'], (int) $c['lastT']); ?>
                     <tr class="upd-row" hidden><td colspan="4">
                       <p class="upd-since"><?= count($newer) === 1 ? 'What’s new' : count($newer) . ' new versions' ?> since <?= $c['got'] !== '' ? e($c['got']) : 'your download' ?></p>
                       <ol class="log"><?= changelog_items($newer) ?></ol>
@@ -212,15 +218,15 @@ layout_start('My account', 'Your Patreon membership on ' . site_name() . '.', 'p
 
     <?php if ($liked): ?>
       <section class="acc-sec">
-        <h2 class="acc-liked"><?= HEART_ICON ?>Models liked</h2>
-        <div class="grid acc-likes"><?php foreach ($liked as $m) echo model_card($m); ?></div>
+        <h2 class="acc-liked"><?= HEART_ICON ?>Models Liked</h2>
+        <?= like_strip(array_map('model_card', $liked), 'models') ?>
       </section>
     <?php endif ?>
 
     <?php if ($likedOutfits): ?>
       <section class="acc-sec">
-        <h2 class="acc-liked"><?= HEART_ICON ?>Accessories liked</h2>
-        <div class="ogrid acc-likes"><?php foreach ($likedOutfits as $o) echo outfit_card($o); ?></div>
+        <h2 class="acc-liked"><?= HEART_ICON ?>Accessories Liked</h2>
+        <?= like_strip(array_map('outfit_card', $likedOutfits), 'accessories') ?>
       </section>
     <?php endif ?>
   <?php endif ?>

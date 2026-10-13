@@ -2,3 +2,8 @@
 <FilesMatch "^_">
   Require all denied
 </FilesMatch>
+
+# Logins and downloads are never shown in search results (robots.txt already asks crawlers to stay out)
+<IfModule mod_headers.c>
+  Header always set X-Robots-Tag "noindex, nofollow"
+</IfModule>

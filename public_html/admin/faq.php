@@ -4,7 +4,7 @@ require __DIR__ . '/_admin.php';
 admin_require($M3D);
 
 $faq = m3d_faq();
-$payload = ['kind' => 'faq', 'faq' => ['intro' => $faq['intro'] ?? '', 'sections' => $faq['sections'] ?? []]];
+$payload = ['kind' => 'faq', 'faq' => ['intro' => $faq['intro'] ?? '', 'sections' => $faq['sections'] ?? []], 'rev' => admin_text_rev('faq')];
 
 admin_start('FAQ', 'faq');
 ?>
@@ -13,12 +13,12 @@ admin_start('FAQ', 'faq');
         <h1>FAQ</h1>
       </div>
       <div class="head-actions">
-        <a class="btn btn-ghost" href="/faq/" target="_blank">View page ↗</a>
+        <a class="btn btn-ghost" href="/faq/" target="_blank">View Page ↗</a>
         <button class="btn btn-primary" data-save>Save</button>
       </div>
     </div>
 
-    <?= format_help('How to format answers', ['para', 'inline', 'small-h', 'list', 'steps', 'box', 'table', 'image'],
+    <?= format_help('How to Format Answers', ['para', 'inline', 'small-h', 'list', 'steps', 'box', 'table', 'image'],
         'Pictures and boxes can also be added with <i>Add image</i> and <i>Box…</i> under each answer.') ?>
 
     <form class="editor" data-editor novalidate></form>

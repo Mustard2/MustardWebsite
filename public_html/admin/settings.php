@@ -1,8 +1,22 @@
 <?php
-// Settings: site identity (name, tagline, logo, accent colour), social links (footer), maintenance tools (caches, sessions, logs, backups, unused images, temporary files) + system info.
+// Settings, in tabs (?tab=, SETTINGS_TABS in _admin.php): Site (identity, social links, homepage section, notice, legal), Patreon (keys, currency,
+// how long logins last), Features (optional pages and tools), Maintenance (maintenance mode, tools: caches, sessions, log, backups, unused images,
+// temporary files; system info). Every form posts to the page's own address, so a save comes back on the same tab.
 require __DIR__ . '/_admin.php';
 require_once dirname(__DIR__) . '/app/version.php';
 admin_require($M3D);
+
+// Features that are only switched on or off (settings.json → <key>.on): title, its help, switch label (+ help), link shown while on, messages
+const FEATURE_SWITCHES = [
+    'mustardui' => ['MustardUI', 'Ready-made page about MustardUI, the free Blender add-on: features, download, guides and bug reports. Turn on if your models use it.',
+        'Enable MustardUI Page', '',
+        ['/mustardui/', 'View the Page ↗', true],
+        'The MustardUI page is on: it is in the menu and the footer.', 'The MustardUI page is off: no menu item, and /mustardui/ shows “not found”.'],
+    'smutbase'  => ['SmutBase Import', 'Imports the models of a SmutBase profile as draft models (texts, changelog, pictures). Only useful if you publish on SmutBase.',
+        'Enable SmutBase Import', '',
+        ['/admin/import.php', 'Open the Import', false],
+        'SmutBase import is on: the button is on Admin → Models.', 'SmutBase import is off.'],
+];
 
 /** Files matching a glob pattern: [count, bytes]. */
 function files_stats(array $files): array
@@ -12,18 +26,26 @@ function files_stats(array $files): array
     return [count($files), $b];
 }
 
-function human(int $b): string
-{
-    return $b >= 1073741824 ? sprintf('%.1f GB', $b / 1073741824) : ($b >= 1048576 ? sprintf('%.1f MB', $b / 1048576) : sprintf('%d KB', (int) ceil($b / 1024)));
-}
 
-function rglob(string $dir, callable $keep): array
+/** Files under $dir that $keep accepts; folders $skipDir accepts (a SplFileInfo) are not walked into, nor unreadable ones. */
+function rglob(string $dir, callable $keep, ?callable $skipDir = null): array
 {
     if (!is_dir($dir)) return [];
     $out = [];
-    $it = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($dir, FilesystemIterator::SKIP_DOTS));
-    foreach ($it as $f) if ($f->isFile() && $keep($f)) $out[] = $f->getPathname();
+    $inner = new RecursiveDirectoryIterator($dir, FilesystemIterator::SKIP_DOTS);
+    if ($skipDir) $inner = new RecursiveCallbackFilterIterator($inner, fn($f) => !($f->isDir() && $skipDir($f)));
+    $it = new RecursiveIteratorIterator($inner, RecursiveIteratorIterator::LEAVES_ONLY, RecursiveIteratorIterator::CATCH_GET_CHILD);
+    foreach ($it as $f) {
+        if ($f->isFile() && $keep($f)) $out[] = $f->getPathname();
+        if (defined('STATS_UNTIL') && microtime(true) > STATS_UNTIL) throw new RuntimeException('too many files to count in time');
+    }
     return $out;
+}
+
+/** Every file in media/ (one walk, shared by the counts below). */
+function media_all(): array
+{
+    return rglob(M3D_SITE . '/media', fn($f) => $f->getFilename() !== '.htaccess');
 }
 
 function session_files(): array
@@ -32,39 +54,51 @@ function session_files(): array
     return array_values(array_filter(glob(M3D_PRIVATE . '/sessions/sess_*') ?: [], fn($f) => basename($f) !== $mine));
 }
 
-function temp_files(): array
+function temp_files(?array $media = null): array
 {
-    $isTmp = fn($f) => (bool) preg_match('/(\.tmp-|\.upd-|\.part$|^\.copy-|^\.import-|^\.crop-)/', $f->getFilename());
-    return array_merge(rglob(M3D_SITE . '/media', $isTmp), rglob(M3D_PRIVATE . '/data', $isTmp), rglob(M3D_SITE, fn($f) => str_contains($f->getFilename(), '.upd-')));
+    $isTmp = fn($n) => (bool) preg_match('/(\.tmp-|\.upd-|\.part$|^\.copy-|^\.import-|^\.crop-)/', $n);
+    // the code folders: media/ is checked above, and a folder holding another site (a subdomain's copy) is not this site's
+    $other = fn($f) => $f->getPathname() === M3D_SITE . DIRECTORY_SEPARATOR . 'media' || is_file($f->getPathname() . '/app/version.php');
+    return array_merge(
+        array_values(array_filter($media ?? media_all(), fn($f) => $isTmp(basename($f)))),
+        rglob(M3D_PRIVATE . '/data', fn($f) => $isTmp($f->getFilename())),
+        rglob(M3D_SITE, fn($f) => str_contains($f->getFilename(), '.upd-'), $other),
+    );
 }
 
-/** Images in media/ not used by any model, outfit, FAQ or docs page (large + small files). */
-function unused_images(): array
+/** Images in media/ not used by any model, outfit, FAQ or docs page or the gallery (large + small files), and 3D preview files (.glb) no item uses. */
+function unused_images(?array $media = null): array
 {
     $used = [];
-    $all = json_encode([m3d_models(), m3d_outfits(), m3d_faq(), m3d_docs()], JSON_UNESCAPED_SLASHES);
+    $all = json_encode([m3d_models(), m3d_outfits(), m3d_faq(), m3d_docs(), m3d_gallery(true), outfits_intro()], JSON_UNESCAPED_SLASHES);
     preg_match_all('#/media/[A-Za-z0-9/_.-]+#', (string) $all, $mm);
-    foreach ($mm[0] as $u) { $used[$u] = true; $used[img_small($u)] = true; }
-    return rglob(M3D_SITE . '/media', function ($f) use ($used) {
-        if (!preg_match('/\.(webp|jpe?g|png|gif)$/i', $f->getFilename())) return false;
-        $url = '/media/' . str_replace('\\', '/', substr($f->getPathname(), strlen(M3D_SITE . '/media') + 1));
-        $large = preg_replace('/-sm(\.\w+)$/', '$1', $url);
-        return !str_starts_with($url, '/media/site/') && !isset($used[$url]) && !isset($used[$large]);   // media/site: the logo (Site identity)
-    });
+    foreach ($mm[0] as $u) { $used[$u] = $used[img_large($u)] = true; foreach (img_versions($u) as $v) $used[$v] = true; }   // a text using only "-sm" keeps the large file too
+    return array_values(array_filter($media ?? media_all(), function ($f) use ($used) {
+        if (!preg_match('/\.(webp|jpe?g|png|gif|glb)$/i', basename($f))) return false;
+        $url = '/media/' . str_replace('\\', '/', substr($f, strlen(M3D_SITE . '/media') + 1));
+        $large = img_large($url);
+        return !str_starts_with($url, '/media/site/') && !str_starts_with($url, '/media/bugs/') && !isset($used[$url]) && !isset($used[$large]);   // media/site: the logo (Site identity); media/bugs: pictures of bug reports
+    }));
 }
 
-/** Number of images in a list of media files: an image's large and "-sm" small files count once. */
+/** Number of images in a list of media files: an image's large file and its versions ("-sm", "-md", "-xs") count once. */
 function image_count(array $files): int
 {
-    return count(array_unique(array_map(fn($f) => preg_replace('/-sm(\.\w+)$/', '$1', (string) $f), $files)));
+    $root = strlen(M3D_SITE);
+    return count(array_unique(array_map(fn($f) => img_large(str_replace('\\', '/', substr((string) $f, $root))), $files)));
 }
 
 // ── Actions ──────────────────────────────────────────────────────────────────
 $done = null;
 $error = null;
-if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST') {
-    if (!m3d_check_csrf($_POST['csrf'] ?? null)) { http_response_code(403); exit('Session expired, reload the page.'); }
+if (admin_form_post()) {
     $del = function (array $files): int { $n = 0; foreach ($files as $f) if (@unlink($f)) $n++; return $n; };
+    // saves some settings: $msg when it worked, else the "could not write" error; true when saved
+    $save = function (array $changes, string $msg) use (&$done, &$error): bool {
+        if (m3d_save_settings($changes)) { $done = $msg; return true; }
+        $error = m3d_write_error();
+        return false;
+    };
     switch ($_POST['do'] ?? '') {
         case 'opcache':
             $ok = function_exists('opcache_reset') && @opcache_reset();
@@ -77,28 +111,31 @@ if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST') {
             $d = (int) ($_POST['login_days'] ?? 0);
             if ($d < 1 || $d > 365) { $error = 'Choose between 1 and 365 days.'; break; }
             $was = intdiv(m3d_session_lifetime(), 86400);
-            $done = m3d_save_settings(['login_days' => $d]) ? 'Logins now last ' . m3d_plural($d, 'day') . ($d < $was ? '. Logins older than that have ended.' : '.') : null;
-            if (!$done) { $error = 'Could not write the settings file. Check that ' . basename(M3D_PRIVATE) . '/data is writable.'; break; }
+            if (!$save(['login_days' => $d], 'Logins now last ' . m3d_plural($d, 'day') . ($d < $was ? '. Logins older than that have ended.' : '.'))) break;
             $_SESSION['started'] = time();   // your own login doesn't end because of the change
             m3d_session_cleanup(true);
             break;
         case 'log':
-            $f = M3D_PRIVATE . '/logs/downloads.csv';
-            $done = is_file($f) && @unlink($f) ? 'Download log cleared.' : 'The download log was already empty.';
+            $done = m3d_log_clear() ? 'Download log cleared.' : 'The download log was already empty.';
             break;
         case 'unused':
-            $files = unused_images();
-            $n = image_count(array_filter($files, 'is_file'));
+            $files = array_filter(unused_images(), 'is_file');
+            $n3 = count(array_filter($files, fn($f) => str_ends_with(strtolower((string) $f), '.glb')));
+            $n = image_count($files) - $n3;
             $del($files);
-            $done = $n ? m3d_plural($n, 'unused image') . ' deleted.' : 'There were no unused images to delete.';
+            $done = $n || $n3 ? implode(' and ', array_filter([$n ? m3d_plural($n, 'image') : '', $n3 ? m3d_plural($n3, '3D file') : ''])) . ' that weren’t used deleted.' : 'There were no unused images to delete.';
             break;
         case 'temp':
             $done = $del(temp_files()) . ' temporary files deleted.';
             break;
+        case 'problems-clear':
+            $done = !is_file(m3d_problems_file()) || @unlink(m3d_problems_file()) ? 'The list of site problems is empty again.' : '';
+            if ($done === '') $error = m3d_write_error();
+            break;
         case 'identity':
             try {
                 $old = m3d_identity();
-                $one = fn(string $k, int $max) => mb_substr(trim(preg_replace('/\s+/u', ' ', (string) ($_POST[$k] ?? ''))), 0, $max);
+                $one = fn(string $k, int $max) => clean_line($_POST[$k] ?? '', $max);
                 $id = ['name' => $one('id_name', 40), 'highlight' => $one('id_highlight', 20), 'tagline' => $one('id_tagline', 90)];
                 if ($id['name'] === '') throw new InvalidArgumentException('Write the name of the site.');
                 if ($id['tagline'] === '') throw new InvalidArgumentException('Write a short line about the site (the tagline).');
@@ -115,7 +152,7 @@ if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST') {
                     [$id['logo'], $id['icon']] = ['', ''];
                 }
                 $store = $id;   // every value, so a later change of the built-in defaults never changes this site
-                if (!m3d_save_settings(['identity' => $store])) throw new RuntimeException('Could not write the settings file. Check that ' . basename(M3D_PRIVATE) . '/data is writable.');
+                if (!m3d_save_settings(['identity' => $store])) throw new RuntimeException(m3d_write_error());
                 if ($old['logo'] !== $id['logo']) img_site_logo_delete($old['logo'], $old['icon']);
                 $done = 'Site identity saved. Open the site to see it (the browser may keep the old tab icon for a little while).';
             } catch (InvalidArgumentException | RuntimeException $ex) {
@@ -132,40 +169,41 @@ if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST') {
                     if ($type === 'email') {
                         $url = preg_replace('/^mailto:/i', '', $url);
                         if (!filter_var($url, FILTER_VALIDATE_EMAIL)) throw new InvalidArgumentException('"' . $url . '" is not an email address.');
-                    } elseif (!preg_match('#^https://[^\s<>"]+$#i', $url) || !filter_var($url, FILTER_VALIDATE_URL)) {
+                    } elseif (!is_https_url($url)) {
                         throw new InvalidArgumentException('The ' . SOCIAL_TYPES[$type][0] . ' link must be a full address starting with https://');
                     }
                     $links[] = ['type' => $type, 'url' => mb_substr($url, 0, 500)];
                 }
                 if (count($links) > 16) throw new InvalidArgumentException('16 links at most.');
-                $done = m3d_save_settings(['social' => $links]) ? 'Links saved: ' . count($links) . ' shown in the footer.' : null;
-                if (!$done) $error = 'Could not write the settings file. Check that ' . basename(M3D_PRIVATE) . '/data is writable.';
+                $save(['social' => $links], 'Links saved: ' . count($links) . ' shown in the footer.');
             } catch (InvalidArgumentException $ex) {
                 $error = $ex->getMessage();
             }
             break;
         case 'maintenance':
             $on = ($_POST['state'] ?? '') === 'on';
-            $msg = mb_substr(trim(str_replace("\r\n", "\n", (string) ($_POST['message'] ?? ''))), 0, 1000);
+            $msg = clean_text($_POST['message'] ?? '', 1000);
             $old = m3d_settings()['maintenance'] ?? [];
             $since = $on ? (!empty($old['on']) ? (string) ($old['since'] ?? gmdate('c')) : gmdate('c')) : '';
-            $done = m3d_save_settings(['maintenance' => ['on' => $on, 'message' => $msg, 'since' => $since]])
-                ? ($on ? 'Maintenance mode is on: visitors now see the “Back soon” page. You can still use the site.' : 'Maintenance mode is off: the site is open again.')
-                : null;
-            if (!$done) $error = 'Could not write the settings file. Check that ' . basename(M3D_PRIVATE) . '/data is writable.';
+            $save(['maintenance' => ['on' => $on, 'message' => $msg, 'since' => $since]],
+                $on ? 'Maintenance mode is on: visitors now see the “Back Soon” page. You can still use the site.' : 'Maintenance mode is off: the site is open again.');
             break;
         case 'notice':
+            $until = is_string($_POST['notice_until'] ?? null) ? trim($_POST['notice_until']) : '';
+            $type = is_string($_POST['notice_type'] ?? null) ? $_POST['notice_type'] : '';
             $n = [
                 'on'       => !empty($_POST['notice_on']),
-                'type'     => isset(NOTICE_TYPES[$_POST['notice_type'] ?? '']) ? (string) $_POST['notice_type'] : 'info',
-                'text'     => mb_substr(trim(str_replace("\r\n", "\n", (string) ($_POST['notice_text'] ?? ''))), 0, 600),
+                'type'     => isset(NOTICE_TYPES[$type]) ? $type : 'info',
+                'text'     => clean_text($_POST['notice_text'] ?? '', 600),
                 'where'    => ($_POST['notice_where'] ?? '') === 'home' ? 'home' : 'all',
-                'until'    => preg_match('/^\d{4}-\d{2}-\d{2}$/', (string) ($_POST['notice_until'] ?? '')) ? (string) $_POST['notice_until'] : '',
+                'until'    => $until,
                 'closable' => !empty($_POST['notice_closable']),
             ];
-            if ($n['on'] && $n['text'] === '') { $error = 'Write the message, or untick “Show the notice”.'; break; }
-            $done = m3d_save_settings(['notice' => $n]) ? ($n['on'] ? 'Notice saved: it is shown on ' . ($n['where'] === 'home' ? 'the homepage' : 'every page') . ($n['until'] !== '' ? ' until ' . date_create_immutable($n['until'])->format('j F Y') : '') . '.' : 'Notice saved and hidden.') : null;
-            if (!$done) $error = 'Could not write the settings file. Check that ' . basename(M3D_PRIVATE) . '/data is writable.';
+            if ($until !== '' && !(preg_match('/^(\d{4})-(\d{2})-(\d{2})$/', $until, $dm) && checkdate((int) $dm[2], (int) $dm[3], (int) $dm[1]))) {
+                $error = 'The last day isn’t a real date: pick it again, or leave it empty.'; break;
+            }
+            if ($n['on'] && $n['text'] === '') { $error = 'Write the message, or untick “Show Notice”.'; break; }
+            $save(['notice' => $n], $n['on'] ? 'Notice saved: it is shown on ' . ($n['where'] === 'home' ? 'the homepage' : 'every page') . ($n['until'] !== '' ? ' until ' . date_create_immutable($n['until'])->format('j F Y') : '') . '.' : 'Notice saved and hidden.');
             break;
         case 'patreon':
             try {
@@ -185,7 +223,7 @@ if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST') {
                 $cfg = require M3D_PRIVATE . '/config.php';
                 $store = array_filter($new, fn($v, $k) => $v !== '' && $v !== (string) ($cfg[$k] ?? ''), ARRAY_FILTER_USE_BOTH);
                 if (!m3d_patreon_save($store)) throw new RuntimeException('Could not write ' . basename(M3D_PRIVATE) . '/patreon.php. Check that the ' . basename(M3D_PRIVATE) . ' folder is writable.');
-                $done = 'Patreon keys saved. Test the login in a private window before you log out here: if it fails, fix the keys or use “Go back to config.php”.';
+                $done = 'Patreon keys saved. Test the login in a private window before you log out here: if it fails, fix the keys or use “Use config.php”.';
             } catch (InvalidArgumentException | RuntimeException $ex) {
                 $error = $ex->getMessage();
             }
@@ -195,7 +233,7 @@ if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST') {
             if (!$done) $error = 'Could not delete ' . basename(M3D_PRIVATE) . '/patreon.php.';
             break;
         case 'plans':
-            $one = fn(string $k, int $max) => mb_substr(trim(preg_replace('/\s+/u', ' ', (string) ($_POST[$k] ?? ''))), 0, $max);
+            $one = fn(string $k, int $max) => clean_line($_POST[$k] ?? '', $max);
             $boxes = [];
             foreach ([0, 1] as $i) {
                 $boxes[] = [
@@ -206,76 +244,158 @@ if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST') {
                 ];
             }
             $plans = ['on' => !empty($_POST['pl_on']), 'eyebrow' => $one('pl_eyebrow', 40), 'title' => $one('pl_head', 80), 'boxes' => $boxes];
-            $done = m3d_save_settings(['plans' => $plans]) ? ($plans['on'] ? 'Homepage section saved: visitors who can’t download yet see it.' : 'Homepage section saved and hidden.') : null;
-            if (!$done) $error = 'Could not write the settings file. Check that ' . basename(M3D_PRIVATE) . '/data is writable.';
+            $save(['plans' => $plans], $plans['on'] ? 'Homepage section saved: visitors who can’t download yet see it.' : 'Homepage section saved and hidden.');
             break;
         case 'legal':
             $one = fn(string $k) => mb_substr(trim((string) ($_POST[$k] ?? '')), 0, 120);
-            $lg = ['name' => $one('legal_name'), 'address' => mb_substr(trim(str_replace("\r\n", "\n", (string) ($_POST['legal_address'] ?? ''))), 0, 300), 'email' => $one('legal_email')];
+            $lg = ['name' => $one('legal_name'), 'address' => clean_text($_POST['legal_address'] ?? '', 300), 'email' => $one('legal_email')];
             $sup = $one('support_email');
             if (($lg['email'] !== '' && !filter_var($lg['email'], FILTER_VALIDATE_EMAIL)) || ($sup !== '' && !filter_var($sup, FILTER_VALIDATE_EMAIL))) { $error = 'Check the email addresses.'; break; }
-            $done = m3d_save_settings(['legal' => $lg, 'support_email' => $sup]) ? 'Legal details and support email saved.' : null;
-            if (!$done) $error = 'Could not write the settings file. Check that ' . basename(M3D_PRIVATE) . '/data is writable.';
+            $save(['legal' => $lg, 'support_email' => $sup], 'Legal details and support email saved.');
+            break;
+        case 'discord':
+        case 'discord-test':
+            $dc = m3d_discord();
+            $hook = trim((string) ($_POST['discord_webhook'] ?? ''));
+            $msg = mb_substr(trim(str_replace(["\r", "\n"], ' ', (string) ($_POST['discord_message'] ?? ''))), 0, 300);
+            $on = !empty($_POST['discord_on']);
+            if ($hook !== '' && !preg_match(DISCORD_WEBHOOK_RE, $hook)) { $error = 'That isn’t a Discord webhook address: in Discord, open the channel’s settings → Integrations → Webhooks, then “Copy Webhook URL”.'; break; }
+            if ($on && $hook === '') { $error = 'Paste the webhook address first.'; break; }
+            $stored = m3d_settings()['discord'] ?? [];
+            $new = ['on' => $on, 'webhook' => $hook, 'message' => $msg, 'stills' => !empty($_POST['discord_stills'])] + $stored;
+            if (empty($new['stills'])) unset($new['stills_queue'], $new['stills_due'], $new['stills_tries']);   // off: pictures waiting aren't posted
+            // turning it on: every version already out counts as posted, so only new ones are announced
+            if ($on && (!$dc['on'] || $hook !== $dc['webhook'])) $new['sent'] = array_slice(array_values(array_unique(array_merge($dc['sent'], m3d_discord_current_codes()))), -DISCORD_SENT_MAX);
+            if (!$save(['discord' => $new], $on ? 'Discord announcements are on: the next new version you save goes to the channel.' : 'Discord announcements are off.')) break;
+            if ($_POST['do'] === 'discord-test') {
+                $done = null;
+                if ($hook === '') { $error = 'Paste the webhook address first.'; break; }
+                // the newest version on the site as an example, else a plain line
+                $embed = discord_sample_embed();
+                $embed['author'] = ['name' => 'Test message: this is how new versions will look'];
+                $res = m3d_session_pause(fn() => m3d_discord_post($hook, $msg, [$embed]));
+                if ($res['ok']) $done = 'Test message sent: check the Discord channel.' . ($on ? '' : ' Turn on “Announce New Versions” to turn the announcements on.');
+                else $error = $res['error'];
+            }
+            break;
+        case 'bugs':
+            $hook = trim((string) ($_POST['bugs_webhook'] ?? ''));
+            $host = trim((string) ($_POST['bugs_host'] ?? ''));
+            $notify = !empty($_POST['bugs_notify']);
+            if ($hook !== '' && !preg_match(DISCORD_WEBHOOK_RE, $hook)) { $error = 'The webhook address doesn’t look right: copy it again from Discord (https://discord.com/api/webhooks/…).'; break; }
+            if ($notify && $hook === '') { $error = 'Paste a webhook address to be told on Discord about new reports.'; break; }
+            if ($host !== '' && !is_https_url($host)) { $error = 'The upload website must be an address starting with https://'; break; }
+            $on = !empty($_POST['bugs_on']);
+            $ok = m3d_bug_settings_save(['on' => $on, 'who' => ($_POST['bugs_who'] ?? '') === 'paying' ? 'paying' : 'any', 'host' => mb_substr($host, 0, 300),
+                'uploads' => !empty($_POST['bugs_uploads']), 'moderate' => !empty($_POST['bugs_moderate']), 'notify' => $notify, 'webhook' => $hook,
+                'per_day' => max(1, min(50, (int) ($_POST['bugs_per_day'] ?? 5)))]);
+            if ($ok) $done = $on ? 'Bug reports are on: /bugs/ is in the footer and on model and accessory pages.' : 'Bug reports are off: /bugs/ shows “not found” to visitors.';
+            else $error = m3d_write_error();
+            break;
+        case 'bugs-unblock':
+            $id = (string) ($_POST['who'] ?? '');
+            $blocked = m3d_bug_settings()['blocked'];
+            if (!in_array($id, $blocked, true)) break;
+            if (m3d_bug_settings_save(['blocked' => array_values(array_diff($blocked, [$id]))])) $done = 'Unblocked: they can post bug reports again.';
+            else $error = m3d_write_error();
             break;
         case 'smutbase':
-            $on = !empty($_POST['smutbase_on']);
-            $done = m3d_save_settings(['smutbase' => ['on' => $on]]) ? ($on ? 'SmutBase import is on: the button is on Admin → Models.' : 'SmutBase import is off.') : null;
-            if (!$done) $error = 'Could not write the settings file. Check that ' . basename(M3D_PRIVATE) . '/data is writable.';
-            break;
         case 'mustardui':
-            $on = !empty($_POST['mustardui_on']);
-            $done = m3d_save_settings(['mustardui' => ['on' => $on]]) ? ($on ? 'The MustardUI page is on: it is in the menu and the footer.' : 'The MustardUI page is off: no menu item, and /mustardui/ shows “not found”.') : null;
-            if (!$done) $error = 'Could not write the settings file. Check that ' . basename(M3D_PRIVATE) . '/data is writable.';
+            $k = $_POST['do'];
+            $on = !empty($_POST[$k . '_on']);
+            $save([$k => ['on' => $on]], FEATURE_SWITCHES[$k][$on ? 5 : 6]);
             break;
         case 'currency':
             $c = strtoupper((string) ($_POST['currency'] ?? ''));
             if (!preg_match('/^[A-Z]{3}$/', $c)) { $error = 'Choose a currency.'; break; }
-            $done = m3d_save_settings(['currency' => $c]) ? "Currency set to $c." : null;
+            $save(['currency' => $c], "Currency set to $c.");
             break;
         case 'identity-reset':
             $old = m3d_identity();
-            $set = m3d_settings(true);
-            unset($set['identity']);
-            $done = m3d_write_json('settings', ['version' => 1, 'updated' => gmdate('c')] + array_diff_key($set, ['version' => 1, 'updated' => 1])) ? 'Site identity reset to the default.' : null;
-            m3d_settings(true);
-            if ($done) img_site_logo_delete($old['logo'], $old['icon']);
+            if ($save(['identity' => null], 'Site identity reset to the default.')) img_site_logo_delete($old['logo'], $old['icon']);
             break;
     }
 }
 
-m3d_session_cleanup(true);   // expired logins are deleted, so the count is only the live ones
-[$sessN, $sessB] = files_stats(session_files());
 $loginDays = intdiv(m3d_session_lifetime(), 86400);
-$logFile = M3D_PRIVATE . '/logs/downloads.csv';
-$logLines = is_file($logFile) ? count(file($logFile, FILE_SKIP_EMPTY_LINES)) : 0;
-$unFiles = unused_images();
-[, $unB] = files_stats($unFiles);
-$unN = image_count($unFiles);
-[, $bkB] = files_stats(glob(M3D_PRIVATE . '/backups/*') ?: []);
-[$tmpN, $tmpB] = files_stats(temp_files());
-[$medN, $medB] = files_stats(rglob(M3D_SITE . '/media', fn($f) => $f->getFilename() !== '.htaccess'));
 $opcache = function_exists('opcache_get_status') ? @opcache_get_status(false) : false;
-$free = @disk_free_space(M3D_SITE);
+
+/*
+ * The numbers of Tools and System walk the media folder, the site's code and every session file: on a big site or a slow
+ * disk that takes seconds, so the page opens without them and asks for them right after, in two parts that run side by side:
+ * ?tools=quick (sessions, log, backups, disk) and ?tools=media (unused images, temporary files, media), filled in by admin.js.
+ * Not "stats": ad blockers (EasyPrivacy) block addresses with ?stats= as if they were tracking.
+ */
+if (isset($_GET['tools'])) {
+    session_write_close();   // don't keep the login locked while counting: other admin pages stay usable
+    @set_time_limit(60);
+    define('STATS_UNTIL', microtime(true) + 25);   // stop well before the server or Cloudflare gives up, and say so
+    ob_start();   // a PHP warning printed by the server would break the JSON answer
+    $part = m3d_get_text('tools');
+    try {
+        $out = [];
+        if ($part === 'quick') {
+            m3d_session_cleanup(true);   // expired logins are deleted, so the count is only the live ones
+            [$sessN, $sessB] = files_stats(session_files());
+            $logFile = m3d_log_file();
+            $logLines = 0;
+            if (is_file($logFile) && ($fh = @fopen($logFile, 'r'))) { while (($l = fgets($fh)) !== false) if (trim($l) !== '') $logLines++; fclose($fh); }
+            [, $bkB] = files_stats(glob(M3D_PRIVATE . '/backups/*') ?: []);
+            $free = function_exists('disk_free_space') ? @disk_free_space(M3D_SITE) : false;
+            $out = [
+                'sessions' => ['text' => $sessN . ' other active ' . ($sessN === 1 ? 'session' : 'sessions') . ' (' . human_size($sessB) . ').', 'n' => $sessN],
+                'log' => ['text' => $logLines . ' entries, kept ' . (int) ($M3D['log_retention_days'] ?? 365) . ' days.', 'n' => $logLines],
+                'backups' => ['text' => human_size($bkB) . ' of backups.'],
+                'disk' => ['text' => $free ? human_size((int) $free) : 'unknown'],
+            ];
+        } elseif ($part === 'media') {
+            $media = media_all();
+            $unFiles = unused_images($media);
+            [, $unB] = files_stats($unFiles);
+            $un3 = count(array_filter($unFiles, fn($f) => str_ends_with(strtolower((string) $f), '.glb')));
+            $unN = image_count($unFiles) - $un3;
+            [$tmpN, $tmpB] = files_stats(array_unique(temp_files($media)));
+            [$medN, $medB] = files_stats($media);
+            $out = [
+                'unused' => ['text' => (implode(' and ', array_filter([$unN ? m3d_plural($unN, 'image') : '', $un3 ? m3d_plural($un3, '3D file') : ''])) ?: '0 images') . ' not used anywhere (' . human_size($unB) . ').', 'n' => $unN + $un3],
+                'temp' => ['text' => $tmpN . ' leftovers from interrupted uploads (' . human_size($tmpB) . ').', 'n' => $tmpN],
+                'media' => ['text' => $medN . ' files, ' . human_size($medB)],
+            ];
+        }
+        ob_end_clean();
+        admin_json(['ok' => true, 'stats' => $out]);
+    } catch (Throwable $ex) {
+        ob_end_clean();
+        m3d_problem('Settings', 'Counting ' . $part . ': ' . $ex->getMessage());
+        admin_json(['ok' => false, 'error' => $ex->getMessage()]);
+    }
+}
+
 $checks = [
-    ['Site version', M3D_VERSION, true],
-    ['PHP version', PHP_VERSION, version_compare(PHP_VERSION, '8.1', '>=')],
-    ['Max upload size', ini_get('upload_max_filesize') . ' (form limit ' . ini_get('post_max_size') . ')', true],
-    ['Memory limit', ini_get('memory_limit') === '-1' ? 'no limit' : ini_get('memory_limit'), true],
-    ['WebP image support', img_webp() ? 'yes' : 'no (JPG fallback)', img_webp()],
-    ['Zip support (updates)', class_exists('ZipArchive') ? 'yes' : 'no', class_exists('ZipArchive')],
-    ['Data folder writable', is_writable(M3D_PRIVATE . '/data') ? 'yes' : 'no', is_writable(M3D_PRIVATE . '/data')],
-    ['Media folder writable', is_dir(M3D_SITE . '/media') && is_writable(M3D_SITE . '/media') ? 'yes' : 'no', is_dir(M3D_SITE . '/media') && is_writable(M3D_SITE . '/media')],
-    ['Images in media', $medN . ' files, ' . human($medB), true],
-    ['Free disk space', $free ? human((int) $free) : 'unknown', true],
+    ['Site Version', M3D_VERSION, true, ''],
+    ['PHP Version', PHP_VERSION, version_compare(PHP_VERSION, '8.1', '>='), ''],
+    ['Max Upload Size', ini_get('upload_max_filesize') . ' (form limit ' . ini_get('post_max_size') . ')', true, ''],
+    ['Memory Limit', ini_get('memory_limit') === '-1' ? 'no limit' : ini_get('memory_limit'), true, ''],
+    ['WebP Image Support', img_webp() ? 'yes' : 'no (JPG fallback)', img_webp(), ''],
+    ['Zip Support (Updates)', class_exists('ZipArchive') ? 'yes' : 'no', class_exists('ZipArchive'), ''],
+    ['Data Folder Writable', is_writable(M3D_PRIVATE . '/data') ? 'yes' : 'no', is_writable(M3D_PRIVATE . '/data'), ''],
+    ['Media Folder Writable', is_dir(M3D_SITE . '/media') && is_writable(M3D_SITE . '/media') ? 'yes' : 'no', is_dir(M3D_SITE . '/media') && is_writable(M3D_SITE . '/media'), ''],
+    ['Images in Media', '', true, 'media'],
+    ['Free Disk Space', '', true, 'disk'],
 ];
 
-$action = function (string $do, string $label, string $confirm = '', bool $disabled = false): string {
+// $stat: the button waits for that count (?tools=…) and stays off when it is 0
+$action = function (string $do, string $label, string $confirm = '', bool $disabled = false, string $stat = ''): string {
     return '<form method="post"' . ($confirm ? ' onsubmit="return confirm(' . e(json_encode($confirm)) . ')"' : '') . '>'
-        . '<input type="hidden" name="csrf" value="' . e(m3d_csrf()) . '" /><input type="hidden" name="do" value="' . e($do) . '" />'
-        . '<button class="btn btn-ghost btn-sm"' . ($disabled ? ' disabled' : '') . '>' . e($label) . '</button></form>';
+        . form_keys($do)
+        . '<button class="btn btn-ghost btn-sm"' . ($stat !== '' ? ' data-stat-btn="' . e($stat) . '"' : '') . ($disabled || $stat !== '' ? ' disabled' : '') . '>' . e($label) . '</button></form>';
 };
 
 $social = m3d_social();
+
+$tab = settings_tab();
+// the big boxes are folded to their title; the one just saved (or refused) stays open
+$open = fn(string ...$do) => in_array($_POST['do'] ?? '', $do, true) ? ' open' : '';
 
 admin_start('Settings', 'settings');
 ?>
@@ -284,51 +404,53 @@ admin_start('Settings', 'settings');
         <h1>Settings</h1>
       </div>
     </div>
-    <?= settings_menu() ?>
+    <?= settings_menu($tab) ?>
 
     <?php if ($done): ?><p class="notice"><b class="res-ok">✓</b> <?= e($done) ?></p><?php endif ?>
     <?php if ($error): ?><p class="notice"><b class="res-err">Not saved:</b> <?= e($error) ?></p><?php endif ?>
 
-    <h2 class="set-group">Your site</h2>
-    <?php $id = m3d_identity(); $idChanged = !empty(m3d_settings()['identity']); ?>
+    <?php if ($tab === 'site'): ?>
+    <?php $id = m3d_identity(); $idChanged = array_intersect_key($id, IDENTITY_DEFAULTS) != IDENTITY_DEFAULTS;   // saved values equal to the defaults: nothing to reset ?>
     <section class="sec" id="identity">
-      <h2 class="small-h">Site identity<?= tip('The name, logo and colour shown everywhere on the site: header, footer, browser tab, link previews and page titles.') ?></h2>
+      <h2 class="small-h">Site Identity</h2>
       <form method="post" enctype="multipart/form-data" class="id-form" data-identity-form>
-        <input type="hidden" name="csrf" value="<?= e(m3d_csrf()) ?>" /><input type="hidden" name="do" value="identity" />
+        <?= form_keys('identity') ?>
         <div class="id-preview" aria-hidden="true" data-id-preview style="--mustard: <?= e($id['color']) ?>; --mustard-ink: <?= e(accent_ink($id['color'])) ?>">
           <span class="brand"><?= brand() ?></span>
           <span class="btn btn-primary btn-sm">Button</span>
           <span class="id-prev-line"><?= e($id['tagline']) ?>.</span>
         </div>
         <div class="id-grid">
-          <label class="field"><span class="lbl">Site name</span><input class="input" name="id_name" value="<?= e($id['name']) ?>" maxlength="40" required data-id="name" /></label>
-          <label class="field"><span class="lbl">Part in colour<?= tip('Written exactly as in the name, e.g. “Studio” in “PixelStudio”. Leave it empty for a name all in one colour.') ?></span><input class="input" name="id_highlight" value="<?= e($id['highlight']) ?>" maxlength="20" data-id="highlight" /></label>
-          <label class="field id-wide"><span class="lbl">Tagline<?= tip('One short line: the homepage title (“' . $id['name'] . ' · …”), the line under the logo in the footer, and the description of pages that have none.') ?></span><input class="input" name="id_tagline" value="<?= e($id['tagline']) ?>" maxlength="90" required data-id="tagline" /></label>
-          <div class="field"><span class="lbl">Accent colour<?= tip('Buttons, active filters, links and highlights. The text on buttons turns dark or white by itself, so it stays readable.') ?></span>
+          <label class="field"><span class="lbl">Site Name</span><input class="input" name="id_name" value="<?= e($id['name']) ?>" maxlength="40" required data-id="name" /></label>
+          <label class="field"><span class="lbl">Highlighted Word<?= tip('Part of the name shown in the accent colour, written exactly as in the name (e.g. “Studio” in “PixelStudio”). Empty = one colour.') ?></span><input class="input" name="id_highlight" value="<?= e($id['highlight']) ?>" maxlength="20" data-id="highlight" /></label>
+          <label class="field id-wide"><span class="lbl">Tagline<?= tip('Homepage title (“' . $id['name'] . ' · …”), footer line under the logo, and default page description.') ?></span><input class="input" name="id_tagline" value="<?= e($id['tagline']) ?>" maxlength="90" required data-id="tagline" /></label>
+          <div class="field"><span class="lbl">Accent Colour</span>
             <span class="id-color"><input type="color" name="id_color" value="<?= e($id['color']) ?>" data-id="color" aria-label="Accent colour" /><code data-id-hex><?= e($id['color']) ?></code>
-              <?php if ($id['color'] !== IDENTITY_DEFAULTS['color']): ?><button type="button" class="linklike small muted" data-id-color-reset="<?= e(IDENTITY_DEFAULTS['color']) ?>">Default colour</button><?php endif ?></span>
+              <?php if ($id['color'] !== IDENTITY_DEFAULTS['color']): ?><button type="button" class="linklike small muted" data-id-color-reset="<?= e(IDENTITY_DEFAULTS['color']) ?>">Reset Colour</button><?php endif ?></span>
           </div>
-          <div class="field"><span class="lbl">Logo<?= tip('Shown left of the name and used as the browser-tab and phone icon. A square picture with a transparent background works best (PNG, at least 192 px).') ?></span>
+          <div class="field"><span class="lbl">Logo<?= tip('Shown next to the name; also the browser tab and phone icon. Best: square PNG, transparent background, at least 192 px.') ?></span>
             <span class="id-logo">
               <label class="btn btn-ghost btn-sm">Upload…<input type="file" name="id_logo" accept="image/png,image/jpeg,image/webp,image/gif" hidden data-id="logo" /></label>
-              <?php if ($id['logo'] !== ''): ?><label class="check small"><input type="checkbox" name="id_nologo" value="1" data-id="nologo" /> No logo</label><?php endif ?>
+              <?php if ($id['logo'] !== ''): ?><label class="check small"><input type="checkbox" name="id_nologo" value="1" data-id="nologo" /> Remove Logo</label><?php endif ?>
             </span>
           </div>
         </div>
-        <div class="social-actions"><button class="btn btn-primary btn-sm">Save identity</button></div>
+        <div class="form-actions">
+          <?php if ($idChanged): ?><button class="btn btn-ghost btn-sm" form="identity-reset" title="Go back to the default identity">Reset</button><?php endif ?>
+          <button class="btn btn-primary btn-sm">Save Identity</button>
+        </div>
       </form>
       <?php if ($idChanged): ?>
-        <form method="post" onsubmit="return confirm('Go back to the default identity (a neutral name and tagline, the default colour, no logo)? Your current name, logo and colour are removed.')">
-          <input type="hidden" name="csrf" value="<?= e(m3d_csrf()) ?>" /><input type="hidden" name="do" value="identity-reset" />
-          <button class="linklike small muted">Reset to the default identity</button>
+        <form method="post" id="identity-reset" hidden onsubmit="return confirm('Go back to the default identity (a neutral name and tagline, the default colour, no logo)? Your current name, logo and colour are removed.')">
+          <?= form_keys('identity-reset') ?>
         </form>
       <?php endif ?>
     </section>
 
     <section style="margin-top:20px" class="sec" id="social">
-      <h2 class="small-h">Social links<?= tip('The footer buttons, in this order. The Patreon, Discord and X addresses are also used by the links around the site.') ?></h2>
+      <h2 class="small-h">Social Links<?= tip('Footer buttons, in this order. The Patreon, Discord and X links are also used across the site.') ?></h2>
       <form method="post" class="social-form" data-social-form>
-        <input type="hidden" name="csrf" value="<?= e(m3d_csrf()) ?>" /><input type="hidden" name="do" value="social" />
+        <?= form_keys('social') ?>
         <div class="social-rows" data-social-rows>
           <?php foreach ($social as $l): ?>
             <div class="social-row" data-social-row>
@@ -336,7 +458,7 @@ admin_start('Settings', 'settings');
               <select class="input" name="social_type[]" aria-label="Network" data-social-type>
                 <?php foreach (SOCIAL_TYPES as $k => $t): ?><option value="<?= e($k) ?>" <?= $k === $l['type'] ? 'selected' : '' ?>><?= e($t[0]) ?></option><?php endforeach ?>
               </select>
-              <input class="input" type="text" name="social_url[]" value="<?= e($l['url']) ?>" placeholder="https://…" aria-label="Address" spellcheck="false" />
+              <input class="input" type="text" name="social_url[]" maxlength="500" value="<?= e($l['url']) ?>" placeholder="https://…" aria-label="Address" spellcheck="false" />
               <span class="row-btns">
                 <button type="button" class="drag-handle drag-sm" data-social-drag title="Drag to reorder (or focus and use the arrow keys)" aria-label="Drag to reorder">⠿</button>
                 <button type="button" class="icon-btn del" data-social-del title="Remove" aria-label="Remove">✕</button>
@@ -350,7 +472,7 @@ admin_start('Settings', 'settings');
             <select class="input" name="social_type[]" aria-label="Network" data-social-type>
               <?php foreach (SOCIAL_TYPES as $k => $t): ?><option value="<?= e($k) ?>" <?= $k === 'website' ? 'selected' : '' ?>><?= e($t[0]) ?></option><?php endforeach ?>
             </select>
-            <input class="input" type="text" name="social_url[]" value="" placeholder="https://…" aria-label="Address" spellcheck="false" />
+            <input class="input" type="text" name="social_url[]" maxlength="500" value="" placeholder="https://…" aria-label="Address" spellcheck="false" />
             <span class="row-btns">
               <button type="button" class="drag-handle drag-sm" data-social-drag title="Drag to reorder (or focus and use the arrow keys)" aria-label="Drag to reorder">⠿</button>
               <button type="button" class="icon-btn del" data-social-del title="Remove" aria-label="Remove">✕</button>
@@ -358,206 +480,315 @@ admin_start('Settings', 'settings');
           </div>
         </template>
         <script type="application/json" data-social-icons><?= json_encode(array_map(fn($k) => social_icon($k), array_combine(array_keys(SOCIAL_TYPES), array_keys(SOCIAL_TYPES))), JSON_UNESCAPED_SLASHES | JSON_HEX_TAG) ?></script>
-        <div class="social-actions">
-          <button type="button" class="btn btn-ghost btn-sm" data-social-add>+ Add link</button>
-          <button class="btn btn-primary btn-sm">Save links</button>
+        <div class="form-actions">
+          <button type="button" class="btn btn-ghost btn-sm act-left" data-social-add>+ Add Link</button>
+          <button class="btn btn-primary btn-sm">Save Links</button>
         </div>
       </form>
     </section>
 
     <?php $pl = home_plans(); ?>
-    <section style="margin-top:20px" class="sec" id="homepage">
-      <h2 class="small-h">Homepage section <span class="badge tone-<?= $pl['on'] ? 'green' : 'grey' ?>"><?= $pl['on'] ? 'Shown' : 'Hidden' ?></span><?= tip('The two boxes at the bottom of the homepage that explain how to get the downloads (e.g. free releases and the Patreon membership). Patrons who can already download never see them.') ?></h2>
+    <details style="margin-top:20px" class="sec fold" id="homepage"<?= $open('plans') ?>>
+      <summary><h2 class="small-h">Homepage Section <span class="badge tone-<?= $pl['on'] ? 'green' : 'grey' ?>"><?= $pl['on'] ? 'Shown' : 'Hidden' ?></span><?= tip('Two boxes at the bottom of the homepage explaining how to get the downloads (e.g. free releases and Patreon membership). Hidden for patrons who can already download.') ?></h2></summary>
+      <div class="fold-body">
       <form method="post" class="pl-form">
-        <input type="hidden" name="csrf" value="<?= e(m3d_csrf()) ?>" /><input type="hidden" name="do" value="plans" />
-        <label class="field check"><input type="checkbox" name="pl_on" value="1" <?= $pl['on'] ? 'checked' : '' ?> /><span class="lbl">Show the section</span></label>
+        <?= form_keys('plans') ?>
+        <label class="toggle"><input type="checkbox" class="switch" name="pl_on" value="1" <?= $pl['on'] ? 'checked' : '' ?> /><span>Show Section</span></label>
         <div class="id-grid">
-          <label class="field"><span class="lbl">Small line above the title</span><input class="input" name="pl_eyebrow" value="<?= e($pl['eyebrow']) ?>" maxlength="40" placeholder="Downloads" /></label>
+          <label class="field"><span class="lbl">Small Heading<?= tip('Short line above the title.') ?></span><input class="input" name="pl_eyebrow" value="<?= e($pl['eyebrow']) ?>" maxlength="40" placeholder="Downloads" /></label>
           <label class="field"><span class="lbl">Title</span><input class="input" name="pl_head" value="<?= e($pl['title']) ?>" maxlength="80" placeholder="How to get the models" /></label>
         </div>
         <div class="pl-boxes">
           <?php foreach ($pl['boxes'] as $i => $b): ?>
             <fieldset class="pl-box<?= $i === 1 ? ' pl-hot' : '' ?>">
-              <legend><?= $i === 0 ? 'First box' : 'Second box (highlighted)' ?></legend>
-              <label class="field"><span class="lbl">Label</span><input class="input" name="pl_tag_<?= $i ?>" value="<?= e($b['tag']) ?>" maxlength="40" placeholder="<?= $i ? 'Membership' : 'Open access' ?>" /></label>
+              <legend><?= $i === 0 ? 'Box 1' : 'Box 2 (Highlighted)' ?></legend>
+              <label class="field"><span class="lbl">Tag</span><input class="input" name="pl_tag_<?= $i ?>" value="<?= e($b['tag']) ?>" maxlength="40" placeholder="<?= $i ? 'Membership' : 'Open access' ?>" /></label>
               <label class="field"><span class="lbl">Title</span><input class="input" name="pl_title_<?= $i ?>" value="<?= e($b['title']) ?>" maxlength="80" placeholder="<?= $i ? 'Every download' : 'Free releases' ?>" /></label>
-              <label class="field"><span class="lbl">Text<?= tip('Takes **bold**, *italic* and [links](https://…).') ?></span><textarea class="input" name="pl_text_<?= $i ?>" rows="3" maxlength="600"><?= e($b['text']) ?></textarea></label>
-              <label class="field"><span class="lbl">Points (one per line)</span><textarea class="input" name="pl_items_<?= $i ?>" rows="3"><?= e(implode("
+              <label class="field"><span class="lbl">Text<?= tip('Supports **bold**, *italic* and [links](https://…).') ?></span><textarea class="input" name="pl_text_<?= $i ?>" rows="3" maxlength="600"><?= e($b['text']) ?></textarea></label>
+              <label class="field"><span class="lbl">Bullet Points<?= tip('One per line.') ?></span><textarea class="input" name="pl_items_<?= $i ?>" rows="3"><?= e(implode("
 ", $b['items'])) ?></textarea></label>
-              <div class="field"><span class="lbl">Buttons<?= tip('Discord and Patreon use the addresses of Settings → Social links (a network that isn’t set is left out). “Log in” opens the Patreon login.') ?></span>
+              <div class="field"><span class="lbl">Buttons<?= tip('Discord and Patreon use the Social Links addresses (left out when not set). “Log In” opens the Patreon login.') ?></span>
                 <span class="pl-btns"><?php foreach (PLAN_BUTTONS as $k => $label): ?><label class="check small"><input type="checkbox" name="pl_btn_<?= $i ?>[]" value="<?= e($k) ?>" <?= in_array($k, $b['buttons'], true) ? 'checked' : '' ?> /> <?= e($label) ?></label><?php endforeach ?></span>
               </div>
-              <label class="field"><span class="lbl">Small print (optional)</span><input class="input" name="pl_fine_<?= $i ?>" value="<?= e($b['fine']) ?>" maxlength="300" /></label>
+              <label class="field"><span class="lbl">Footnote<?= tip('Optional small print under the box.') ?></span><input class="input" name="pl_fine_<?= $i ?>" value="<?= e($b['fine']) ?>" maxlength="300" /></label>
             </fieldset>
           <?php endforeach ?>
         </div>
-        <div class="social-actions"><button class="btn btn-primary btn-sm">Save section</button><a class="btn btn-ghost btn-sm" href="/#access" target="_blank">View on the homepage ↗</a></div>
+        <div class="form-actions"><a class="btn btn-ghost btn-sm" href="/#access" target="_blank">View on the Homepage ↗</a><button class="btn btn-primary btn-sm">Save Section</button></div>
       </form>
-    </section>
+      </div>
+    </details>
 
     <?php $notice = (m3d_settings()['notice'] ?? []) + ['on' => false, 'type' => 'info', 'text' => '', 'where' => 'all', 'until' => '', 'closable' => true];
           $live = m3d_notice() !== null; ?>
-    <section style="margin-top:20px" class="sec" id="notice">
-      <h2 class="small-h">Site notice <span class="badge tone-<?= $live ? 'green' : 'grey' ?>"><?= $live ? 'Shown' : ($notice['on'] && $notice['text'] !== '' ? 'Ended' : 'Off') ?></span></h2>
+    <details style="margin-top:20px" class="sec fold" id="notice"<?= $open('notice') ?>>
+      <summary><h2 class="small-h">Site Notice <span class="badge tone-<?= $live ? 'green' : 'grey' ?>"><?= $live ? 'Shown' : ($notice['on'] && $notice['text'] !== '' ? 'Ended' : 'Off') ?></span></h2></summary>
+      <div class="fold-body">
       <form method="post" class="notice-form">
-        <input type="hidden" name="csrf" value="<?= e(m3d_csrf()) ?>" /><input type="hidden" name="do" value="notice" />
-        <label class="field check"><input type="checkbox" name="notice_on" value="1" <?= $notice['on'] ? 'checked' : '' ?> /><span class="lbl">Show the notice</span></label>
+        <?= form_keys('notice') ?>
+        <label class="toggle"><input type="checkbox" class="switch" name="notice_on" value="1" <?= $notice['on'] ? 'checked' : '' ?> /><span>Show Notice</span></label>
         <div class="notice-grid">
           <label class="field"><span class="lbl">Type</span>
             <select class="input" name="notice_type"><?php foreach (NOTICE_TYPES as $k => [$label]): ?><option value="<?= e($k) ?>" <?= $notice['type'] === $k ? 'selected' : '' ?>><?= e($label) ?></option><?php endforeach ?></select>
           </label>
-          <label class="field"><span class="lbl">Where</span>
-            <select class="input" name="notice_where"><option value="all">Every page</option><option value="home" <?= $notice['where'] === 'home' ? 'selected' : '' ?>>Homepage only</option></select>
+          <label class="field"><span class="lbl">Show On</span>
+            <select class="input" name="notice_where"><option value="all">Every Page</option><option value="home" <?= $notice['where'] === 'home' ? 'selected' : '' ?>>Homepage Only</option></select>
           </label>
-          <label class="field"><span class="lbl">Last day (optional)</span><input class="input" type="date" name="notice_until" value="<?= e($notice['until']) ?>" /></label>
+          <label class="field"><span class="lbl">End Date<?= tip('Optional. Shown until the end of this day.') ?></span><input class="input" type="date" name="notice_until" value="<?= e($notice['until']) ?>" /></label>
         </div>
-        <label class="field"><span class="lbl">Message<?= tip('Takes **bold**, *italic* and [links](https://…).') ?></span>
+        <label class="field"><span class="lbl">Message<?= tip('Supports **bold**, *italic* and [links](https://…).') ?></span>
           <textarea class="input" name="notice_text" rows="2" maxlength="600" placeholder="**New:** a new model is out for patrons! [See it](/models/your-model/)"><?= e($notice['text']) ?></textarea>
         </label>
-        <label class="field check"><input type="checkbox" name="notice_closable" value="1" <?= $notice['closable'] ? 'checked' : '' ?> /><span class="lbl">Visitors can close it<?= tip('It comes back when you change the message.') ?></span></label>
-        <div class="social-actions"><button class="btn btn-primary btn-sm">Save notice</button></div>
+        <label class="toggle"><input type="checkbox" class="switch" name="notice_closable" value="1" <?= $notice['closable'] ? 'checked' : '' ?> /><span>Allow Closing<?= tip('Visitors can close it. It reappears when the message changes.') ?></span></label>
+        <div class="form-actions"><button class="btn btn-primary btn-sm">Save Notice</button></div>
       </form>
       <?php if ($notice['text'] !== ''): ?>
         <p class="lbl notice-prev-lbl">Preview</p>
         <div class="notice-prev"><?= notice_html($notice, true) ?></div>
       <?php endif ?>
-    </section>
+      </div>
+    </details>
 
     <?php $lg = m3d_legal(); ?>
     <section style="margin-top:20px" class="sec" id="legal">
-      <h2 class="small-h">Legal &amp; contact<?= tip('Who runs the site, shown on the privacy page (required in the EU), and the support email shown on the Contacts page for website problems. Empty fields fall back to config.php.') ?></h2>
+      <h2 class="small-h">Legal &amp; Contact<?= tip('Site operator shown on the privacy page (required in the EU), and the support email shown on the Contacts page. Empty fields use config.php.') ?></h2>
       <form method="post">
-        <input type="hidden" name="csrf" value="<?= e(m3d_csrf()) ?>" /><input type="hidden" name="do" value="legal" />
+        <?= form_keys('legal') ?>
         <div class="id-grid">
-          <label class="field"><span class="lbl">Full name</span><input class="input" name="legal_name" value="<?= e($lg['name']) ?>" maxlength="120" /></label>
-          <label class="field"><span class="lbl">Email (privacy page)</span><input class="input" type="email" name="legal_email" value="<?= e($lg['email']) ?>" maxlength="120" /></label>
-          <label class="field id-wide"><span class="lbl">Postal address</span><textarea class="input" name="legal_address" rows="3" maxlength="300"><?= e($lg['address']) ?></textarea></label>
-          <label class="field id-wide"><span class="lbl">Support email (Contacts page)</span><input class="input" type="email" name="support_email" value="<?= e(m3d_support_email()) ?>" maxlength="120" /></label>
+          <label class="field"><span class="lbl">Full Name</span><input class="input" name="legal_name" value="<?= e($lg['name']) ?>" maxlength="120" /></label>
+          <label class="field"><span class="lbl">Privacy Email<?= tip('Shown on the privacy page.') ?></span><input class="input" type="email" name="legal_email" value="<?= e($lg['email']) ?>" maxlength="120" /></label>
+          <label class="field id-wide"><span class="lbl">Postal Address</span><textarea class="input" name="legal_address" rows="3" maxlength="300"><?= e($lg['address']) ?></textarea></label>
+          <label class="field id-wide"><span class="lbl">Support Email<?= tip('Shown on the Contacts page for website problems.') ?></span><input class="input" type="email" name="support_email" value="<?= e(m3d_support_email()) ?>" maxlength="120" /></label>
         </div>
-        <div class="social-actions"><button class="btn btn-primary btn-sm">Save</button><a class="btn btn-ghost btn-sm" href="/privacy/" target="_blank">View the privacy page ↗</a></div>
+        <div class="form-actions"><a class="btn btn-ghost btn-sm" href="/privacy/" target="_blank">View the Privacy Page ↗</a><button class="btn btn-primary btn-sm">Save</button></div>
       </form>
     </section>
 
-    <h2 class="set-group">Patreon &amp; downloads</h2>
+    <?php endif ?>
+
+    <?php if ($tab === 'patreon'): ?>
     <?php $cfg = require M3D_PRIVATE . '/config.php'; $ptSaved = m3d_patreon_saved(); $pt = array_merge($cfg, $ptSaved);
           $ptVal = fn(string $k) => (string) ($pt[$k] ?? '');
           $ptReal = fn(string $k) => $ptVal($k) !== '' && !str_starts_with($ptVal($k), 'PASTE_') && $ptVal($k) !== '0000000' && !str_contains($ptVal($k), 'xyz.xy');
-          $ptFrom = fn(string $k) => isset($ptSaved[$k]) ? '<span class="badge tone-green">Saved here</span>' : ($ptReal($k) ? '<span class="badge tone-grey">From config.php</span>' : '<span class="badge tone-red">Missing</span>');
+          $ptFrom = fn(string $k) => isset($ptSaved[$k]) ? '<span class="badge tone-green">Saved Here</span>' : ($ptReal($k) ? '<span class="badge tone-grey">From config.php</span>' : '<span class="badge tone-red">Missing</span>');
           $callback = abs_url('/auth/callback.php'); ?>
     <section class="sec" id="patreon">
-      <h2 class="small-h">Patreon<?= tip('The Patreon client this site logs in with, your campaign, and its currency. The keys come from config.php until you save them here.') ?></h2>
+      <h2 class="small-h">Patreon</h2>
       <form method="post" class="pt-form" autocomplete="off" onsubmit="return confirm(<?= e(json_encode('Save the Patreon keys? If they are wrong, nobody can log in (you stay logged in here). Test in a private window afterwards.')) ?>)">
-        <input type="hidden" name="csrf" value="<?= e(m3d_csrf()) ?>" /><input type="hidden" name="do" value="patreon" />
+        <?= form_keys('patreon') ?>
         <div class="id-grid">
           <label class="field"><span class="lbl">Client ID <?= $ptFrom('client_id') ?><?= tip('From patreon.com/portal/registration/register-clients → your client → “Client ID”.') ?></span>
             <input class="input" name="pt_client_id" value="<?= e($ptReal('client_id') ? $ptVal('client_id') : '') ?>" spellcheck="false" autocomplete="off" /></label>
-          <label class="field"><span class="lbl">Client secret <?= $ptFrom('client_secret') ?><?= tip('Same page, “Client Secret”. It is never shown again here: leave the field empty to keep the current one.') ?></span>
+          <label class="field"><span class="lbl">Client Secret <?= $ptFrom('client_secret') ?><?= tip('Same page, “Client Secret”. Never shown again: leave empty to keep the current one.') ?></span>
             <input class="input" type="password" name="pt_client_secret" value="" placeholder="<?= $ptReal('client_secret') ? '•••••••• (leave empty to keep it)' : 'Paste the client secret' ?>" spellcheck="false" autocomplete="new-password" /></label>
-          <label class="field id-wide"><span class="lbl">Redirect address <?= $ptFrom('redirect_uri') ?><?= tip('Must be written EXACTLY as one of the “Redirect URIs” of your Patreon client.') ?></span>
+          <label class="field id-wide"><span class="lbl">Redirect URI <?= $ptFrom('redirect_uri') ?><?= tip('Must match one of your Patreon client’s “Redirect URIs” exactly.') ?></span>
             <span class="pt-row"><input class="input" name="pt_redirect_uri" value="<?= e($ptReal('redirect_uri') ? $ptVal('redirect_uri') : '') ?>" placeholder="<?= e($callback) ?>" spellcheck="false" data-pt-redirect />
-              <?php if ($ptVal('redirect_uri') !== $callback): ?><button type="button" class="btn btn-ghost btn-sm" data-pt-use="<?= e($callback) ?>" title="<?= e($callback) ?>">Use this site’s address</button><?php endif ?></span></label>
-          <label class="field"><span class="lbl">Campaign ID <?= $ptFrom('campaign_id') ?><?= tip('The number of your Patreon campaign: only its paying members can download.') ?></span>
+              <?php if ($ptVal('redirect_uri') !== $callback): ?><button type="button" class="btn btn-ghost btn-sm" data-pt-use="<?= e($callback) ?>" title="<?= e($callback) ?>">Use This Site’s Address</button><?php endif ?></span></label>
+          <label class="field"><span class="lbl">Campaign ID <?= $ptFrom('campaign_id') ?><?= tip('Your Patreon campaign number. Only its paying members can download.') ?></span>
             <input class="input" name="pt_campaign_id" value="<?= e($ptReal('campaign_id') ? $ptVal('campaign_id') : '') ?>" inputmode="numeric" spellcheck="false" /></label>
         </div>
-        <div class="social-actions"><button class="btn btn-primary btn-sm">Save Patreon keys</button></div>
+        <div class="form-actions">
+          <?php if ($ptSaved): ?><button class="btn btn-ghost btn-sm" form="patreon-reset" title="Delete the keys saved here and use the ones in config.php again">Use config.php</button><?php endif ?>
+          <button class="btn btn-primary btn-sm">Save Patreon Keys</button>
+        </div>
       </form>
       <?php if ($ptSaved): ?>
-        <form method="post" onsubmit="return confirm('Delete the keys saved here and use the ones in config.php again?')">
-          <input type="hidden" name="csrf" value="<?= e(m3d_csrf()) ?>" /><input type="hidden" name="do" value="patreon-reset" />
-          <button class="linklike small muted">Go back to config.php</button>
+        <form method="post" id="patreon-reset" hidden onsubmit="return confirm('Delete the keys saved here and use the ones in config.php again?')">
+          <?= form_keys('patreon-reset') ?>
         </form>
       <?php endif ?>
       <form method="post" class="cur-form pt-cur">
-        <input type="hidden" name="csrf" value="<?= e(m3d_csrf()) ?>" /><input type="hidden" name="do" value="currency" />
-        <label class="field"><span class="lbl">Campaign currency<?= tip('For the “total support” requirements. Set automatically when a patron logs in.') ?></span>
+        <?= form_keys('currency') ?>
+        <label class="field"><span class="lbl">Campaign Currency<?= tip('Used for “total support” requirements. Set automatically at patron login.') ?></span>
           <select class="input" name="currency">
-            <?php foreach (['EUR' => 'Euro (€)', 'USD' => 'US dollar ($)', 'GBP' => 'British pound (£)', 'CAD' => 'Canadian dollar', 'AUD' => 'Australian dollar', 'JPY' => 'Japanese yen'] as $k => $l): ?><option value="<?= $k ?>" <?= m3d_currency() === $k ? 'selected' : '' ?>><?= e($l) ?></option><?php endforeach ?>
+            <?php foreach (['EUR' => 'Euro (€)', 'USD' => 'US Dollar ($)', 'GBP' => 'British Pound (£)', 'CAD' => 'Canadian Dollar', 'AUD' => 'Australian Dollar', 'JPY' => 'Japanese Yen'] as $k => $l): ?><option value="<?= $k ?>" <?= m3d_currency() === $k ? 'selected' : '' ?>><?= e($l) ?></option><?php endforeach ?>
           </select>
         </label>
-        <button class="btn btn-ghost btn-sm">Save</button>
+        <button class="btn btn-primary btn-sm">Save</button>
       </form>
     </section>
 
-    <h2 class="set-group">Optional features</h2>
-    <?php $muOn = m3d_mustardui_on(); ?>
-    <section class="sec" id="mustardui">
-      <h2 class="small-h">MustardUI <span class="badge tone-<?= $muOn ? 'green' : 'grey' ?>"><?= $muOn ? 'On' : 'Off' ?></span><?= tip('A ready-made page about MustardUI, the free Blender add-on: what it does, where to download it, its guides and bug reports. Turn it on if your models use it.') ?></h2>
-      <form method="post" class="mu-form">
-        <input type="hidden" name="csrf" value="<?= e(m3d_csrf()) ?>" /><input type="hidden" name="do" value="mustardui" />
-        <label class="field check"><input type="checkbox" name="mustardui_on" value="1" <?= $muOn ? 'checked' : '' ?> /><span class="lbl">Show the MustardUI page<?= tip('Adds “MustardUI” to the menu and the footer, and opens /mustardui/. Off: neither, and the address shows “not found”.') ?></span></label>
-        <div class="social-actions"><button class="btn btn-primary btn-sm">Save</button><?php if ($muOn): ?><a class="btn btn-ghost btn-sm" href="/mustardui/" target="_blank">View the page ↗</a><?php endif ?></div>
+    <section style="margin-top:20px" class="sec" id="logins">
+      <h2 class="small-h">Logins<?= tip('How long a Patreon login lasts. Afterwards patrons log in again (one click). Expired logins are deleted. To log everyone out now: Maintenance → Tools.') ?></h2>
+      <form method="post" class="days-form">
+        <?= form_keys('login-days') ?>
+        <span class="lbl">Login Duration</span>
+        <input class="input" type="number" name="login_days" min="1" max="365" step="1" value="<?= $loginDays ?>" aria-label="Days" required /><span class="muted small">days</span>
+        <button class="btn btn-primary btn-sm">Save</button>
       </form>
     </section>
 
-    <?php $sbOn = m3d_smutbase_on(); ?>
-    <section style="margin-top:20px" class="sec" id="smutbase">
-      <h2 class="small-h">SmutBase import <span class="badge tone-<?= $sbOn ? 'green' : 'grey' ?>"><?= $sbOn ? 'On' : 'Off' ?></span><?= tip('Turns the models of a SmutBase profile into draft models here (texts, changelog, pictures). Only useful if you publish on SmutBase.') ?></h2>
-      <form method="post">
-        <input type="hidden" name="csrf" value="<?= e(m3d_csrf()) ?>" /><input type="hidden" name="do" value="smutbase" />
-        <label class="field check"><input type="checkbox" name="smutbase_on" value="1" <?= $sbOn ? 'checked' : '' ?> /><span class="lbl">Show “Import from SmutBase” on Admin → Models</span></label>
-        <div class="social-actions"><button class="btn btn-primary btn-sm">Save</button><?php if ($sbOn): ?><a class="btn btn-ghost btn-sm" href="/admin/import.php">Open the import</a><?php endif ?></div>
+    <?php endif ?>
+
+    <?php if ($tab === 'features'): ?>
+    <?php $bs = m3d_bug_settings(); ?>
+    <section class="sec" id="bugs">
+      <h2 class="small-h">Bug Reports <span class="badge tone-<?= $bs['on'] ? 'green' : 'grey' ?>"><?= $bs['on'] ? 'On' : 'Off' ?></span></h2>
+      <form method="post" autocomplete="off" class="set-list" data-bugs-form>
+        <?= form_keys('bugs') ?>
+        <label class="toggle"><input type="checkbox" class="switch" name="bugs_on" value="1" <?= $bs['on'] ? 'checked' : '' ?> /><span>Enable Bug Reports<?= tip('Adds “Bug Reports” to the footer and a “Found a bug?” box on model and accessory pages. Off: /bugs/ returns “not found” (admins still see it).') ?></span></label>
+        <div class="set-grps">
+          <div class="set-grp"><h3>Posting</h3>
+            <div class="field"><span class="lbl">Who Can Post<?= tip('Reports and comments. Everyone can read reports, logged in or not.') ?></span>
+              <div class="vis-seg bugs-who">
+                <label class="vis-opt"><input type="radio" name="bugs_who" value="any" <?= $bs['who'] === 'any' ? 'checked' : '' ?> />Any Account</label>
+                <label class="vis-opt"><input type="radio" name="bugs_who" value="paying" <?= $bs['who'] === 'paying' ? 'checked' : '' ?> />Paying Patrons</label>
+              </div></div>
+            <label class="field bugs-num"><span class="lbl">Reports per Day<?= tip('How many reports one person can send in a day. Comments don’t count.') ?></span>
+              <input class="input" type="number" name="bugs_per_day" min="1" max="50" value="<?= (int) $bs['per_day'] ?>" /></label>
+            <label class="toggle"><input type="checkbox" class="switch" name="bugs_moderate" value="1" <?= $bs['moderate'] ? 'checked' : '' ?> /><span>Review Before Publishing<?= tip('New reports stay hidden (visible only to their author) until you press Publish on the report’s page.') ?></span></label>
+          </div>
+          <div class="set-grp"><h3>Screenshots</h3>
+            <label class="toggle"><input type="checkbox" class="switch" name="bugs_uploads" value="1" <?= $bs['uploads'] ? 'checked' : '' ?> /><span>Allow Image Uploads<?= tip('Up to ' . BUG_PICS . ' pictures per report, max ' . (BUG_PIC_BYTES >> 20) . ' MB each, stored on your host in media/bugs (resized, WebP). Off: links only.') ?></span></label>
+            <label class="field"><span class="lbl">Screenshot Host<?= tip('Suggested on the report form for screenshot links. Pictures stay on that site; reports show them only as links. Empty = no suggestion.') ?></span>
+              <input class="input" type="url" name="bugs_host" maxlength="300" value="<?= e($bs['host']) ?>" placeholder="https://catbox.moe" spellcheck="false" /></label>
+          </div>
+          <div class="set-grp"><h3>Discord</h3>
+            <label class="toggle"><input type="checkbox" class="switch" name="bugs_notify" value="1" <?= $bs['notify'] ? 'checked' : '' ?> /><span>Post New Reports<?= tip('Posts each new report to a Discord channel. Use a private channel: posts include the report text.') ?></span></label>
+            <label class="field bugs-hook"><span class="lbl">Webhook URL<?= tip('Channel settings → Integrations → Webhooks → New Webhook → “Copy Webhook URL”.') ?></span>
+              <input class="input dc-hook" type="url" name="bugs_webhook" value="<?= e($bs['webhook']) ?>" placeholder="https://discord.com/api/webhooks/…" spellcheck="false" autocomplete="off" /></label>
+          </div>
+        </div>
+        <div class="form-actions"><a class="btn btn-ghost btn-sm" href="/bugs/">Open Bug Reports</a><button class="btn btn-primary btn-sm">Save</button></div>
       </form>
+      <?php if ($bs['blocked']):
+          $names = [];   // the name each blocked person last posted with
+          foreach (m3d_bugs() as $b) foreach (array_merge([$b], array_filter((array) ($b['log'] ?? []), fn($x) => ($x['t'] ?? '') === 'c')) as $x) {
+              if (($x['by'] ?? '') !== '' && ($x['name'] ?? '') !== '' && (int) ($x['at'] ?? 0) >= ($names[(string) $x['by']][1] ?? 0)) $names[(string) $x['by']] = [(string) $x['name'], (int) ($x['at'] ?? 0)];
+          } ?>
+        <div class="field bugs-blocked"><span class="lbl">Blocked Users</span>
+          <?php foreach ($bs['blocked'] as $id): ?>
+            <form method="post" class="inline-row"><?= form_keys('bugs-unblock') ?><input type="hidden" name="who" value="<?= e($id) ?>" />
+              <span><b><?= e($names[$id][0] ?? 'Someone') ?></b> <span class="muted small">Patreon ID <?= e($id) ?></span></span>
+              <button class="btn btn-ghost btn-sm">Unblock</button></form>
+          <?php endforeach ?>
+        </div>
+      <?php endif ?>
     </section>
 
-    <h2 class="set-group">Maintenance</h2>
-    <?php $maint = m3d_settings()['maintenance'] ?? []; $maintOn = !empty($maint['on']); ?>
-    <section class="sec maint-sec<?= $maintOn ? ' is-on' : '' ?>" id="maintenance">
-      <h2 class="small-h">Maintenance mode <span class="badge tone-<?= $maintOn ? 'red' : 'grey' ?>"><?= $maintOn ? 'On' : 'Off' ?></span><?= tip('Visitors see a “Back soon” page and can’t download. Admins can still log in and use the site.') ?></h2>
-      <?php if ($maintOn && !empty($maint['since']) && ($d = date_create_immutable($maint['since']))): ?><p class="muted small sec-hint">On since <?= e($d->setTimezone(new DateTimeZone('Europe/Berlin'))->format('j F Y, H:i')) ?>.</p><?php endif ?>
-      <form method="post" class="maint-form"<?= $maintOn ? '' : ' onsubmit="return confirm(' . e(json_encode('Turn on maintenance mode? Visitors will see the “Back soon” page until you turn it off.')) . ')"' ?>>
-        <input type="hidden" name="csrf" value="<?= e(m3d_csrf()) ?>" /><input type="hidden" name="do" value="maintenance" />
-        <label class="field"><span class="lbl">Message for visitors (optional)</span>
-          <textarea class="input" name="message" rows="2" maxlength="1000" placeholder="The website is being updated. Please come back in a little while."><?= e($maint['message'] ?? '') ?></textarea>
-        </label>
-        <div class="social-actions">
-          <?php if ($maintOn): ?>
-            <button class="btn btn-ghost btn-sm" name="state" value="on">Save message</button>
-            <button class="btn btn-primary btn-sm" name="state" value="off">Turn off maintenance mode</button>
-          <?php else: ?>
-            <button class="btn btn-danger btn-sm" name="state" value="on">Turn on maintenance mode</button>
+    <?php $dc = m3d_discord(); $dcOn = m3d_discord_on(); ?>
+    <section style="margin-top:20px" class="sec" id="discord">
+      <h2 class="small-h">Discord Announcements <span class="badge tone-<?= $dcOn ? 'green' : 'grey' ?>"><?= $dcOn ? 'On' : 'Off' ?></span><?= tip('Posts new versions of public models and accessories (and newly published ones) to a Discord channel: name, version, highlight, changes and picture. Drafts and password items are never posted; blurred ones are posted without the picture.') ?></h2>
+      <form method="post" autocomplete="off" class="dc-form" data-discord-form>
+        <?= form_keys() ?>
+        <button class="dc-enter" name="do" value="discord" tabindex="-1" aria-hidden="true"></button><?php /* Enter in a field = Save, not the test message */ ?>
+        <div class="dc-grid">
+          <div class="dc-fields">
+            <label class="toggle"><input type="checkbox" class="switch" name="discord_on" value="1" <?= $dc['on'] ? 'checked' : '' ?> /><span>Announce New Versions<?= tip('Only versions added from now on are posted, not the existing ones.') ?></span></label>
+            <label class="toggle"><input type="checkbox" class="switch" name="discord_stills" value="1" <?= $dc['stills'] ? 'checked' : '' ?> /><span>Announce New Gallery Pictures<?= tip('Pictures added or made visible in Admin → Gallery are posted together as “New render”, ' . intdiv(DISCORD_STILLS_DELAY, 60) . ' minutes after your last change there (time for captions and characters). Drafts are never posted; teaser and patron-only pictures are posted without the image. Existing pictures are not posted.') ?></span></label>
+            <label class="field"><span class="lbl">Webhook URL<?= tip('Channel settings (gear icon) → Integrations → Webhooks → New Webhook → “Copy Webhook URL”. Anyone with this URL can post in the channel: keep it private (shown only while editing).') ?></span>
+              <input class="input dc-hook" type="url" name="discord_webhook" value="<?= e($dc['webhook']) ?>" placeholder="https://discord.com/api/webhooks/…" spellcheck="false" autocomplete="off" data-dc-hook />
+              <span class="dc-hook-state small" data-dc-hook-state></span></label>
+            <label class="field"><span class="lbl">Intro Message<?= tip('Optional line above each post, e.g. “New update!”. Use @everyone or a role mention to ping people.') ?></span>
+              <input class="input" name="discord_message" value="<?= e($dc['message']) ?>" maxlength="300" placeholder="New update!" data-dc-message /></label>
+          </div>
+          <div class="dc-side">
+            <?php $dcs = m3d_discord_sample(); ?>
+            <span class="lbl">Preview<?php if ($dcs): ?> <span class="dc-which">· <?= e($dcs[1]['name'] . ' ' . m3d_version_label(m3d_current_version($dcs[1]))) ?></span><?php endif ?></span>
+            <?= discord_preview_html($dc['message']) ?>
+          </div>
+        </div>
+        <div class="form-actions">
+          <?php if ($l = $dc['last']): $at = (new DateTimeImmutable((string) ($l['at'] ?? 'now')))->setTimezone(new DateTimeZone('Europe/Berlin'))->format('j M Y, H:i T'); ?>
+            <p class="act-left dc-last small muted">Last post, <?= e($at) ?>: <?= !empty($l['ok']) ? '<b class="res-ok">✓</b> ' . e((string) ($l['what'] ?? '')) : '<b class="res-err">failed</b> (' . e((string) ($l['what'] ?? '')) . '): ' . e((string) ($l['error'] ?? '')) . (empty($l['stills']) ? ' It will be tried again the next time you save it.' : ' Pictures are tried again ' . intdiv(DISCORD_STILLS_DELAY, 60) . ' minutes later, ' . DISCORD_STILLS_TRIES . ' times at most.') ?></p>
           <?php endif ?>
-          <a class="btn btn-ghost btn-sm" href="/" >View site</a>
+          <button class="btn btn-ghost btn-sm" name="do" value="discord-test">Save and Send a Test Message</button><button class="btn btn-primary btn-sm" name="do" value="discord">Save</button>
         </div>
       </form>
+    </section>
+
+    <?php foreach (FEATURE_SWITCHES as $k => [$title, $help, $label, $labelHelp, [$href, $linkText, $newTab]]): $on = $k === 'mustardui' ? m3d_mustardui_on() : m3d_smutbase_on(); ?>
+    <section style="margin-top:20px" class="sec" id="<?= $k ?>">
+      <h2 class="small-h"><?= e($title) ?> <span class="badge tone-<?= $on ? 'green' : 'grey' ?>"><?= $on ? 'On' : 'Off' ?></span><?= tip($help) ?></h2>
+      <form method="post">
+        <?= form_keys($k) ?>
+        <label class="toggle"><input type="checkbox" class="switch" name="<?= $k ?>_on" value="1" <?= $on ? 'checked' : '' ?> /><span><?= e($label) ?><?= $labelHelp !== '' ? tip($labelHelp) : '' ?></span></label>
+        <div class="form-actions"><?php if ($on): ?><a class="btn btn-ghost btn-sm" href="<?= $href ?>"<?= $newTab ? ' target="_blank"' : '' ?>><?= e($linkText) ?></a><?php endif ?><button class="btn btn-primary btn-sm">Save</button></div>
+      </form>
+    </section>
+    <?php endforeach ?>
+
+    <?php endif ?>
+
+    <?php if ($tab === 'maintenance'): ?>
+    <?php $maint = m3d_settings()['maintenance'] ?? []; $maintOn = !empty($maint['on']); ?>
+    <section class="sec maint-sec<?= $maintOn ? ' is-on' : '' ?>" id="maintenance">
+      <h2 class="small-h">Maintenance Mode <span class="badge tone-<?= $maintOn ? 'red' : 'grey' ?>"><?= $maintOn ? 'On' : 'Off' ?></span><?= tip('Visitors see a “Back Soon” page and can’t download. Admins can still log in and use the site.') ?></h2>
+      <?php if ($maintOn && !empty($maint['since']) && ($d = date_create_immutable($maint['since']))): ?><p class="muted small sec-hint">On since <?= e($d->setTimezone(new DateTimeZone('Europe/Berlin'))->format('j F Y, H:i T')) ?>.</p><?php endif ?>
+      <form method="post" class="maint-form"<?= $maintOn ? '' : ' onsubmit="return confirm(' . e(json_encode('Turn on maintenance mode? Visitors will see the “Back Soon” page until you turn it off.')) . ')"' ?>>
+        <?= form_keys('maintenance') ?>
+        <label class="field"><span class="lbl">Visitor Message<?= tip('Optional. Shown on the “Back Soon” page.') ?></span>
+          <textarea class="input" name="message" rows="2" maxlength="1000" placeholder="The website is being updated. Please come back in a little while."><?= e($maint['message'] ?? '') ?></textarea>
+        </label>
+        <div class="form-actions">
+          <a class="btn btn-ghost btn-sm" href="/" >View Site</a>
+          <?php if ($maintOn): ?>
+            <button class="btn btn-primary btn-sm" name="state" value="on">Save Message</button>
+            <button class="btn btn-primary btn-sm" name="state" value="off">Turn Off Maintenance Mode</button>
+          <?php else: ?>
+            <button class="btn btn-danger btn-sm" name="state" value="on">Turn On Maintenance Mode</button>
+          <?php endif ?>
+        </div>
+      </form>
+    </section>
+
+    <?php // the same problem many times (a broken page visited again and again) is one row with its count
+      $probs = [];
+      foreach (m3d_problems() as $pr) {
+          $k = $pr['where'] . "\n" . $pr['msg'];
+          if (isset($probs[$k])) { $probs[$k]['n']++; continue; }
+          $probs[$k] = $pr + ['n' => 1];
+      }
+      $probWeek = count(m3d_problems(time() - 7 * 86400));
+      $probTime = fn(int $t) => (new DateTimeImmutable('@' . $t))->setTimezone(new DateTimeZone('Europe/Berlin'))->format('D j M, H:i T'); ?>
+    <section style="margin-top:20px" class="sec" id="problems">
+      <h2 class="small-h">Site Problems <span class="badge tone-<?= $probWeek ? 'red' : 'green' ?>"><?= $probWeek ? m3d_plural($probWeek, 'This Week', 'This Week') : 'None This Week' ?></span><?= tip('Errors on the site: failed Discord posts, failed Patreon logins, failed saves, PHP errors. Newest ' . PROBLEMS_KEEP . ' kept. Only the page address is stored, no visitor data.') ?></h2>
+      <?php if (!$probs): ?>
+        <p class="muted small">Nothing went wrong lately.</p>
+      <?php else: ?>
+        <ul class="probs">
+          <?php foreach (array_slice($probs, 0, 30) as $pr): ?>
+            <li>
+              <span class="prob-when"><?= e($probTime($pr['at'])) ?><?php if ($pr['n'] > 1): ?> <span class="prob-n" title="The same problem, <?= $pr['n'] ?> times (the newest is shown)">× <?= $pr['n'] ?></span><?php endif ?></span>
+              <span class="badge tone-grey"><?= e($pr['where']) ?></span>
+              <span class="prob-msg"><?= e($pr['msg']) ?><?php if ($pr['page'] !== ''): ?> <span class="muted">on <?= e($pr['page']) ?></span><?php endif ?></span>
+            </li>
+          <?php endforeach ?>
+        </ul>
+        <?php if (count($probs) > 30): ?><p class="muted small">And <?= m3d_plural(count($probs) - 30, 'older problem') ?>.</p><?php endif ?>
+        <form method="post" class="form-actions" onsubmit="return confirm('Empty the list of site problems?')"><?= form_keys('problems-clear') ?><button class="btn btn-ghost btn-sm">Clear the List</button></form>
+      <?php endif ?>
     </section>
 
     <section style="margin-top:20px" class="sec" id="tools">
       <h2 class="small-h">Tools</h2>
       <div class="tools">
         <div class="tool">
-          <div><b>PHP cache</b><?= tip('Clear it if a change made with File Manager doesn’t show up.') ?><?php if (!$opcache): ?><p class="muted small">Not active on this server.</p><?php endif ?></div>
-          <?= $action('opcache', 'Clear PHP cache') ?>
+          <div><b>PHP Cache</b><?= tip('Clear it if a change made with File Manager doesn’t show up.') ?><?php if (!$opcache): ?><p class="muted small">Not active on this server.</p><?php endif ?></div>
+          <?= $action('opcache', 'Clear PHP Cache') ?>
         </div>
         <div class="tool">
-          <div><b>Stay logged in</b><?= tip('How long a Patreon login lasts on the site. After that, patrons log in again (one click: Patreon sends them straight back). Ended logins are deleted from the server.') ?></div>
-          <form method="post" class="days-form">
-            <input type="hidden" name="csrf" value="<?= e(m3d_csrf()) ?>" /><input type="hidden" name="do" value="login-days" />
-            <input class="input" type="number" name="login_days" min="1" max="365" step="1" value="<?= $loginDays ?>" aria-label="Days" required /><span class="muted small">days</span>
-            <button class="btn btn-ghost btn-sm">Save</button>
-          </form>
+          <div><b>Active Sessions</b><p class="muted small"><span data-stat="sessions">Counting…</span></p></div>
+          <?= $action('sessions', 'Log Everyone Out', 'Log out all visitors except you?', false, 'sessions') ?>
         </div>
         <div class="tool">
-          <div><b>Logged-in visitors</b><p class="muted small"><?= $sessN ?> other active <?= $sessN === 1 ? 'session' : 'sessions' ?> (<?= human($sessB) ?>).</p></div>
-          <?= $action('sessions', 'Log everyone out', 'Log out all visitors except you?', !$sessN) ?>
+          <div><b>Download Log</b><?= tip('Clearing it resets everyone’s unlocks: limits start from zero.') ?><p class="muted small"><span data-stat="log">Counting…</span> <a href="/admin/log.php?csv=1">Export a copy first</a>.</p></div>
+          <?= $action('log', 'Clear Download Log', 'Delete the whole download log? Every patron\'s download history and unlocks go with it, so their limits start from zero. Export it first if you want to keep a copy.', false, 'log') ?>
         </div>
         <div class="tool">
-          <div><b>Download log</b><?= tip('Clearing it resets everyone’s unlocks: their limits start from zero.') ?><p class="muted small"><?= $logLines ?> entries, kept <?= (int) ($M3D['log_retention_days'] ?? 365) ?> days. <a href="/admin/log.php?csv=1">Export a copy first</a>.</p></div>
-          <?= $action('log', 'Clear download log', 'Delete the whole download log? Every patron\'s download history and unlocks go with it, so their limits start from zero. Export it first if you want to keep a copy.', !$logLines) ?>
-        </div>
-        <div class="tool">
-          <div><b>Backups</b><p class="muted small"><?= human($bkB) ?> of backups.</p></div>
+          <div><b>Backups</b><p class="muted small"><span data-stat="backups">Counting…</span></p></div>
           <a class="btn btn-ghost btn-sm" href="/admin/backups.php">Open Backups</a>
         </div>
         <div class="tool">
-          <div><b>Unused images</b><p class="muted small"><?= m3d_plural($unN, 'image') ?> not used anywhere (<?= human($unB) ?>). <a href="/admin/images.php?unused=1">Review them in Images</a>.</p></div>
-          <?= $action('unused', 'Delete unused images', 'Delete all images that are not used anywhere? This can\'t be undone.', !$unN) ?>
+          <div><b>Unused Images</b><p class="muted small"><span data-stat="unused">Counting…</span> <a href="/admin/images.php?unused=1">Review them in Images</a>.</p></div>
+          <?= $action('unused', 'Delete Unused Images', 'Delete all images and 3D files that are not used anywhere? This can\'t be undone.', false, 'unused') ?>
         </div>
         <div class="tool">
-          <div><b>Temporary files</b><p class="muted small"><?= $tmpN ?> leftovers from interrupted uploads (<?= human($tmpB) ?>).</p></div>
-          <?= $action('temp', 'Delete temporary files', '', !$tmpN) ?>
+          <div><b>Temporary Files</b><p class="muted small"><span data-stat="temp">Counting…</span></p></div>
+          <?= $action('temp', 'Delete Temporary Files', '', false, 'temp') ?>
         </div>
         <div class="tool">
-          <div><b>Cloudflare cache</b><?= tip('If a replaced image still shows the old version, purge it in Cloudflare: Caching → Configuration → Purge Everything.') ?><p class="muted small">For images that still show the old version.</p></div>
+          <div><b>Cloudflare Cache</b><?= tip('If a replaced image still shows the old version: Cloudflare → Caching → Configuration → Purge Everything.') ?><p class="muted small">For images that still show the old version.</p></div>
           <a class="btn btn-ghost btn-sm" href="https://dash.cloudflare.com/" target="_blank" rel="noopener">Open Cloudflare ↗</a>
         </div>
       </div>
@@ -566,8 +797,9 @@ admin_start('Settings', 'settings');
     <section style="margin-top:20px" class="sec" id="system">
       <h2 class="small-h">System</h2>
       <dl class="sysinfo">
-        <?php foreach ($checks as [$k, $v, $ok]): ?><dt><?= e($k) ?></dt><dd class="<?= $ok ? '' : 'res-err' ?>"><?= e($v) ?><?= $ok ? '' : ' ⚠' ?></dd><?php endforeach ?>
+        <?php foreach ($checks as [$k, $v, $ok, $stat]): ?><dt><?= e($k) ?></dt><dd class="<?= $ok ? '' : 'res-err' ?>"<?= $stat ? ' data-stat="' . e($stat) . '"' : '' ?>><?= $stat ? 'Counting…' : e($v) ?><?= $ok ? '' : ' ⚠' ?></dd><?php endforeach ?>
       </dl>
     </section>
+    <?php endif ?>
 
 <?php admin_end();

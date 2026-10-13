@@ -27,7 +27,7 @@ return [
     // Re-checking is invisible to patrons: Patreon sends them straight back.
     'recheck_after' => 12 * 3600,
 
-    // How long patrons stay logged in on the site (seconds); Admin → Settings → Stay logged in overrides it
+    // How long patrons stay logged in on the site (seconds); Admin → Settings → Login Duration overrides it
     'session_lifetime' => 30 * 24 * 3600,
 
     // Write one line per download to logs/downloads.csv (date, Patreon id, name, model)
@@ -48,6 +48,9 @@ return [
 
     // Shown on /contacts/ for website problems (login, broken download links)
     'support_email' => 'privacy@example.com',
+
+    // Where Admin → Settings → Update looks for new versions (GitHub repositories "owner/name"). Leave it out to use the defaults:
+    // 'update_repos' => ['stable' => 'Mustard2/MustardWebsite', 'dev' => 'Mustard2/Website'],
 
     // Shows the raw Patreon answer after login. Use once for setup, then set back to false!
     'debug' => false,

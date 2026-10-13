@@ -8,15 +8,16 @@ header('Cache-Control: public, max-age=3600');
 header('X-Robots-Tag: noindex');
 
 $urls = [];
-foreach (array_merge(['/', '/accessories/'], m3d_mustardui_on() ? ['/mustardui/'] : [], m3d_has_docs() ? ['/docs/'] : [], m3d_has_faq() ? ['/faq/'] : [], ['/contacts/', '/privacy/']) as $path) $urls[$path] = null;
-$open = fn(array $it) => in_array(m3d_visibility($it), ['public', 'blurred', 'blurred-patrons'], true);
+foreach (array_merge(['/', '/accessories/', '/whats-new/'], m3d_mustardui_on() ? ['/mustardui/'] : [], m3d_has_docs() ? ['/docs/'] : [], m3d_has_faq() ? ['/faq/'] : [], m3d_bugs_on() ? ['/bugs/'] : [], ['/contacts/', '/privacy/']) as $path) $urls[$path] = null;
 foreach (['models' => '/models/', 'outfits' => '/accessories/'] as $kind => $base) {
     foreach (m3d_items($kind) as $it) {
-        if (!$open($it)) continue;
-        $ts = m3d_changelog_ts(m3d_latest_version($it)['date']);
+        if (!m3d_is_open($it)) continue;
+        $ts = m3d_changelog_ts(m3d_current_version($it)['date']);
         $urls[$base . $it['slug'] . '/'] = $ts !== null && $ts <= time() ? (new DateTimeImmutable('@' . $ts))->setTimezone(new DateTimeZone('Europe/Berlin'))->format('Y-m-d') : null;
     }
 }
+// the gallery, once a visitor can see one of its pictures
+if (m3d_has_gallery()) $urls['/gallery/'] = null;
 $home = m3d_docs_home();
 foreach (m3d_doc_pages(true) as $pg) if ($pg['slug'] !== $home) $urls['/docs/' . $pg['slug'] . '/'] = null;
 

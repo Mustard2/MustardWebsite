@@ -22,3 +22,8 @@ require_once __DIR__ . '/bootstrap.php';
 require_once __DIR__ . '/social.php';
 require_once __DIR__ . '/view.php';
 require_once __DIR__ . '/images.php';
+require_once __DIR__ . '/discord.php';
+require_once __DIR__ . '/bugs.php';
+require_once __DIR__ . '/gallery.php';
+require_once __DIR__ . '/links.php';
+require_once __DIR__ . '/model3d.php';

@@ -1,0 +1,149 @@
+<?php
+// Admin → Assets → Link check: every download link with the result of its last check (rules in _links.php). Nothing runs by itself:
+// "Check all links" / "Check again" (admin.js, [data-lc]) post {h: md5 of the address} here, one address per request (the automatic check,
+// when switched on in the "Automatic Check" box, is lc_auto_tick() in app/links.php). Only MEGA and transfer.it links by default: other
+// websites are added in the "Other Websites" box (settings.json → linkcheck.sites; its "+ website" buttons post {add: website}).
+require __DIR__ . '/_admin.php';
+
+// ── JSON: check one link ──
+if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST' && str_starts_with((string) ($_SERVER['CONTENT_TYPE'] ?? ''), 'application/json')) {
+    admin_post_guard($M3D);
+    $in = json_decode((string) file_get_contents('php://input'), true);
+    if (is_array($in) && isset($in['add'])) {
+        $d = lc_clean_domain(is_string($in['add']) ? $in['add'] : '');
+        if ($d === '') admin_json(['ok' => false, 'error' => 'Not a website address.'], 400);
+        $list = array_values(array_unique([...lc_sites(), $d]));
+        if (count($list) > LC_SITES_MAX) admin_json(['ok' => false, 'error' => 'At most ' . LC_SITES_MAX . ' websites.'], 400);
+        if (!lc_settings_save(['sites' => $list])) admin_json(['ok' => false, 'error' => m3d_write_error('settings')], 500);
+        admin_json(['ok' => true]);
+    }
+    if (is_array($in) && isset($in['replace'])) {   // Replace a Link Everywhere: {replace: md5 of the old address, to: the new one}
+        $from = array_values(array_filter(lc_all_links(), fn($l) => $l['h'] === $in['replace']));
+        if (!$from) admin_json(['ok' => false, 'error' => 'This link isn’t on the site any more. Reload the page.'], 404);
+        try { $to = clean_url(is_string($in['to'] ?? null) ? $in['to'] : '', false); }
+        catch (InvalidArgumentException) { $to = ''; }
+        if ($to === '') admin_json(['ok' => false, 'error' => 'Write the new address, starting with https://'], 400);
+        if ($to === $from[0]['url']) admin_json(['ok' => false, 'error' => 'That is the same address.'], 400);
+        $n = lc_replace_everywhere($from[0]['url'], $to);
+        if ($n === null) admin_json(['ok' => false, 'error' => 'Not saved: the data files couldn’t be written. Nothing else was changed after that.'], 500);
+        admin_json(['ok' => true, 'n' => $n, 'h' => md5($to), 'listed' => lc_group(lc_host($to)) !== 'other' || lc_site_added($to)]);
+    }
+    $h = is_array($in) && is_string($in['h'] ?? null) ? $in['h'] : '';
+    $same = array_values(array_filter(lc_links(), fn($l) => $l['h'] === $h));   // the same address can be on several items: one check, every row
+    if (!$same) admin_json(['ok' => false, 'error' => 'This link isn’t on the site any more. Reload the page.'], 404);
+    @set_time_limit(60);
+    $res = lc_check($same[0]['url']);
+    lc_save($h, $res);
+    $saved = lc_results()[$h] ?? ($res + ['at' => time()]);
+    admin_json(['ok' => true, 'st' => $res['st'], 'slow' => !empty($res['slow']), 'rows' => array_map(fn($l) => lc_row($l, $saved), $same)]);
+}
+
+admin_require($M3D);
+$done = $error = $open = '';   // $open: the box to show unfolded after its save
+if (admin_form_post('auto-check')) {
+    $open = 'auto';
+    $on = !empty($_POST['auto']);
+    $every = (int) ($_POST['every'] ?? 0);
+    if ($every < 1 || $every > LC_EVERY_MAX) $error = 'Days: a number from 1 to ' . LC_EVERY_MAX . '.';
+    elseif (lc_settings_save(['auto' => $on, 'every' => $every])) {
+        if ($on) lc_set_next(0);   // start at the next page
+        $done = $on ? 'Automatic check on: every ' . m3d_plural($every, 'day') . '.' : 'Automatic check off.';
+    } else $error = m3d_write_error('settings');
+}
+if (admin_form_post('other-sites')) {
+    $open = 'sites';
+    $list = $bad = [];
+    foreach (preg_split('/[\r\n,]+/', (string) ($_POST['sites'] ?? '')) ?: [] as $w) {
+        if (trim($w) === '') continue;
+        ($d = lc_clean_domain($w)) !== '' ? $list[$d] = true : $bad[] = $w;
+    }
+    if ($bad) $error = 'Not a website: ' . implode(', ', array_slice($bad, 0, 5)) . '. Write one per line, like patreon.com.';
+    elseif (count($list) > LC_SITES_MAX) $error = 'At most ' . LC_SITES_MAX . ' websites.';
+    elseif (lc_settings_save(['sites' => array_keys($list)])) $done = $list ? 'Other websites saved.' : 'Only MEGA and transfer.it links are checked now.';
+    else $error = m3d_write_error('settings');
+}
+
+$links = lc_links();
+$res = lc_results();
+$count = ['dead' => 0, 'unknown' => 0, 'ok' => 0, 'new' => 0];
+$groups = ['mega' => 0, 'transfer' => 0, 'other' => 0];
+foreach ($links as $l) {
+    $st = $res[$l['h']]['st'] ?? 'new';
+    $count[isset($count[$st]) ? $st : 'new']++;
+    $groups[lc_group($l['host'])]++;
+}
+$problems = $count['dead'] + $count['unknown'];
+$sites = lc_sites();
+$others = lc_other_sites();
+$auto = lc_auto();
+
+admin_start('Link Check', 'models');
+?>
+    <div class="admin-head">
+      <div>
+        <h1>Link Check</h1>
+      </div>
+      <div class="row-btns"><?php if ($links): ?><span class="muted small lc-progress" data-lc-progress hidden></span><button type="button" class="btn btn-primary" data-lc-all>Check All Links</button><?php endif ?></div>
+    </div>
+    <?= assets_menu('links') ?>
+
+    <?php $rep = (int) m3d_get_text('replaced'); if ($rep > 0 && !$done && !$error) $done = 'Link replaced in ' . m3d_plural($rep, 'place') . '.' . (m3d_get_text('listed') === '0' ? ' Its website isn’t checked here: add it under Other Websites to check it.' : ''); ?>
+    <?php if ($done): ?><p class="notice"><b class="res-ok">✓</b> <?= e($done) ?></p><?php endif ?>
+    <?php if ($error): ?><p class="notice"><b class="res-err">Not saved:</b> <?= e($error) ?></p><?php endif ?>
+
+    <?php if (!$links): ?>
+      <p class="muted"><?= $others ? 'No MEGA or transfer.it links yet. Links on other websites are checked once you add the website below.' : 'No download links yet: they appear here once models, accessories or Gallery pictures have some.' ?></p>
+    <?php else: ?>
+    <div class="stats" data-lc-tiles>
+      <button type="button" class="stat" data-lc-tile="dead"><b data-lc-n="dead"><?= $count['dead'] ?></b><span>Dead</span></button>
+      <button type="button" class="stat" data-lc-tile="unknown"><b data-lc-n="unknown"><?= $count['unknown'] ?></b><span>Couldn’t Check</span></button>
+      <button type="button" class="stat" data-lc-tile="ok"><b data-lc-n="ok"><?= $count['ok'] ?></b><span>Working</span></button>
+      <button type="button" class="stat" data-lc-tile="new"><b data-lc-n="new"><?= $count['new'] ?></b><span>Not Checked Yet</span></button>
+    </div>
+
+    <div class="tot-bar">
+      <span class="tot-kinds" role="group" aria-label="Show">
+        <button type="button" class="chip" data-lc-chip="" aria-pressed="<?= $problems ? 'false' : 'true' ?>">All <span><?= count($links) ?></span></button>
+        <button type="button" class="chip" data-lc-chip="problems" aria-pressed="<?= $problems ? 'true' : 'false' ?>">Problems <span data-lc-n="problems"><?= $problems ?></span></button>
+        <?php foreach (['mega' => 'MEGA', 'transfer' => 'transfer.it', 'other' => 'Other'] as $g => $label): if (!$groups[$g]) continue; ?>
+          <button type="button" class="chip" data-lc-chip="<?= $g ?>" aria-pressed="false"><?= $label ?> <span><?= $groups[$g] ?></span></button>
+        <?php endforeach ?>
+      </span>
+      <label class="batch-search"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg><input class="input" type="search" data-lc-search placeholder="Search name, link, host…" aria-label="Search the links" autocomplete="off" spellcheck="false" /></label>
+    </div>
+
+    <div class="table-wrap">
+      <table class="models-table lc-table" data-lc>
+        <thead><tr><th>Item</th><th>Link</th><th>Host</th><th>Status</th><th>Checked</th><th></th></tr></thead>
+        <tbody>
+          <?php foreach ($links as $l) echo lc_row($l, $res[$l['h']] ?? null); ?>
+          <tr data-lc-empty hidden><td colspan="6" class="muted">Nothing to show.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <?php endif ?>
+
+    <details class="sec fold lc-box"<?= $open === 'auto' ? ' open' : '' ?>>
+      <summary><h2>Automatic Check <?= $auto['on'] ? '<span class="badge tone-green">On · every ' . e(m3d_plural($auto['every'], 'day')) . '</span>' : '<span class="badge tone-grey">Off</span>' ?></h2></summary>
+      <form method="post" class="fold-body">
+        <?= form_keys('auto-check') ?>
+        <label class="toggle"><input type="checkbox" class="switch" name="auto" value="1" <?= $auto['on'] ? 'checked' : '' ?> /><span>Check Links Automatically</span></label>
+        <label class="field lc-every"><span class="lbl">Every (Days)<?= tip('Each link is checked again once its last check is this old. The site checks a few links at a time, after its pages are visited.') ?></span><input class="input" type="number" name="every" min="1" max="<?= LC_EVERY_MAX ?>" value="<?= $auto['every'] ?>" required /></label>
+        <div class="form-actions"><button class="btn btn-primary" type="submit">Save</button></div>
+      </form>
+    </details>
+
+    <details class="sec fold lc-box"<?= $open === 'sites' ? ' open' : '' ?>>
+      <summary><h2>Other Websites <span class="badge tone-grey"><?= $sites ? count($sites) . ' added' : 'Only MEGA and transfer.it' ?></span></h2></summary>
+      <form method="post" class="fold-body">
+        <?= form_keys('other-sites') ?>
+        <?php if ($others): ?>
+          <div class="lc-found"><span class="muted small">In your links:</span>
+            <?php foreach (array_slice($others, 0, 12, true) as $d => $n): ?><button type="button" class="chip" data-lc-add="<?= e($d) ?>" title="Check the <?= e(m3d_plural($n, 'link')) ?> on <?= e($d) ?> too">+ <?= e($d) ?> <span><?= $n ?></span></button><?php endforeach ?>
+          </div>
+        <?php endif ?>
+        <label class="field"><span class="lbl">Websites<?= tip('One per line.') ?></span><textarea class="input" name="sites" rows="4" spellcheck="false" placeholder="drive.google.com"><?= e(implode("\n", $sites)) ?></textarea></label>
+        <div class="form-actions"><button class="btn btn-primary" type="submit">Save</button></div>
+      </form>
+    </details>
+<?php admin_end();

@@ -1,0 +1,54 @@
+# Changelog
+
+## 2026.10.14-3 · 14 Oct 2026
+
+- Update page: new versions come from GitHub, with what changed, and install with one click
+- Update page: Stable and Development update channels (Development needs a GitHub key)
+- GitHub builds the update for every change merged, and "Publish to Stable" sends a tested version to the public repository
+- Fix: the Fixed In field is now a list of the item's versions instead of a text box.
+- Fix: Fixed In can be "Next Version", which turns into the real version as soon as it's added to the changelog.
+- New: "New Version Available" above the list of changes on the Update page
+- Change: Shorter Update page texts (no help tip on Updates from GitHub, only "Last checked …" under the versions)
+- Change: Release notes lines start with New:, Fix: or Change:
+- Change: Stable commits are made by Mustard2
+- Change: Admin → Settings → Update shows the channel with its icon on the right and "Up to Date" as a green check next to the version
+- Change: The update boxes are called "Update from Remote" and "Update from File"
+- Fix: Renaming a model's or accessory's address keeps what patrons unlocked, their My Models and their updates
+- Fix: Two models with the same name deleted on the same day keep separate download histories
+- Fix: The first download on a new site is no longer counted twice
+- Fix: The "limit reached" page says "You Can Download This Now" once an unlock is free again
+- Fix: My account no longer shows the Unlock Limits card to members without a paid tier
+- Fix: After the 18+ check, addresses with brackets (like a search for "(x)") come back to the right page
+- Fix: A heading with text right under it no longer shows as "## Heading"
+- Fix: A code line holding only "0" is no longer blank
+- Fix: ***Bold italic*** text makes correct HTML
+- Fix: A box whose first line is a broken [!TYPE] keeps all its text
+- Fix: A docs heading called "Main" no longer breaks "Skip to content"
+- Fix: No homepage slideshow when every model is behind a password, instead of showing a password model
+- Fix: Esc in the picture viewer always zooms out first, then closes
+- Fix: Catalogs keep the search and the Unlocked filter in the address, so a reload or Back returns to the same page of the same list
+- Fix: "/" no longer opens the header search behind an open viewer
+- Fix: Tabs inside a box inside other tabs no longer break the outer tabs
+- Fix: The catalog pager keeps the keyboard focus
+- Fix: After a pinch zoom on phones, the picture can be moved with the finger still down
+- Fix: In the admin lists, a drag released outside the table ends properly
+- Fix: Pasting several lines into an editor list counts as a change, so leaving warns about unsaved edits
+- Fix: No stray "null" in the Gallery admin's edit panel
+- Fix: Uploads work after logging in again in another tab
+- Fix: Minimum Tier and Total Support accept a decimal comma (7,5)
+- Fix: Docs pages can be moved several steps with the arrow keys
+- Fix: Images → "Make Them Now" shows "Making Them…" while working
+- Fix: Quick reorders in the Gallery admin save one at a time, so the last order wins
+- Fix: Gallery and Getting started fields stop at their save limit instead of being cut silently
+- Fix: "Beta 2" saved with Ctrl+S while still typing is stored as Beta 2
+- Fix: SmutBase import no longer makes a version an Alpha because its note mentions "alpha"
+- Fix: The Downloads item filter works for items whose address is only digits
+- Fix: Models and Accessories lists show "Beta 2" in the Version column, not "2"
+- Fix: Saving texts keeps emoji sequences like 👨‍👩‍👧 whole
+- Fix: Images and Import show "You are logged out" instead of "Failed to fetch"
+- Fix: Site identity's Reset shows only when something differs from the defaults
+- Fix: Maintenance mode's "On since" shows the time zone
+- Fix: When one Discord message of a big save is refused, the other versions are still posted or retried
+- Fix: Models still in development are announced on Discord when they leave development
+- Fix: An admin previewing as a patron no longer marks bug reports as seen
+- New: Admin → Home → Needs a Look says when an update is available
