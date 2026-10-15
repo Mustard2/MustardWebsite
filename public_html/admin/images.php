@@ -7,50 +7,6 @@ admin_require($M3D, isset($_GET['info']) || (($_SERVER['REQUEST_METHOD'] ?? '') 
 
 const BATCH_OPT = 10;
 
-/** The pictures stored on this site that a data value uses: the value itself when it is an address, else the pictures written in
- *  it as text (![caption](/media/…)) and the links to them ([reference sheet](/media/…)). */
-function media_in(mixed $v): array
-{
-    if (!is_string($v) || !str_contains($v, '/media/')) return [];
-    $self = rtrim(abs_url('/'), '/');   // a full address of this site ("https://<site>/media/…") is a picture of this site too
-    if (str_starts_with($v, $self . '/media/')) $v = substr($v, strlen($self));
-    if (str_starts_with($v, '/media/')) return [$v];
-    return preg_match_all('/\]\((?:' . preg_quote($self, '/') . ')?(\/media\/[^\s)]+)\)/', $v, $mm) ? $mm[1] : [];
-}
-
-/** The file of a library picture (or 3D preview file, .glb) that may be deleted, or null: never the site logo / icons (media/site/) or bug report pictures (media/bugs/). */
-function media_deletable(string $url): ?string
-{
-    if (!preg_match('/\.(webp|jpe?g|png|gif|glb)$/i', $url) || preg_match('#^/media/(site|bugs)/#', $url)) return null;
-    $p = media_path($url);
-    return $p && is_file($p) ? $p : null;
-}
-
-/** url => [ editKey => name, ... ] for every image (and 3D file: `model3d`) address used by a model, an outfit, a FAQ answer, a docs page or the gallery. */
-function usage_map(array $models, ?array $outfits = null): array
-{
-    $use = [];
-    foreach ($models as $m) {
-        array_walk_recursive($m, function ($v) use (&$use, $m) {
-            foreach (media_in($v) as $u) $use[$u]['models:' . $m['slug']] = $m['name'] . (($m['generation'] ?? '') !== '' ? ' (Gen ' . $m['generation'] . ')' : '');
-        });
-    }
-    foreach (m3d_texts() as $t) {   // FAQ answers and docs pages
-        foreach (media_in($t['text']) as $u) $use[$u][$t['key']] = $t['name'];
-    }
-    foreach ($outfits ?? m3d_outfits() as $o) {
-        array_walk_recursive($o, function ($v) use (&$use, $o) {
-            foreach (media_in($v) as $u) $use[$u]['outfits:' . $o['slug']] = $o['name'] . ' (' . mb_strtolower(m3d_accessory_type($o)) . ')';
-        });
-    }
-    foreach (media_in(outfits_intro()) as $u) $use[$u]['other:outfits-page'] = 'Accessories Page Text';
-    foreach (m3d_gallery()['stills'] as $st) {
-        $who = trim((string) ($st['caption'] ?? '')) ?: implode(', ', array_column(m3d_still_chars($st), 'name'));
-        $use[$st['src']]['gallery:' . $st['id']] = 'Gallery' . ($who !== '' ? ' (' . $who . ')' : '');
-    }
-    return $use;
-}
-
 function unoptimized(array $models, ?array $outfits = null): array
 {
     $out = [];
@@ -87,6 +43,7 @@ function external_images(): array
     }
     foreach (m3d_texts() as $t) $inText($t['text'], $t['folder']);   // FAQ answers, docs pages
     $inText(outfits_intro(), 'misc');   // Admin → Accessories → Page text
+    $inText(m3d_welcome()['text'], 'misc');   // Settings → Features → Welcome Page
     return $found;
 }
 
@@ -114,6 +71,9 @@ function media_replace(array $map): bool
     $ok = m3d_texts_replace($map) && $ok;
     $intro = (string) (m3d_settings(true)['outfits_intro'] ?? '');   // Admin → Accessories → Page text
     if (($new = replace_everywhere([$intro], $map)[0]) !== $intro) $ok = m3d_save_settings(['outfits_intro' => $new]) && $ok;
+    $welcome = (array) (m3d_settings(true)['welcome'] ?? []);   // Settings → Features → Welcome Page
+    $wt = (string) ($welcome['text'] ?? '');
+    if (($new = replace_everywhere([$wt], $map)[0]) !== $wt) $ok = m3d_save_settings(['welcome' => ['text' => $new] + $welcome]) && $ok;
     return m3d_gallery_replace($map) && $ok;
 }
 
@@ -129,7 +89,7 @@ if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST' && str_starts_with((string) ($
         $versions = img_versions($url);
         $use = usage_map(m3d_models());   // everything that can use a picture; a text may use one of its smaller versions
         $used = [];
-        foreach ([$url, ...$versions] as $v) $used += $use[$v] ?? [];
+        foreach ([$url, img_large($url), ...$versions] as $v) $used += $use[$v] ?? [];   // (the address may be one of the smaller files)
         if ($used) admin_json(['ok' => false, 'error' => 'Still used by ' . implode(', ', $used) . '. Remove it there first.'], 409);
         @unlink($p);
         foreach ($versions as $v) if ($f = media_deletable($v)) @unlink($f);
@@ -184,7 +144,7 @@ if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST' && str_starts_with((string) ($
         $replaced = 0;
         if (!empty($in['replace'])) {
             $map = [$url => $new];
-            foreach (['sm', 'md', 'xs'] as $suf) if (($old = img_variant($url, $suf)) !== '') $map[$old] = img_variant($new, $suf) ?: img_small($new);
+            foreach (['sm', 'md', 'xs'] as $suf) if (($old = img_variant($url, $suf)) !== '') $map[$old] = img_variant($new, $suf) ?: ($suf === 'md' ? $new : img_small($new));   // no new -md: the large one is the closest size
             $replaced = count(usage_map(m3d_models())[$url] ?? []);
             if (!media_replace($map)) admin_json(['ok' => false, 'error' => "The cropped image was saved as $name, but the places using the old one couldn’t be updated."], 500);
         }
@@ -211,39 +171,7 @@ if (admin_form_post('external')) {
     }
     $ran = 'external';
 }
-/** Images (large file + its versions) that nothing uses: no model, outfit, FAQ answer or docs page points to any of them. */
-function unused_images(array $use): array
-{
-    return array_values(array_filter(media_library(), fn($i) => !array_filter([$i['url'], ...$i['versions']], fn($u) => !empty($use[$u]))));
-}
-
-/** 3D preview files (.glb) that no model or accessory uses (left by uploads never saved). */
-function unused_3d(array $use): array
-{
-    return array_values(array_filter(media_3d_files(), fn($g) => empty($use[$g['url']])));
-}
-
-/** "3 images and 1 3D file" (the parts that aren't 0). */
-function unused_words(int $images, int $files3d): string
-{
-    return implode(' and ', array_filter([$images ? m3d_plural($images, 'image') : '', $files3d ? m3d_plural($files3d, '3D file') : ''])) ?: '0 images';
-}
-
-if (admin_form_post('purge')) {
-    $n = 0; $freed = 0;
-    $use = usage_map(m3d_models());
-    foreach (unused_images($use) as $i) {
-        $gone = false;   // counted per image: its large file and its versions together
-        foreach ([$i['url'], ...$i['versions']] as $u) {
-            $f = media_deletable($u);
-            if ($f) { $size = (int) filesize($f); if (@unlink($f)) { $freed += $size; $gone = true; } }
-        }
-        if ($gone) $n++;
-    }
-    $n3 = 0;
-    foreach (unused_3d($use) as $g) if (($f = media_deletable($g['url'])) && @unlink($f)) { $freed += $g['bytes']; $n3++; }
-    $purged = [$n, $freed, $n3];
-}
+if (admin_form_post('purge')) $purged = media_purge_unused();
 if (admin_form_post('optimize')) {
     @set_time_limit(600);
     m3d_session_release();   // converting pictures takes a while: the other pages stay usable meanwhile
@@ -340,10 +268,10 @@ function image_info(string $url, array $use, array $fields, string $folder): arr
     return [
         'name' => $name, 'w' => $dim[0], 'h' => $dim[1],
         'crop' => !str_ends_with(strtolower($name), '.gif'),   // like the card's Crop button: GIFs aren't cropped
-        'size' => human_size((int) @filesize($p)),
+        'size' => m3d_size((int) @filesize($p)),
         'type' => strtoupper(pathinfo($name, PATHINFO_EXTENSION)),
         'folder' => $folder,
-        'added' => (new DateTimeImmutable('@' . (int) @filemtime($p)))->setTimezone(new DateTimeZone('Europe/Berlin'))->format('j M Y, H:i T'),
+        'added' => m3d_berlin((int) @filemtime($p), 'j M Y, H:i T'),
         'vers' => $vers,
         'uses' => $uses,
     ];
@@ -389,7 +317,7 @@ $folderSection = fn(string $folder): string => match (true) {
     isset($modelSlugs[$folder]) => 'models',
     default => 'other',
 };
-// a use ('models:<slug>', 'outfits:<slug>', 'docs:<slug>', 'faq:<n>' / 'faq:intro', 'other:outfits-page') → the group it is listed under
+// a use ('models:<slug>', 'outfits:<slug>', 'docs:<slug>', 'faq:<n>' / 'faq:intro', 'other:outfits-page' / 'other:welcome') → the group it is listed under
 $useGroup = fn(string $key): string => match (explode(':', $key)[0]) { 'models' => explode(':', $key, 2)[1], 'outfits' => 'outfit-' . explode(':', $key, 2)[1], 'gallery' => 'gallery', 'other' => 'misc', default => $key };
 foreach ($items as &$i) {
     $i['section'] = $folderSection($i['folder']);
@@ -456,19 +384,16 @@ admin_start('Images', 'images');
       </div>
     </div>
 
-    <?php if (isset($purged)): ?>
-      <p class="notice"><b class="res-ok">✓</b> <?= $purged[0] || $purged[2] ? 'Deleted ' . unused_words($purged[0], $purged[2]) . ' that weren’t used, ' . human_size($purged[1]) . ' freed.' : 'There were no unused images to delete.' ?></p>
-    <?php endif ?>
+    <?php if (isset($purged)) admin_flash($purged[0] || $purged[2] ? '✓ Deleted ' . unused_words($purged[0], $purged[2]) . ' that weren’t used, ' . m3d_size($purged[1]) . ' freed.' : 'There were no unused images to delete.', $purged[0] || $purged[2] ? 'ok' : 'info') ?>
     <?php if ($unused): ?>
-      <form method="post" class="notice opt-notice" onsubmit="return confirm(<?= e(json_encode('Delete ' . $unusedWhat . ' that aren’t used (' . human_size($unusedBytes) . ')? No model, accessory, FAQ answer, docs page or gallery picture uses them. This can’t be undone.')) ?>)">
-        <span><b><?= e($unusedWhat) ?></b> <?= $unused === 1 ? 'isn’t' : 'aren’t' ?> used anywhere (<?= human_size($unusedBytes) ?>). Tick “Unused Only” in each section to review them first.</span>
+      <form method="post" class="notice opt-notice" onsubmit="return confirm(<?= e(json_encode('Delete ' . $unusedWhat . ' that aren’t used (' . m3d_size($unusedBytes) . ')? No model, accessory, FAQ answer, docs page or gallery picture uses them. This can’t be undone.')) ?>)">
+        <span><b><?= e($unusedWhat) ?></b> <?= $unused === 1 ? 'isn’t' : 'aren’t' ?> used anywhere (<?= m3d_size($unusedBytes) ?>). Tick “Unused Only” in each section to review them first.</span>
         <?= form_keys('purge') ?>
         <button class="btn btn-ghost btn-sm del-btn">Delete All Unused</button>
       </form>
     <?php endif ?>
-    <?php if ($results): $ok = count(array_filter($results, fn($r) => $r[0])); ?>
-      <p class="notice"><b class="res-ok"><?= $ok ?> <?= ['external' => 'copied', 'sizes' => 'resized'][$ran ?? ''] ?? 'optimized' ?></b><?= count($results) - $ok ? ' · <b class="res-err">' . (count($results) - $ok) . ' failed</b>: ' . e(implode('; ', array_map(fn($r) => basename($r[1]) . ' (' . $r[2] . ')', array_filter($results, fn($r) => !$r[0])))) : '' ?></p>
-    <?php endif ?>
+    <?php if ($results) { $ok = count(array_filter($results, fn($r) => $r[0])); $bad = count($results) - $ok;   // any failure: the message stays until closed
+      admin_flash('<b>' . ($bad ? '' : '✓ ') . $ok . ' ' . (['external' => 'copied', 'sizes' => 'resized'][$ran ?? ''] ?? 'optimized') . '</b>' . ($bad ? ' · <b>' . $bad . ' failed</b>: ' . e(implode('; ', array_map(fn($r) => basename($r[1]) . ' (' . $r[2] . ')', array_filter($results, fn($r) => !$r[0])))) : ''), $bad ? 'err' : 'ok'); } ?>
     <?php if ($todoExt): ?>
       <form method="post" class="notice opt-notice">
         <span><b><?= count($todoExt) ?></b> images are loaded from other websites. Copy them here to keep visitors' data private.</span>
@@ -524,7 +449,7 @@ admin_start('Images', 'images');
             <button type="button" class="lib-img m3d-prev" data-v3d aria-label="Preview in 3D" title="Preview in 3D"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2 3 7v10l9 5 9-5V7l-9-5Zm0 2.3L18.7 8 12 11.7 5.3 8 12 4.3ZM5 9.7l6 3.3v6.6l-6-3.3V9.7Zm8 9.9V13l6-3.3v6.6l-6 3.3Z"/></svg></button>
             <figcaption>
               <span class="lib-name" title="<?= e($i['name']) ?>"><?= e($i['name']) ?></span>
-              <span class="muted small lib-meta"><?= human_size($i['bytes']) ?><?php if ($g): ?> · <?= $g['tris'] >= 1000 ? number_format($g['tris'] / 1000) . 'k' : $g['tris'] ?> triangles<?php if (!$g['light']): ?> · <span class="m3d-warn" title="<?= e('May be slow on phones: ' . implode(', ', $g['heavy'])) ?>">Heavy</span><?php endif ?><?php else: ?> · <span class="m3d-bad">Can’t Be Read</span><?php endif ?></span>
+              <span class="muted small lib-meta"><?= m3d_size($i['bytes']) ?><?php if ($g): ?> · <?= $g['tris'] >= 1000 ? number_format($g['tris'] / 1000) . 'k' : $g['tris'] ?> triangles<?php if (!$g['light']): ?> · <span class="m3d-warn" title="<?= e('May be slow on phones: ' . implode(', ', $g['heavy'])) ?>">Heavy</span><?php endif ?><?php else: ?> · <span class="m3d-bad">Can’t Be Read</span><?php endif ?></span>
               <span class="small lib-use" title="<?= e($u ? 'Used by ' . implode(', ', $u) : 'Not used · folder: ' . ($names[$i['group']] ?? $i['group'])) ?>">
                 <?php if ($u): ?>Used by <?= implode(', ', array_map(fn($key, $n) => '<a href="' . e(use_href($key)) . '">' . e($n) . '</a>', array_keys($u), $u)) ?>
                 <?php else: ?><span class="warn-dot">Not Used</span> <span class="muted">· <?= e($names[$i['group']] ?? $i['group']) ?></span><?php endif ?>
@@ -542,7 +467,7 @@ admin_start('Images', 'images');
             <figcaption>
               <span class="lib-name" title="<?= e($i['name']) ?>"><?= e($i['name']) ?></span>
               <!-- same rows on every card: name, size, where it's used (one line each, full text on hover), buttons at the bottom -->
-              <span class="muted small lib-meta"><?= $i['w'] ?>×<?= $i['h'] ?> · <?= human_size($i['bytes']) ?></span>
+              <span class="muted small lib-meta"><?= $i['w'] ?>×<?= $i['h'] ?> · <?= m3d_size($i['bytes']) ?></span>
               <span class="small lib-use" title="<?= e($u ? 'Used by ' . implode(', ', $u) : 'Not used · folder: ' . ($names[$i['group']] ?? $i['group'])) ?>">
                 <?php if ($u): ?>Used by <?= implode(', ', array_map(fn($key, $n) => '<a href="' . e(use_href($key)) . '">' . e($n) . '</a>', array_keys($u), $u)) ?>
                 <?php else: ?><span class="warn-dot">Not Used</span> <span class="muted">· <?= e($names[$i['group']] ?? $i['group']) ?></span><?php endif ?>

@@ -1,9 +1,45 @@
 <?php
-// Admin → Assets → Link check: every download link with the result of its last check (rules in _links.php). Nothing runs by itself:
+// Admin → Assets → Link check: every download link with the result of its last check (the checks are in app/links.php). Nothing runs by itself:
 // "Check all links" / "Check again" (admin.js, [data-lc]) post {h: md5 of the address} here, one address per request (the automatic check,
 // when switched on in the "Automatic Check" box, is lc_auto_tick() in app/links.php). Only MEGA and transfer.it links by default: other
 // websites are added in the "Other Websites" box (settings.json → linkcheck.sites; its "+ website" buttons post {add: website}).
 require __DIR__ . '/_admin.php';
+
+// ── The table's rows ──
+/** "Today 20:15 CEST", "Yesterday 09:02 CEST", "Mon 5 Oct, 09:02 CEST" (Berlin time), or "Never". */
+function lc_when(?int $t): string
+{
+    if (!$t) return 'Never';
+    $tz = new DateTimeZone('Europe/Berlin');
+    $d = (new DateTimeImmutable('@' . $t))->setTimezone($tz);
+    $today = new DateTimeImmutable('today', $tz);
+    if ($d >= $today) return 'Today ' . $d->format('H:i T');
+    if ($d >= $today->modify('-1 day')) return 'Yesterday ' . $d->format('H:i T');
+    return $d->format('D j M, H:i T');
+}
+
+/** One row of the Link check table. */
+function lc_row(array $l, ?array $r): string
+{
+    $st = in_array($r['st'] ?? '', LC_STATES, true) ? $r['st'] : 'new';
+    $badge = match ($st) {
+        'ok'      => '<span class="badge tone-green">✓ Works</span>',
+        'dead'    => '<span class="badge tone-red">✗ Dead</span>',
+        'unknown' => '<span class="badge tone-amber">? Couldn’t Check</span>',
+        default   => '<span class="badge tone-grey">Not Checked</span>',
+    };
+    $why = (string) ($r['why'] ?? '');
+    $search = admin_search_text([$l['name'], $l['sub'], $l['label'], $l['host'], $l['url'], $why]);
+    return '<tr data-lc-row="' . e($l['h']) . '" data-url="' . e($l['url']) . '" data-st="' . $st . '" data-group="' . lc_group($l['host']) . '" data-search="' . e($search) . '"' . ($st === 'dead' ? ' class="is-dead"' : '') . '>'
+        . '<td><a class="m-name" href="' . e($l['edit']) . '">' . e($l['name']) . '</a><div class="muted small">' . e($l['sub']) . '</div></td>'
+        . '<td>' . e($l['label']) . '<div class="muted small">' . e($l['access']) . '</div></td>'
+        . '<td class="lc-host"><a href="' . e((m3d_s4_on() ? m3d_s4_presign($l['url'], 'GET', 3600) : null) ?? (m3d_s4_resolve($l['url']) ?: '#')) . '" target="_blank" rel="noopener noreferrer" title="' . e($l['url']) . '">' . e($l['host']) . ' ↗</a></td>'
+        . '<td class="lc-st">' . $badge . ($why !== '' ? '<div class="lc-why">' . e($why) . '</div>' : '') . '</td>'
+        . '<td class="small muted lc-at">' . e(lc_when(isset($r['at']) ? (int) $r['at'] : null)) . '</td>'
+        . '<td class="c-actions">' . ($st === 'dead' ? '<button type="button" class="btn btn-ghost btn-sm" data-lc-replace>Replace…</button>' : '')
+        . '<button type="button" class="btn btn-ghost btn-sm" data-lc-one>Check Again</button>'
+        . '<a class="btn btn-ghost btn-sm" href="' . e($l['edit']) . '">Edit</a></td></tr>';
+}
 
 // ── JSON: check one link ──
 if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST' && str_starts_with((string) ($_SERVER['CONTENT_TYPE'] ?? ''), 'application/json')) {
@@ -20,7 +56,7 @@ if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST' && str_starts_with((string) ($
     if (is_array($in) && isset($in['replace'])) {   // Replace a Link Everywhere: {replace: md5 of the old address, to: the new one}
         $from = array_values(array_filter(lc_all_links(), fn($l) => $l['h'] === $in['replace']));
         if (!$from) admin_json(['ok' => false, 'error' => 'This link isn’t on the site any more. Reload the page.'], 404);
-        try { $to = clean_url(is_string($in['to'] ?? null) ? $in['to'] : '', false); }
+        try { $to = clean_dl_url(is_string($in['to'] ?? null) ? $in['to'] : ''); }
         catch (InvalidArgumentException) { $to = ''; }
         if ($to === '') admin_json(['ok' => false, 'error' => 'Write the new address, starting with https://'], 400);
         if ($to === $from[0]['url']) admin_json(['ok' => false, 'error' => 'That is the same address.'], 400);
@@ -88,8 +124,7 @@ admin_start('Link Check', 'models');
     <?= assets_menu('links') ?>
 
     <?php $rep = (int) m3d_get_text('replaced'); if ($rep > 0 && !$done && !$error) $done = 'Link replaced in ' . m3d_plural($rep, 'place') . '.' . (m3d_get_text('listed') === '0' ? ' Its website isn’t checked here: add it under Other Websites to check it.' : ''); ?>
-    <?php if ($done): ?><p class="notice"><b class="res-ok">✓</b> <?= e($done) ?></p><?php endif ?>
-    <?php if ($error): ?><p class="notice"><b class="res-err">Not saved:</b> <?= e($error) ?></p><?php endif ?>
+    <?php admin_result($done, $error) ?>
 
     <?php if (!$links): ?>
       <p class="muted"><?= $others ? 'No MEGA or transfer.it links yet. Links on other websites are checked once you add the website below.' : 'No download links yet: they appear here once models, accessories or Gallery pictures have some.' ?></p>

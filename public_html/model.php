@@ -3,7 +3,7 @@
 require __DIR__ . '/app/_init.php';
 
 $slug = m3d_get_text('slug');
-$d = preg_match('/^[a-z0-9-]{1,64}$/', $slug) ? m3d_model($slug) : null;
+$d = m3d_model($slug);
 if (!$d) not_found();
 item_gate('models', $d);
 $blur = m3d_pics_hidden('models', $d);   // blurred pictures: tiny copies only, no gallery viewer

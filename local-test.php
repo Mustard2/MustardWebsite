@@ -13,7 +13,7 @@ $root = __DIR__ . '/public_html';
 //   /__local/login?as=logout   back to a visitor
 if ($path === '/__local/login') {
     require $root . '/app/_init.php';
-    m3d_start_session($M3D);
+    m3d_start_session();
     $as = (string) ($_GET['as'] ?? 'owner');
     $owner = (string) (m3d_owner_ids($M3D)[0] ?? '');
     if ($as === 'owner' && $owner === '') {   // a fresh copy: become its owner, then the setup's last step (the basics)
@@ -56,6 +56,7 @@ if (preg_match('#^/docs/([a-z0-9-]+)/?$#', $path, $m)) return $route('docs.php',
 if (preg_match('#^/faq/?$#', $path)) return $route('faq.php');
 if (preg_match('#^/search/?$#', $path)) return $route('search.php');
 if (preg_match('#^/whats-new/?$#', $path)) return $route('whats-new.php');
+if (preg_match('#^/welcome/?$#', $path)) return $route('welcome.php');
 if (preg_match('#^/bugs/?$#', $path)) return $route('bugs.php');
 if (preg_match('#^/bugs/report/?$#', $path)) return $route('bugs.php', ['report' => '1']);
 if (preg_match('#^/bugs/([0-9]+)/?$#', $path, $m)) return $route('bugs.php', ['n' => $m[1]]);
@@ -68,7 +69,6 @@ if (preg_match('#^/gallery/?$#', $path)) return $route('gallery.php');
 if (preg_match('#^/get/still/([a-f0-9]{8})/?$#', $path, $m)) return $route('auth/get-still.php', ['id' => $m[1]]);
 if (preg_match('#^/get/outfit/([a-z0-9-]+)/([0-9]+)/?$#', $path, $m)) return $route('auth/get.php', ['type' => 'outfit', 'model' => $m[1], 'n' => $m[2]]);
 if (preg_match('#^/get/([a-z0-9-]+)/([0-9]+)/?$#', $path, $m)) return $route('auth/get.php', ['model' => $m[1], 'n' => $m[2]]);
-if (preg_match('#^/get/([a-z0-9-]+)/?$#', $path, $m)) return $route('auth/get.php', ['model' => $m[1]]);
 if (preg_match('#(^|/)\.(?!well-known/)#', $path) || preg_match('#\.(upd|upd-old|tmp)-[0-9a-f]+$#', $path) || preg_match('#(\.(bak|backup|old|orig|save|swp|swo|sql|sqlite|db|log|ini|zip|tar|gz|tgz|7z|rar)|~)$#i', $path)) { http_response_code(403); echo 'Forbidden'; return true; }   // like the scanner rules in .htaccess
 if (preg_match('#^/(app|private)/#', $path) || preg_match('#^/admin/_#', $path) || basename($path) === '.htaccess') { http_response_code(403); echo 'Forbidden'; return true; }   // like app/.htaccess, admin/.htaccess (_ files) and the server's .htaccess rule
 if ($path === '/admin' ) { header('Location: /admin/'); return true; }

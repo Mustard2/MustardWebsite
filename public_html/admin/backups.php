@@ -6,7 +6,7 @@ require __DIR__ . '/_admin.php';
 require_once __DIR__ . '/_backup.php';
 admin_require($M3D);
 
-const DATA_LABELS = ['models' => 'Models', 'outfits' => 'Accessories', 'faq' => 'FAQ', 'docs' => 'Docs', 'settings' => 'Settings', 'links' => 'Old Mega Links'];
+const DATA_LABELS = ['models' => 'Models', 'outfits' => 'Accessories', 'faq' => 'FAQ', 'docs' => 'Docs', 'settings' => 'Settings'];
 const PART_LABELS = ['code' => 'Code', 'content' => 'Content', 'counters' => 'Download Counts & Likes', 'bugs' => 'Bug Reports', 'log' => 'Download Log', 'media' => 'Images'];
 
 // ── Download ─────────────────────────────────────────────────────────────────
@@ -35,7 +35,7 @@ if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST') {
             case 'create':
                 if (!class_exists('ZipArchive')) throw new RuntimeException('Zip support is missing on this server.');
                 $name = backup_full('manual', !empty($_POST['media']), clean_text($_POST['note'] ?? '', 60));
-                $done = 'Backup created: ' . $name . ' (' . human_size((int) filesize(bk_dir() . "/$name")) . ').';
+                $done = 'Backup created: ' . $name . ' (' . m3d_size((int) filesize(bk_dir() . "/$name")) . ').';
                 break;
             case 'upload':
                 $f = $_FILES['zip'] ?? null;
@@ -106,7 +106,7 @@ foreach (glob(bk_dir() . '/full-*.zip') ?: [] as $p) {
     preg_match('/^full-(\d{8}-\d{6})-([a-z]+(?:-restore)?)(?:-(.*))?\.zip$/', basename($p), $mm);
     $full[] = ['file' => basename($p), 'time' => strtotime((string) ($m['created'] ?? '')) ?: filemtime($p), 'bytes' => (int) filesize($p),
         'kind' => $m['kind'] ?? ($mm[2] ?? 'manual'), 'note' => (string) ($m['note'] ?? ''), 'version' => (string) ($m['version'] ?? ''),
-        'parts' => $m['parts'] ?? [], 'uploaded' => str_ends_with(basename($p), '-uploaded.zip'), 'ok' => (bool) $m,
+        'parts' => $m['parts'] ?? [], 'uploaded' => (bool) preg_match('/^full-\d{8}-\d{6}-uploaded\.zip$/', basename($p)), 'ok' => (bool) $m,
         'bugs' => $m && in_array('data', $m['parts'] ?? [], true) && backup_has($p, 'data/bugs.json')];
 }
 usort($full, fn($a, $b) => $b['time'] <=> $a['time']);
@@ -120,13 +120,14 @@ usort($code, fn($a, $b) => $b['time'] <=> $a['time']);
 const BK_KINDS = ['manual' => ['green', 'Manual'], 'auto' => ['sky', 'Weekly (Automatic)'], 'before-restore' => ['grey', 'Before a Restore'],
                   'uploaded' => ['grey', 'Uploaded'], 'update' => ['violet', 'Before an Update']];
 $all = [];
-foreach ($full as $b) $all[] = $b + ['type' => 'full', 'kind' => $b['uploaded'] ? 'uploaded' : $b['kind'],
+foreach ($full as $b) $all[] = ['kind' => $b['uploaded'] ? 'uploaded' : $b['kind']] + $b + ['type' => 'full',
     'has' => array_values(array_filter(array_map(fn($p) => ['code' => 'Code', 'data' => 'Content, Counts & Likes', 'log' => 'Download Log', 'media' => 'Images'][$p] ?? null, $b['parts'])))];
 foreach ($code as $b) $all[] = $b + ['type' => 'code', 'kind' => 'update', 'note' => '', 'parts' => ['code'], 'ok' => true, 'bugs' => false, 'has' => ['Code']];
 usort($all, fn($a, $b) => $b['time'] <=> $a['time']);
 $history = data_history();
-$mediaBytes = array_sum(array_map('filesize', media_files()));
-$when = fn(int $t) => (new DateTimeImmutable('@' . $t))->setTimezone(new DateTimeZone('Europe/Berlin'))->format('d/m/Y H:i');
+$media = media_files();   // walked once: the count and size of "Include Images"
+$mediaBytes = array_sum(array_map('filesize', $media));
+$when = fn(int $t) => m3d_berlin($t, 'd/m/Y H:i');
 // the calendar: backups by day (German time, CET/CEST), and every month from the newest backup back to the oldest (newest first)
 $berlin = new DateTimeZone('Europe/Berlin');
 $day = fn(int $t) => (new DateTimeImmutable('@' . $t))->setTimezone($berlin)->format('Y-m-d');
@@ -156,13 +157,9 @@ $dayTitle = function (array $list): string {
     return count($list) . ' ' . (count($list) === 1 ? 'backup' : 'backups') . ': ' . implode(', ', array_map(fn($l, $c) => "$c $l", array_keys($n), $n));
 };
 
-$post = function (string $do, string $file, string $label, string $confirm, string $cls = 'btn btn-ghost btn-sm', array $extra = []): string {
-    $h = '<form method="post" class="inline" onsubmit="return confirm(' . e(json_encode($confirm)) . ')">'
-        . form_keys($do)
-        . '<input type="hidden" name="file" value="' . e($file) . '" />';
-    foreach ($extra as $k => $v) $h .= '<input type="hidden" name="' . e($k) . '" value="' . e($v) . '" />';
-    return $h . '<button class="' . e($cls) . '">' . e($label) . '</button></form>';
-};
+$post = fn(string $do, string $file, string $label, string $confirm): string =>
+    '<form method="post" class="inline" onsubmit="return confirm(' . e(json_encode($confirm)) . ')">' . form_keys($do)
+    . '<input type="hidden" name="file" value="' . e($file) . '" /><button class="btn btn-ghost btn-sm">' . e($label) . '</button></form>';
 $dl = fn(string $file) => '<a class="btn btn-ghost btn-sm" href="/admin/backups.php?download=' . e(rawurlencode($file)) . '">Download</a>';
 $del = fn(string $file) => '<form method="post" class="inline" onsubmit="return confirm(\'Delete this backup for good?\')">' . form_keys('delete') . '<input type="hidden" name="file" value="' . e($file) . '" /><button class="icon-btn del" title="Delete" aria-label="Delete">✕</button></form>';
 
@@ -174,15 +171,14 @@ admin_start('Backups', 'backups');
       </div>
     </div>
 
-    <?php if ($done): ?><p class="notice"><b class="res-ok">✓</b> <?= e($done) ?></p><?php endif ?>
-    <?php if ($error): ?><p class="notice"><b class="res-err"><?= $partial ? 'Partly restored:' : 'Nothing was changed:' ?></b> <?= e($error) ?></p><?php endif ?>
+    <?php admin_result($done, $error, $partial ? 'Partly restored:' : 'Nothing was changed:') ?>
 
     <section class="sec">
       <h2 class="small-h">Create a Backup<?= tip('Code, content, counts, likes and the download log. Your Patreon keys (config.php) are never included.') ?></h2>
       <form method="post" class="bk-create">
         <?= form_keys('create') ?>
         <input class="input" type="text" name="note" maxlength="60" placeholder="Note (optional), e.g. before moving to the new host" aria-label="Note" />
-        <label class="field check"><input type="checkbox" name="media" value="1" /><span class="lbl">Include Images (<?= count(media_files()) ?> files, <?= human_size((int) $mediaBytes) ?>)</span></label>
+        <label class="field check"><input type="checkbox" name="media" value="1" /><span class="lbl">Include Images (<?= count($media) ?> files, <?= m3d_size((int) $mediaBytes) ?>)</span></label>
         <button class="btn btn-primary btn-sm" onclick="this.textContent='Creating…'">Create Backup</button>
       </form>
       <details class="bk-upload">
@@ -243,7 +239,7 @@ admin_start('Backups', 'backups');
                     <span class="bk-tags">
                       <?php foreach ($b['has'] as $h): ?><span class="bk-tag<?= $h === 'Images' ? ' bk-tag-img' : '' ?>"><?= e($h) ?></span><?php endforeach ?>
                     </span>
-                    <span class="muted small"><?= $b['version'] !== '' ? 'v' . e($b['version']) . ' · ' : '' ?><?= human_size($b['bytes']) ?></span>
+                    <span class="muted small"><?= $b['version'] !== '' ? 'v' . e($b['version']) . ' · ' : '' ?><?= m3d_size($b['bytes']) ?></span>
                     <?php if ($b['note'] !== ''): ?><span class="bk-note small">“<?= e($b['note']) ?>”</span><?php endif ?>
                   </div>
                   <div class="row-btns">
@@ -283,7 +279,7 @@ admin_start('Backups', 'backups');
           <summary><b><?= e(DATA_LABELS[$name] ?? ucfirst($name)) ?></b> <span class="muted small"><?= count($list) ?> <?= count($list) === 1 ? 'version' : 'versions' ?> · latest saved <?= e($when($list[0]['time'])) ?></span></summary>
           <?php foreach ($list as $v): ?>
             <div class="bk-row bk-row-sm">
-              <div class="bk-main"><span><?= e($when($v['time'])) ?></span><span class="muted small"><?= e(data_summary($name, bk_dir() . '/' . $v['file'])) ?> · <?= human_size($v['bytes']) ?></span></div>
+              <div class="bk-main"><span><?= e($when($v['time'])) ?></span><span class="muted small"><?= e(data_summary($name, bk_dir() . '/' . $v['file'])) ?> · <?= m3d_size($v['bytes']) ?></span></div>
               <div class="row-btns">
                 <?= $dl($v['file']) ?>
                 <?= $post('restore-data', $v['file'], 'Restore', 'Put ' . (DATA_LABELS[$name] ?? $name) . ' back as it was on ' . $when($v['time']) . '? The current version is kept in this history.') ?>

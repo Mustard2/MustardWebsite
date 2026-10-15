@@ -42,11 +42,13 @@ $boxes = [
     'homepage'    => ['Homepage Section', 'plans how to get tiers'],
     'notice'      => ['Site Notice', 'banner announcement message'],
     'legal'       => ['Legal & Contact', 'privacy imprint address support email'],
+    'welcome'     => ['Welcome Page', 'first login tour new patrons onboarding landing intro'],
     'bugs'        => ['Bug Reports (Settings)', 'bugs webhook uploads moderation blender mustardui versions'],
     'discord'     => ['Discord Announcements', 'webhook post new versions renders gallery message'],
+    's4'          => ['MEGA S4 Downloads', 'object storage bucket signed temporary download links keys'],
     'mustardui'   => ['MustardUI Page', 'add-on addon'],
     'smutbase'    => ['SmutBase Import (Setting)', 'import'],
-    'patreon'     => ['Patreon', 'client id secret campaign currency keys'],
+    'patreon'     => ['Patreon', 'client id secret campaign currency keys creator access refresh token pledge history months as a patron'],
     'logins'      => ['Logins', 'session days log out'],
     'maintenance' => ['Maintenance Mode', 'back soon offline'],
     'problems'    => ['Site Problems', 'errors log failed broken'],
@@ -56,9 +58,8 @@ $boxes = [
 foreach ($boxes as $id => [$t, $s]) $add($t, 'Settings', settings_url($id), $s);
 
 foreach (m3d_models() as $m) {
-    $major = !empty($m['majorVersion']) && m3d_model_versions($m) ? ' v' . (int) $m['majorVersion'] : '';
     $gen = ($m['generation'] ?? '') !== '' ? 'Gen ' . $m['generation'] : '';
-    $add($m['name'] . $major, 'Model', '/admin/edit.php?slug=' . rawurlencode($m['slug']), '',
+    $add(m3d_model_name($m), 'Model', '/admin/edit.php?slug=' . rawurlencode($m['slug']), '',
         implode(' · ', array_filter([(string) ($m['franchise'] ?? ''), $gen, $vis($m)])), item_pic('models', $m));
 }
 $names = array_column(m3d_models(), 'name', 'slug');
@@ -72,8 +73,6 @@ foreach (m3d_doc_pages() as $p) {
         implode(' · ', array_filter([(string) ($p['section'] ?? ''), !empty($p['draft']) ? 'Draft' : ''])));
 }
 if (m3d_bugs_on()) {
-    $bugs = m3d_bugs();
-    usort($bugs, fn($a, $b) => (int) $b['n'] <=> (int) $a['n']);
-    foreach (array_slice($bugs, 0, 300) as $b) $add('#' . (int) $b['n'] . ' ' . (string) ($b['title'] ?? ''), 'Bug Report', '/bugs/' . (int) $b['n'] . '/', '', (string) ($b['about_name'] ?? ''));
+    foreach (array_slice(m3d_bugs(), 0, 300) as $b) $add('#' . (int) $b['n'] . ' ' . (string) ($b['title'] ?? ''), 'Bug Report', '/bugs/' . (int) $b['n'] . '/', '', (string) ($b['about_name'] ?? ''));
 }
 admin_json(['ok' => true, 'items' => $out]);

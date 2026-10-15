@@ -6,14 +6,14 @@ require __DIR__ . '/_admin.php';
 require_once dirname(__DIR__) . '/app/version.php';
 admin_require($M3D);
 
-// Features that are only switched on or off (settings.json → <key>.on): title, its help, switch label (+ help), link shown while on, messages
+// Features that are only switched on or off (settings.json → <key>.on): title, its help, switch label, link shown while on, messages (on, off)
 const FEATURE_SWITCHES = [
     'mustardui' => ['MustardUI', 'Ready-made page about MustardUI, the free Blender add-on: features, download, guides and bug reports. Turn on if your models use it.',
-        'Enable MustardUI Page', '',
+        'Enable MustardUI Page',
         ['/mustardui/', 'View the Page ↗', true],
         'The MustardUI page is on: it is in the menu and the footer.', 'The MustardUI page is off: no menu item, and /mustardui/ shows “not found”.'],
     'smutbase'  => ['SmutBase Import', 'Imports the models of a SmutBase profile as draft models (texts, changelog, pictures). Only useful if you publish on SmutBase.',
-        'Enable SmutBase Import', '',
+        'Enable SmutBase Import',
         ['/admin/import.php', 'Open the Import', false],
         'SmutBase import is on: the button is on Admin → Models.', 'SmutBase import is off.'],
 ];
@@ -66,31 +66,10 @@ function temp_files(?array $media = null): array
     );
 }
 
-/** Images in media/ not used by any model, outfit, FAQ or docs page or the gallery (large + small files), and 3D preview files (.glb) no item uses. */
-function unused_images(?array $media = null): array
-{
-    $used = [];
-    $all = json_encode([m3d_models(), m3d_outfits(), m3d_faq(), m3d_docs(), m3d_gallery(true), outfits_intro()], JSON_UNESCAPED_SLASHES);
-    preg_match_all('#/media/[A-Za-z0-9/_.-]+#', (string) $all, $mm);
-    foreach ($mm[0] as $u) { $used[$u] = $used[img_large($u)] = true; foreach (img_versions($u) as $v) $used[$v] = true; }   // a text using only "-sm" keeps the large file too
-    return array_values(array_filter($media ?? media_all(), function ($f) use ($used) {
-        if (!preg_match('/\.(webp|jpe?g|png|gif|glb)$/i', basename($f))) return false;
-        $url = '/media/' . str_replace('\\', '/', substr($f, strlen(M3D_SITE . '/media') + 1));
-        $large = img_large($url);
-        return !str_starts_with($url, '/media/site/') && !str_starts_with($url, '/media/bugs/') && !isset($used[$url]) && !isset($used[$large]);   // media/site: the logo (Site identity); media/bugs: pictures of bug reports
-    }));
-}
-
-/** Number of images in a list of media files: an image's large file and its versions ("-sm", "-md", "-xs") count once. */
-function image_count(array $files): int
-{
-    $root = strlen(M3D_SITE);
-    return count(array_unique(array_map(fn($f) => img_large(str_replace('\\', '/', substr((string) $f, $root))), $files)));
-}
-
 // ── Actions ──────────────────────────────────────────────────────────────────
 $done = null;
 $error = null;
+$s4Test = null;   // "Save and Test" of MEGA S4: m3d_s4_probe()'s answer
 if (admin_form_post()) {
     $del = function (array $files): int { $n = 0; foreach ($files as $f) if (@unlink($f)) $n++; return $n; };
     // saves some settings: $msg when it worked, else the "could not write" error; true when saved
@@ -118,12 +97,9 @@ if (admin_form_post()) {
         case 'log':
             $done = m3d_log_clear() ? 'Download log cleared.' : 'The download log was already empty.';
             break;
-        case 'unused':
-            $files = array_filter(unused_images(), 'is_file');
-            $n3 = count(array_filter($files, fn($f) => str_ends_with(strtolower((string) $f), '.glb')));
-            $n = image_count($files) - $n3;
-            $del($files);
-            $done = $n || $n3 ? implode(' and ', array_filter([$n ? m3d_plural($n, 'image') : '', $n3 ? m3d_plural($n3, '3D file') : ''])) . ' that weren’t used deleted.' : 'There were no unused images to delete.';
+        case 'unused':   // the same as Images → "Delete all unused"
+            [$n, , $n3] = media_purge_unused();
+            $done = $n || $n3 ? unused_words($n, $n3) . ' that weren’t used deleted.' : 'There were no unused images to delete.';
             break;
         case 'temp':
             $done = $del(temp_files()) . ' temporary files deleted.';
@@ -209,28 +185,47 @@ if (admin_form_post()) {
             try {
                 $saved = m3d_patreon_saved();
                 $in = fn(string $k) => trim((string) ($_POST['pt_' . $k] ?? ''));
-                $new = ['client_id' => $in('client_id'), 'redirect_uri' => $in('redirect_uri'), 'campaign_id' => $in('campaign_id')];
-                // the secret is never sent back to the page: an empty field keeps the saved one
-                $new['client_secret'] = $in('client_secret') !== '' ? $in('client_secret') : (string) ($saved['client_secret'] ?? '');
+                // an empty field keeps the saved value: secrets are never sent back to the page, and a login with an empty
+                // Client ID, campaign or redirect address fails for everyone, the owner too (nobody could log in to fix it)
+                $new = [];
+                foreach (['client_id', 'redirect_uri', 'campaign_id', 'client_secret', 'creator_token', 'creator_refresh'] as $k) $new[$k] = $in($k) !== '' ? $in($k) : (string) ($saved[$k] ?? '');
+                if ($new['redirect_uri'] === '') $new['redirect_uri'] = abs_url('/auth/callback.php');   // the address the field suggests
                 foreach (['client_id' => 'Client ID', 'client_secret' => 'Client secret'] as $k => $label) {
                     if ($new[$k] !== '' && !preg_match('/^[A-Za-z0-9_\-]{10,200}$/', $new[$k])) throw new InvalidArgumentException("The $label doesn’t look right: copy it again from your Patreon client page (letters, numbers, - and _ only).");
+                }
+                foreach (['creator_token' => 'Creator’s Access Token', 'creator_refresh' => 'Creator’s Refresh Token'] as $k => $label) {
+                    if ($new[$k] !== '' && !preg_match('/^[A-Za-z0-9_\-.]{10,400}$/', $new[$k])) throw new InvalidArgumentException("The $label doesn’t look right: copy it again from your Patreon client page.");
                 }
                 if ($new['redirect_uri'] !== '' && (!preg_match('#^https?://[^\s<>"]+/auth/callback\.php$#i', $new['redirect_uri']) || !filter_var($new['redirect_uri'], FILTER_VALIDATE_URL))) {
                     throw new InvalidArgumentException('The redirect address must be this site’s address followed by /auth/callback.php, e.g. ' . abs_url('/auth/callback.php'));
                 }
                 if ($new['campaign_id'] !== '' && !ctype_digit($new['campaign_id'])) throw new InvalidArgumentException('The campaign ID is a number (digits only).');
-                // what equals config.php isn't stored, so config.php keeps counting for it
-                $cfg = require M3D_PRIVATE . '/config.php';
-                $store = array_filter($new, fn($v, $k) => $v !== '' && $v !== (string) ($cfg[$k] ?? ''), ARRAY_FILTER_USE_BOTH);
-                if (!m3d_patreon_save($store)) throw new RuntimeException('Could not write ' . basename(M3D_PRIVATE) . '/patreon.php. Check that the ' . basename(M3D_PRIVATE) . ' folder is writable.');
-                $done = 'Patreon keys saved. Test the login in a private window before you log out here: if it fails, fix the keys or use “Use config.php”.';
+                if (!m3d_patreon_save($new)) throw new RuntimeException('Could not write ' . basename(M3D_PRIVATE) . '/patreon.php. Check that the ' . basename(M3D_PRIVATE) . ' folder is writable.');
+                $done = 'Patreon keys saved. Test the login in a private window before you log out here: if it fails, fix the keys.';
             } catch (InvalidArgumentException | RuntimeException $ex) {
                 $error = $ex->getMessage();
+                break;
             }
-            break;
-        case 'patreon-reset':
-            $done = m3d_patreon_save([]) ? 'The Patreon keys saved here are deleted: the values of config.php count again.' : null;
-            if (!$done) $error = 'Could not delete ' . basename(M3D_PRIVATE) . '/patreon.php.';
+            // a creator token just pasted: try it on the campaign's first members (free followers too, who have no pledge history)
+            if ($in('creator_token') === '' && $in('creator_refresh') === '') break;
+            $cid = $new['campaign_id'] !== '' ? $new['campaign_id'] : (string) ($M3D['campaign_id'] ?? '');
+            $r = m3d_session_pause(fn() => m3d_creator_get(M3D_PATREON . '/api/oauth2/v2/campaigns/' . rawurlencode($cid) . '/members?' . http_build_query([
+                'include' => 'pledge_history', 'fields[member]' => 'patron_status', 'fields[pledge-event]' => 'type,date', 'page[count]' => 100,
+            ]), 20));
+            $failed = fn(string $msg) => admin_flash('<b>Creator token test failed:</b> ' . e($msg), 'err');   // the keys are saved either way
+            if ($r['status'] === 200 && is_array($r['json'])) {
+                $paying = $withHistory = 0;
+                foreach ($r['json']['data'] ?? [] as $m) {
+                    if (($m['attributes']['patron_status'] ?? '') !== 'active_patron') continue;
+                    $paying++;
+                    if (!empty($m['relationships']['pledge_history']['data'])) $withHistory++;
+                }
+                if ($withHistory > 0) $done = 'Patreon keys saved. Creator token tested: Patreon sent the pledge history of ' . $withHistory . ' of the ' . m3d_plural($paying, 'paying patron') . ' checked, so a patron who came back counts from their new pledge.';
+                elseif ($paying > 0) $failed('Patreon sent no pledge history for the ' . m3d_plural($paying, 'paying patron') . ' checked. Months as a patron keep counting from Patreon’s start date.');
+                else admin_flash('Patreon accepted the creator token, but none of the first ' . m3d_plural(count($r['json']['data'] ?? []), 'member') . ' is a paying patron, so the pledge history couldn’t be checked.', 'info');
+            } else {
+                $failed('Patreon answered HTTP ' . $r['status'] . ($r['status'] === 401 ? ' (it refused the token: copy both creator tokens again)' : ' ' . ($r['json']['errors'][0]['detail'] ?? $r['error'])) . '.');
+            }
             break;
         case 'plans':
             $one = fn(string $k, int $max) => clean_line($_POST[$k] ?? '', $max);
@@ -278,6 +273,66 @@ if (admin_form_post()) {
                 else $error = $res['error'];
             }
             break;
+        case 's4':
+        case 's4-test':
+            // MEGA S4 downloads (app/s4.php): keys in private/s4.php; the secret is never sent back to the page (empty field = keep it)
+            $cur = m3d_s4();
+            $s4 = [
+                'on' => !empty($_POST['s4_on']),
+                'key' => trim((string) ($_POST['s4_key'] ?? '')),
+                'secret' => trim((string) ($_POST['s4_secret'] ?? '')) ?: $cur['secret'],
+                'minutes' => (int) ($_POST['s4_life'] ?? 0) * (($_POST['s4_unit'] ?? '') === 'hours' ? 60 : 1),
+                'region' => $cur['region'],
+                'bucket' => m3d_s4_bucket_clean((string) ($_POST['s4_bucket'] ?? '')),
+                'test' => trim((string) ($_POST['s4_test'] ?? '')),
+            ];
+            // the test file: a file name in the bucket ("model.zip"), a short s4: link or a full address
+            if ($s4['test'] !== '' && !preg_match('#^(https?:|s4:)#i', $s4['test'])) $s4['test'] = 's4:' . ltrim($s4['test'], '/');
+            if ($s4['key'] === '' && trim((string) ($_POST['s4_secret'] ?? '')) === '' && $cur['key'] === '') { $error = 'Paste the access key ID and the secret key.'; break; }
+            if (!preg_match('/^[A-Za-z0-9]{8,128}$/', $s4['key'])) { $error = 'The access key ID doesn’t look right: copy it again from MEGA (letters and numbers only).'; break; }
+            if ($s4['secret'] === '') { $error = 'Paste the secret key.'; break; }
+            if ($s4['minutes'] < S4_MINUTES_MIN || $s4['minutes'] > S4_MINUTES_MAX) { $error = 'Link lifetime: from ' . S4_MINUTES_MIN . ' minutes to ' . intdiv(S4_MINUTES_MAX, 60) . ' hours (7 days).'; break; }
+            if (!preg_match('#^[\x21-\x7e]{16,200}$#', $s4['secret'])) { $error = 'The secret key doesn’t look right: copy it again from MEGA (no spaces).'; break; }
+            if (trim((string) ($_POST['s4_bucket'] ?? '')) !== '' && $s4['bucket'] === '') { $error = 'The bucket address isn’t an S4 address. It looks like https://s3.g.megas4.com/your-bucket/'; break; }
+            if ($s4['test'] !== '' && !m3d_s4_parse($s4['test'], $s4['bucket'])) {
+                $error = m3d_s4_short($s4['test']) ? 'Fill in the Bucket Address, or write the test file’s full address.' : 'The test file isn’t an S4 file address. It looks like https://s3.g.megas4.com/your-bucket/file.zip'; break;
+            }
+            if ($_POST['do'] === 's4-test') {
+                if ($s4['test'] === '' && $s4['bucket'] === '') { $error = 'Fill in the Bucket Address, then test again.'; break; }
+                // the region the signature names: S4 doesn't tie a bucket to one, so the saved one first, then the others;
+                // any answer but a refused signature means the keys and the region work (a missing file too).
+                // No test file: the bucket's list, then the first byte of its first file (reading and listing both checked)
+                $regions = array_values(array_unique(array_merge([$s4['region']], S4_REGIONS)));
+                $refused = ['SignatureDoesNotMatch', 'AuthorizationHeaderMalformed', 'AuthorizationQueryParametersError', 'InvalidRequest'];
+                $s4Test = m3d_session_pause(function () use ($regions, $refused, &$s4) {
+                    foreach ($regions as $rg) {
+                        if ($s4['test'] !== '') {
+                            $r = m3d_s4_probe($s4['test'], $rg, $s4);
+                            if ($r['code'] !== 0 && in_array($r['err'], $refused, true)) continue;
+                            $s4['region'] = $rg;
+                            return ['file' => $s4['test'], 'err' => $r['ok'] ? '' : ($r['code'] === 0 ? 'S4 didn’t answer (' . $r['err'] . ')' : m3d_s4_error_text($r['err']))] + $r;
+                        }
+                        $l = m3d_s4_list('', $s4, $rg, 1);
+                        if ($l['code'] !== '' && in_array($l['code'], $refused, true)) continue;
+                        $s4['region'] = $rg;
+                        if (!$l['ok']) return ['ok' => false, 'err' => $l['err']];
+                        $first = $l['files'][0]['key'] ?? '';
+                        $t = ['ok' => true, 'size' => 0, 'err' => '', 'file' => $first !== '' ? 's4:' . $first : '',
+                              'list' => count($l['files']) . ($l['more'] ? '+' : '') . ' ' . (count($l['files']) === 1 ? 'file' : 'files') . ($l['folders'] ? ', ' . m3d_plural(count($l['folders']), 'folder') : '')];
+                        if ($first === '') return $t;
+                        $r = m3d_s4_probe($t['file'], $rg, $s4);
+                        return $r['ok'] ? ['size' => $r['size']] + $t : ['ok' => false, 'err' => 'The list works, but reading ' . $first . ' failed: ' . ($r['code'] === 0 ? 'S4 didn’t answer (' . $r['err'] . ')' : m3d_s4_error_text($r['err']))];
+                    }
+                    return ['ok' => false, 'err' => m3d_s4_error_text('SignatureDoesNotMatch')];
+                });
+            }
+            if (!m3d_s4_save($s4)) { $error = 'Could not write ' . basename(M3D_PRIVATE) . '/s4.php. Check that the ' . basename(M3D_PRIVATE) . ' folder is writable.'; $s4Test = null; break; }
+            $done = $_POST['do'] === 's4-test' ? null : ($s4['on'] ? 'S4 downloads on: download links to S4 files get a temporary address.' : 'S4 downloads off: S4 is hidden everywhere else and "s4:" links don’t download; the keys and bucket stay saved here.');
+            break;
+        case 's4-remove':
+            $done = m3d_s4_save([]) ? 'S4 keys removed: S4 links are no longer signed (they won’t download while the bucket is private).' : null;
+            if (!$done) $error = 'Could not delete ' . basename(M3D_PRIVATE) . '/s4.php.';
+            break;
         case 'bugs':
             $hook = trim((string) ($_POST['bugs_webhook'] ?? ''));
             $host = trim((string) ($_POST['bugs_host'] ?? ''));
@@ -299,11 +354,25 @@ if (admin_form_post()) {
             if (m3d_bug_settings_save(['blocked' => array_values(array_diff($blocked, [$id]))])) $done = 'Unblocked: they can post bug reports again.';
             else $error = m3d_write_error();
             break;
+        case 'welcome':
+            $old = m3d_welcome();
+            $on = !empty($_POST['welcome_on']);
+            $txt = fn(string $k) => is_string($_POST[$k] ?? null) ? str_replace("\r", '', $_POST[$k]) : '';
+            $save(['welcome' => ['on' => $on, 'skip_old' => !empty($_POST['welcome_skip_old']),
+                'text' => trim(mb_substr($txt('welcome_text'), 0, WELCOME_TEXT_MAX)),
+                'start' => trim(mb_substr(preg_replace('/\s+/u', ' ', $txt('welcome_start')), 0, WELCOME_START_MAX)),
+                'since' => $on && !$old['on'] ? time() : $old['since']]],   // switched on now: patrons who downloaded before count as old
+                $on ? 'Welcome page is on: new patrons see it after their first login.' : 'Welcome page is off.');
+            break;
+        case 'welcome-reset':
+            if (m3d_welcome_reset()) $done = 'Everyone will see the welcome page again after their next login.';
+            else $error = m3d_write_error();
+            break;
         case 'smutbase':
         case 'mustardui':
             $k = $_POST['do'];
             $on = !empty($_POST[$k . '_on']);
-            $save([$k => ['on' => $on]], FEATURE_SWITCHES[$k][$on ? 5 : 6]);
+            $save([$k => ['on' => $on]], FEATURE_SWITCHES[$k][$on ? 4 : 5]);
             break;
         case 'currency':
             $c = strtoupper((string) ($_POST['currency'] ?? ''));
@@ -343,23 +412,23 @@ if (isset($_GET['tools'])) {
             [, $bkB] = files_stats(glob(M3D_PRIVATE . '/backups/*') ?: []);
             $free = function_exists('disk_free_space') ? @disk_free_space(M3D_SITE) : false;
             $out = [
-                'sessions' => ['text' => $sessN . ' other active ' . ($sessN === 1 ? 'session' : 'sessions') . ' (' . human_size($sessB) . ').', 'n' => $sessN],
+                'sessions' => ['text' => $sessN . ' other active ' . ($sessN === 1 ? 'session' : 'sessions') . ' (' . m3d_size($sessB) . ').', 'n' => $sessN],
                 'log' => ['text' => $logLines . ' entries, kept ' . (int) ($M3D['log_retention_days'] ?? 365) . ' days.', 'n' => $logLines],
-                'backups' => ['text' => human_size($bkB) . ' of backups.'],
-                'disk' => ['text' => $free ? human_size((int) $free) : 'unknown'],
+                'backups' => ['text' => m3d_size($bkB) . ' of backups.'],
+                'disk' => ['text' => $free ? m3d_size((int) $free) : 'unknown'],
             ];
         } elseif ($part === 'media') {
             $media = media_all();
-            $unFiles = unused_images($media);
-            [, $unB] = files_stats($unFiles);
-            $un3 = count(array_filter($unFiles, fn($f) => str_ends_with(strtolower((string) $f), '.glb')));
-            $unN = image_count($unFiles) - $un3;
+            $use = usage_map(m3d_models());   // the same count as the Images page
+            $unImg = unused_images($use);
+            $un3d = unused_3d($use);
+            [$unN, $un3, $unB] = [count($unImg), count($un3d), array_sum(array_column($unImg, 'bytes')) + array_sum(array_column($un3d, 'bytes'))];
             [$tmpN, $tmpB] = files_stats(array_unique(temp_files($media)));
             [$medN, $medB] = files_stats($media);
             $out = [
-                'unused' => ['text' => (implode(' and ', array_filter([$unN ? m3d_plural($unN, 'image') : '', $un3 ? m3d_plural($un3, '3D file') : ''])) ?: '0 images') . ' not used anywhere (' . human_size($unB) . ').', 'n' => $unN + $un3],
-                'temp' => ['text' => $tmpN . ' leftovers from interrupted uploads (' . human_size($tmpB) . ').', 'n' => $tmpN],
-                'media' => ['text' => $medN . ' files, ' . human_size($medB)],
+                'unused' => ['text' => unused_words($unN, $un3) . ' not used anywhere (' . m3d_size($unB) . ').', 'n' => $unN + $un3],
+                'temp' => ['text' => $tmpN . ' leftovers from interrupted uploads (' . m3d_size($tmpB) . ').', 'n' => $tmpN],
+                'media' => ['text' => $medN . ' files, ' . m3d_size($medB)],
             ];
         }
         ob_end_clean();
@@ -385,10 +454,10 @@ $checks = [
 ];
 
 // $stat: the button waits for that count (?tools=…) and stays off when it is 0
-$action = function (string $do, string $label, string $confirm = '', bool $disabled = false, string $stat = ''): string {
+$action = function (string $do, string $label, string $confirm = '', string $stat = ''): string {
     return '<form method="post"' . ($confirm ? ' onsubmit="return confirm(' . e(json_encode($confirm)) . ')"' : '') . '>'
         . form_keys($do)
-        . '<button class="btn btn-ghost btn-sm"' . ($stat !== '' ? ' data-stat-btn="' . e($stat) . '"' : '') . ($disabled || $stat !== '' ? ' disabled' : '') . '>' . e($label) . '</button></form>';
+        . '<button class="btn btn-ghost btn-sm"' . ($stat !== '' ? ' data-stat-btn="' . e($stat) . '"' : '') . ($stat !== '' ? ' disabled' : '') . '>' . e($label) . '</button></form>';
 };
 
 $social = m3d_social();
@@ -406,8 +475,7 @@ admin_start('Settings', 'settings');
     </div>
     <?= settings_menu($tab) ?>
 
-    <?php if ($done): ?><p class="notice"><b class="res-ok">✓</b> <?= e($done) ?></p><?php endif ?>
-    <?php if ($error): ?><p class="notice"><b class="res-err">Not saved:</b> <?= e($error) ?></p><?php endif ?>
+    <?php admin_result($done, $error) ?>
 
     <?php if ($tab === 'site'): ?>
     <?php $id = m3d_identity(); $idChanged = array_intersect_key($id, IDENTITY_DEFAULTS) != IDENTITY_DEFAULTS;   // saved values equal to the defaults: nothing to reset ?>
@@ -558,7 +626,7 @@ admin_start('Settings', 'settings');
           <label class="field"><span class="lbl">Full Name</span><input class="input" name="legal_name" value="<?= e($lg['name']) ?>" maxlength="120" /></label>
           <label class="field"><span class="lbl">Privacy Email<?= tip('Shown on the privacy page.') ?></span><input class="input" type="email" name="legal_email" value="<?= e($lg['email']) ?>" maxlength="120" /></label>
           <label class="field id-wide"><span class="lbl">Postal Address</span><textarea class="input" name="legal_address" rows="3" maxlength="300"><?= e($lg['address']) ?></textarea></label>
-          <label class="field id-wide"><span class="lbl">Support Email<?= tip('Shown on the Contacts page for website problems.') ?></span><input class="input" type="email" name="support_email" value="<?= e(m3d_support_email()) ?>" maxlength="120" /></label>
+          <label class="field id-wide"><span class="lbl">Support Email<?= tip('Shown on the Contacts page for legal matters about the website’s content.') ?></span><input class="input" type="email" name="support_email" value="<?= e(m3d_support_email()) ?>" maxlength="120" /></label>
         </div>
         <div class="form-actions"><a class="btn btn-ghost btn-sm" href="/privacy/" target="_blank">View the Privacy Page ↗</a><button class="btn btn-primary btn-sm">Save</button></div>
       </form>
@@ -567,10 +635,10 @@ admin_start('Settings', 'settings');
     <?php endif ?>
 
     <?php if ($tab === 'patreon'): ?>
-    <?php $cfg = require M3D_PRIVATE . '/config.php'; $ptSaved = m3d_patreon_saved(); $pt = array_merge($cfg, $ptSaved);
+    <?php $pt = m3d_patreon_saved();
           $ptVal = fn(string $k) => (string) ($pt[$k] ?? '');
-          $ptReal = fn(string $k) => $ptVal($k) !== '' && !str_starts_with($ptVal($k), 'PASTE_') && $ptVal($k) !== '0000000' && !str_contains($ptVal($k), 'xyz.xy');
-          $ptFrom = fn(string $k) => isset($ptSaved[$k]) ? '<span class="badge tone-green">Saved Here</span>' : ($ptReal($k) ? '<span class="badge tone-grey">From config.php</span>' : '<span class="badge tone-red">Missing</span>');
+          $ptReal = fn(string $k) => m3d_cfg_real($ptVal($k));
+          $ptFrom = fn(string $k) => $ptReal($k) ? '' : '<span class="badge tone-red">Missing</span>';
           $callback = abs_url('/auth/callback.php'); ?>
     <section class="sec" id="patreon">
       <h2 class="small-h">Patreon</h2>
@@ -581,6 +649,10 @@ admin_start('Settings', 'settings');
             <input class="input" name="pt_client_id" value="<?= e($ptReal('client_id') ? $ptVal('client_id') : '') ?>" spellcheck="false" autocomplete="off" /></label>
           <label class="field"><span class="lbl">Client Secret <?= $ptFrom('client_secret') ?><?= tip('Same page, “Client Secret”. Never shown again: leave empty to keep the current one.') ?></span>
             <input class="input" type="password" name="pt_client_secret" value="" placeholder="<?= $ptReal('client_secret') ? '•••••••• (leave empty to keep it)' : 'Paste the client secret' ?>" spellcheck="false" autocomplete="new-password" /></label>
+          <?php foreach (['creator_token' => 'Creator’s Access Token', 'creator_refresh' => 'Creator’s Refresh Token'] as $k => $label): $has = !empty($pt[$k]); ?>
+          <label class="field"><span class="lbl"><?= e($label) ?><?= tip('Same page, “' . $label . '”. Never shown again: leave empty to keep the current one.') ?></span>
+            <input class="input" type="password" name="pt_<?= $k ?>" value="" placeholder="<?= $has ? '•••••••• (leave empty to keep it)' : 'Paste the ' . e(mb_strtolower($label)) ?>" spellcheck="false" autocomplete="new-password" /></label>
+          <?php endforeach ?>
           <label class="field id-wide"><span class="lbl">Redirect URI <?= $ptFrom('redirect_uri') ?><?= tip('Must match one of your Patreon client’s “Redirect URIs” exactly.') ?></span>
             <span class="pt-row"><input class="input" name="pt_redirect_uri" value="<?= e($ptReal('redirect_uri') ? $ptVal('redirect_uri') : '') ?>" placeholder="<?= e($callback) ?>" spellcheck="false" data-pt-redirect />
               <?php if ($ptVal('redirect_uri') !== $callback): ?><button type="button" class="btn btn-ghost btn-sm" data-pt-use="<?= e($callback) ?>" title="<?= e($callback) ?>">Use This Site’s Address</button><?php endif ?></span></label>
@@ -588,15 +660,9 @@ admin_start('Settings', 'settings');
             <input class="input" name="pt_campaign_id" value="<?= e($ptReal('campaign_id') ? $ptVal('campaign_id') : '') ?>" inputmode="numeric" spellcheck="false" /></label>
         </div>
         <div class="form-actions">
-          <?php if ($ptSaved): ?><button class="btn btn-ghost btn-sm" form="patreon-reset" title="Delete the keys saved here and use the ones in config.php again">Use config.php</button><?php endif ?>
           <button class="btn btn-primary btn-sm">Save Patreon Keys</button>
         </div>
       </form>
-      <?php if ($ptSaved): ?>
-        <form method="post" id="patreon-reset" hidden onsubmit="return confirm('Delete the keys saved here and use the ones in config.php again?')">
-          <?= form_keys('patreon-reset') ?>
-        </form>
-      <?php endif ?>
       <form method="post" class="cur-form pt-cur">
         <?= form_keys('currency') ?>
         <label class="field"><span class="lbl">Campaign Currency<?= tip('Used for “total support” requirements. Set automatically at patron login.') ?></span>
@@ -621,8 +687,30 @@ admin_start('Settings', 'settings');
     <?php endif ?>
 
     <?php if ($tab === 'features'): ?>
+    <?php $wl = m3d_welcome(); ?>
+    <section class="sec" id="welcome">
+      <h2 class="small-h">Welcome Page <span class="badge tone-<?= $wl['on'] ? 'green' : 'grey' ?>"><?= $wl['on'] ? 'On' : 'Off' ?></span><?= tip('A page that shows new patrons around the site, once, right after their first login: how downloads and unlocks work (from your rules), updates and help. Then it sends them where they were going.') ?></h2>
+      <form method="post" class="set-list">
+        <?= form_keys('welcome') ?>
+        <label class="toggle"><input type="checkbox" class="switch" name="welcome_on" value="1" <?= $wl['on'] ? 'checked' : '' ?> /><span>Show After the First Login<?= tip('Paying patrons and people with a Bypass Tier exception. Admins never get it. Patrons can open it again from My Account.') ?></span></label>
+        <label class="toggle"><input type="checkbox" class="switch" name="welcome_skip_old" value="1" <?= $wl['skip_old'] ? 'checked' : '' ?> /><span>Skip Patrons Who Downloaded Before<?= tip('People with a download from before you turned the page on don’t get it.') ?></span></label>
+        <label class="field"><span class="lbl">Intro Text<?= tip('Under the title. Empty = “Thanks for supporting ' . site_name() . ' on Patreon. Here’s a quick tour, so you know where everything is.”') ?></span>
+          <textarea class="input" name="welcome_text" rows="3" maxlength="<?= WELCOME_TEXT_MAX ?>" placeholder="<?= e(m3d_welcome_text()) ?>"><?= e($wl['text']) ?></textarea></label>
+        <label class="field"><span class="lbl">Before Your First Download<?= tip('The line next to the Getting Started links of Admin → Models. The box shows only while there are links.') ?></span>
+          <input class="input" name="welcome_start" maxlength="<?= WELCOME_START_MAX ?>" value="<?= e($wl['start']) ?>" placeholder="Most models need a recent Blender. Start here:" /></label>
+        <div class="form-actions">
+          <button class="btn btn-ghost btn-sm act-left" form="welcome-reset">Show Again to Everyone</button>
+          <a class="btn btn-ghost btn-sm" href="/welcome/" target="_blank">Preview ↗</a>
+          <button class="btn btn-primary btn-sm">Save</button>
+        </div>
+      </form>
+      <form method="post" id="welcome-reset" hidden onsubmit="return confirm('Show the welcome page again to every patron, the next time they log in? Patrons who saw it already will see it once more.')">
+        <?= form_keys('welcome-reset') ?>
+      </form>
+    </section>
+
     <?php $bs = m3d_bug_settings(); ?>
-    <section class="sec" id="bugs">
+    <section style="margin-top:20px" class="sec" id="bugs">
       <h2 class="small-h">Bug Reports <span class="badge tone-<?= $bs['on'] ? 'green' : 'grey' ?>"><?= $bs['on'] ? 'On' : 'Off' ?></span></h2>
       <form method="post" autocomplete="off" class="set-list" data-bugs-form>
         <?= form_keys('bugs') ?>
@@ -689,7 +777,7 @@ admin_start('Settings', 'settings');
           </div>
         </div>
         <div class="form-actions">
-          <?php if ($l = $dc['last']): $at = (new DateTimeImmutable((string) ($l['at'] ?? 'now')))->setTimezone(new DateTimeZone('Europe/Berlin'))->format('j M Y, H:i T'); ?>
+          <?php if ($l = $dc['last']): $at = m3d_berlin((string) ($l['at'] ?? ''), 'j M Y, H:i T'); ?>
             <p class="act-left dc-last small muted">Last post, <?= e($at) ?>: <?= !empty($l['ok']) ? '<b class="res-ok">✓</b> ' . e((string) ($l['what'] ?? '')) : '<b class="res-err">failed</b> (' . e((string) ($l['what'] ?? '')) . '): ' . e((string) ($l['error'] ?? '')) . (empty($l['stills']) ? ' It will be tried again the next time you save it.' : ' Pictures are tried again ' . intdiv(DISCORD_STILLS_DELAY, 60) . ' minutes later, ' . DISCORD_STILLS_TRIES . ' times at most.') ?></p>
           <?php endif ?>
           <button class="btn btn-ghost btn-sm" name="do" value="discord-test">Save and Send a Test Message</button><button class="btn btn-primary btn-sm" name="do" value="discord">Save</button>
@@ -697,12 +785,57 @@ admin_start('Settings', 'settings');
       </form>
     </section>
 
-    <?php foreach (FEATURE_SWITCHES as $k => [$title, $help, $label, $labelHelp, [$href, $linkText, $newTab]]): $on = $k === 'mustardui' ? m3d_mustardui_on() : m3d_smutbase_on(); ?>
+    <?php $s4 = m3d_s4(); $s4On = m3d_s4_on(); $s4Keys = m3d_s4_keys(); ?>
+    <section style="margin-top:20px" class="sec" id="s4">
+      <h2 class="small-h">MEGA S4 Downloads <span class="badge tone-<?= $s4On ? 'green' : 'grey' ?>"><?= $s4On ? 'On' : 'Off' ?></span><?= tip('Download links to files in a MEGA S4 bucket (https://s3.….megas4.com/bucket/file) send each download to a temporary address, so an address copied from the browser or shared stops working after the time below. Needs a MEGA plan with S4 (object storage) and an S4 access key. Other links don’t change.') ?></h2>
+      <form method="post" autocomplete="off">
+        <?= form_keys() ?>
+        <button class="dc-enter" name="do" value="s4" tabindex="-1" aria-hidden="true"></button><?php /* Enter in a field = Save */ ?>
+        <label class="toggle s4-switch"><input type="checkbox" class="switch" name="s4_on" value="1" <?= $s4['on'] ? 'checked' : '' ?> /><span>Use S4 Downloads<?= tip('Off: S4 is gone from the site (no S4… button in the editors, no S4 checks in Link Check) and “s4:” links don’t download. The keys and bucket stay saved here for later.') ?></span></label>
+        <div class="id-grid">
+          <label class="field"><span class="lbl">Access Key ID<?= tip('In MEGA, open Object Storage (S4) → Access Keys and create a key. Paste its access key ID here.') ?></span>
+            <input class="input" name="s4_key" value="<?= e($s4['key']) ?>" maxlength="128" spellcheck="false" autocomplete="off" /></label>
+          <label class="field"><span class="lbl">Secret Key<?= tip('Shown by MEGA when you create the key. Never shown again here: leave empty to keep the current one.') ?></span>
+            <input class="input" type="password" name="s4_secret" value="" maxlength="200" placeholder="<?= $s4['secret'] !== '' ? '•••••••• (leave empty to keep it)' : 'Paste the secret key' ?>" spellcheck="false" autocomplete="new-password" /></label>
+          <?php $inHours = $s4['minutes'] % 60 === 0; ?>
+          <div class="field"><label class="lbl" for="s4-life">Link Lifetime<?= tip('How long a download address works after the patron starts the download. A download already running finishes; resuming it later needs a new click. From ' . S4_MINUTES_MIN . ' minutes to 7 days.') ?></label>
+            <div class="s4-life"><input class="input" id="s4-life" type="number" name="s4_life" min="1" max="<?= S4_MINUTES_MAX ?>" step="1" value="<?= $inHours ? intdiv($s4['minutes'], 60) : $s4['minutes'] ?>" />
+              <select class="input" name="s4_unit" aria-label="Unit"><option value="minutes"<?= $inHours ? '' : ' selected' ?>>Minutes</option><option value="hours"<?= $inHours ? ' selected' : '' ?>>Hours</option></select></div></div>
+          <label class="field"><span class="lbl">Bucket Address<?= tip('Your bucket, e.g. https://s3.g.megas4.com/your-bucket/ (MEGA’s Object URL of any file in it works too). Then a download link only needs “s4:” and the file name: s4:model.zip, or s4:folder/file.zip.') ?></span>
+            <input class="input" type="url" name="s4_bucket" value="<?= e($s4['bucket']) ?>" maxlength="1000" placeholder="https://s3.g.megas4.com/your-bucket/" spellcheck="false" /></label>
+        </div>
+        <?php $s4TestVal = m3d_s4_short($s4['test']) ? ltrim(substr($s4['test'], 3), '/') : $s4['test']; ?>
+        <details class="s4-more"<?= $s4TestVal !== '' ? ' open' : '' ?>>
+          <summary>Test a Specific File</summary>
+          <label class="field"><span class="lbl">Test File<?= tip('Optional. Without it, “Save and Test” lists the bucket and reads the first byte of its first file. With it, only this file is read: its name (model.zip) or its full address.') ?></span>
+            <input class="input" name="s4_test" value="<?= e($s4TestVal) ?>" maxlength="1000" placeholder="model.zip" spellcheck="false" /></label>
+        </details>
+        <div class="form-actions">
+          <?php if ($s4Test !== null): ?>
+            <p class="act-left dc-last small"><?php if ($s4Test['ok']): $tf = (string) ($s4Test['file'] ?? ''); $tp = $tf !== '' ? m3d_s4_parse($tf) : null; $try = $tp ? m3d_s4_presign($tf) : null; ?>
+              <b class="res-ok">✓ Works:</b> <?= isset($s4Test['list']) ? 'bucket ' . e((string) (m3d_s4_parse($s4['bucket'] . 'x')[1] ?? '')) . ', ' . e($s4Test['list']) . ($tp ? ' · ' : '') : '' ?><?= $tp ? e(basename((string) $tp[2])) : '' ?><?= $tp && $s4['bucket'] !== '' && !isset($s4Test['list']) ? ' · in a download link: <code>s4:' . e((string) $tp[2]) . '</code>' : '' ?><?= ($s4Test['size'] ?? 0) > 0 ? ' · ' . e(m3d_size((int) $s4Test['size'])) : '' ?>.
+              <?php if ($try): ?><a href="<?= e($try) ?>" target="_blank" rel="noopener noreferrer">Try the Download ↗</a> <span class="muted">(this address stops working in <?= e(m3d_s4_lifetime($s4['minutes'])) ?>)</span><?php endif ?>
+            <?php else: ?>
+              <b class="res-err">✗ Test failed:</b> <?= e(rtrim((string) $s4Test['err'], '.')) ?>.
+            <?php endif ?></p>
+          <?php endif ?>
+          <?php if ($s4Keys): ?><button class="btn btn-ghost btn-sm" form="s4-remove">Remove Keys</button><?php endif ?>
+          <button class="btn btn-ghost btn-sm" name="do" value="s4-test">Save and Test</button><button class="btn btn-primary btn-sm" name="do" value="s4">Save</button>
+        </div>
+      </form>
+      <?php if ($s4Keys): ?>
+        <form method="post" id="s4-remove" hidden onsubmit="return confirm('Remove the S4 keys? Links to S4 files stop downloading while your bucket is private.')">
+          <?= form_keys('s4-remove') ?>
+        </form>
+      <?php endif ?>
+    </section>
+
+    <?php foreach (FEATURE_SWITCHES as $k => [$title, $help, $label, [$href, $linkText, $newTab]]): $on = !empty(m3d_settings()[$k]['on']); ?>
     <section style="margin-top:20px" class="sec" id="<?= $k ?>">
       <h2 class="small-h"><?= e($title) ?> <span class="badge tone-<?= $on ? 'green' : 'grey' ?>"><?= $on ? 'On' : 'Off' ?></span><?= tip($help) ?></h2>
       <form method="post">
         <?= form_keys($k) ?>
-        <label class="toggle"><input type="checkbox" class="switch" name="<?= $k ?>_on" value="1" <?= $on ? 'checked' : '' ?> /><span><?= e($label) ?><?= $labelHelp !== '' ? tip($labelHelp) : '' ?></span></label>
+        <label class="toggle"><input type="checkbox" class="switch" name="<?= $k ?>_on" value="1" <?= $on ? 'checked' : '' ?> /><span><?= e($label) ?></span></label>
         <div class="form-actions"><?php if ($on): ?><a class="btn btn-ghost btn-sm" href="<?= $href ?>"<?= $newTab ? ' target="_blank"' : '' ?>><?= e($linkText) ?></a><?php endif ?><button class="btn btn-primary btn-sm">Save</button></div>
       </form>
     </section>
@@ -714,7 +847,7 @@ admin_start('Settings', 'settings');
     <?php $maint = m3d_settings()['maintenance'] ?? []; $maintOn = !empty($maint['on']); ?>
     <section class="sec maint-sec<?= $maintOn ? ' is-on' : '' ?>" id="maintenance">
       <h2 class="small-h">Maintenance Mode <span class="badge tone-<?= $maintOn ? 'red' : 'grey' ?>"><?= $maintOn ? 'On' : 'Off' ?></span><?= tip('Visitors see a “Back Soon” page and can’t download. Admins can still log in and use the site.') ?></h2>
-      <?php if ($maintOn && !empty($maint['since']) && ($d = date_create_immutable($maint['since']))): ?><p class="muted small sec-hint">On since <?= e($d->setTimezone(new DateTimeZone('Europe/Berlin'))->format('j F Y, H:i T')) ?>.</p><?php endif ?>
+      <?php if ($maintOn && ($since = m3d_berlin((string) ($maint['since'] ?? ''), 'j F Y, H:i T')) !== ''): ?><p class="muted small sec-hint">On since <?= e($since) ?>.</p><?php endif ?>
       <form method="post" class="maint-form"<?= $maintOn ? '' : ' onsubmit="return confirm(' . e(json_encode('Turn on maintenance mode? Visitors will see the “Back Soon” page until you turn it off.')) . ')"' ?>>
         <?= form_keys('maintenance') ?>
         <label class="field"><span class="lbl">Visitor Message<?= tip('Optional. Shown on the “Back Soon” page.') ?></span>
@@ -740,7 +873,7 @@ admin_start('Settings', 'settings');
           $probs[$k] = $pr + ['n' => 1];
       }
       $probWeek = count(m3d_problems(time() - 7 * 86400));
-      $probTime = fn(int $t) => (new DateTimeImmutable('@' . $t))->setTimezone(new DateTimeZone('Europe/Berlin'))->format('D j M, H:i T'); ?>
+      $probTime = fn(int $t) => m3d_berlin($t, 'D j M, H:i T'); ?>
     <section style="margin-top:20px" class="sec" id="problems">
       <h2 class="small-h">Site Problems <span class="badge tone-<?= $probWeek ? 'red' : 'green' ?>"><?= $probWeek ? m3d_plural($probWeek, 'This Week', 'This Week') : 'None This Week' ?></span><?= tip('Errors on the site: failed Discord posts, failed Patreon logins, failed saves, PHP errors. Newest ' . PROBLEMS_KEEP . ' kept. Only the page address is stored, no visitor data.') ?></h2>
       <?php if (!$probs): ?>
@@ -769,11 +902,11 @@ admin_start('Settings', 'settings');
         </div>
         <div class="tool">
           <div><b>Active Sessions</b><p class="muted small"><span data-stat="sessions">Counting…</span></p></div>
-          <?= $action('sessions', 'Log Everyone Out', 'Log out all visitors except you?', false, 'sessions') ?>
+          <?= $action('sessions', 'Log Everyone Out', 'Log out all visitors except you?', 'sessions') ?>
         </div>
         <div class="tool">
           <div><b>Download Log</b><?= tip('Clearing it resets everyone’s unlocks: limits start from zero.') ?><p class="muted small"><span data-stat="log">Counting…</span> <a href="/admin/log.php?csv=1">Export a copy first</a>.</p></div>
-          <?= $action('log', 'Clear Download Log', 'Delete the whole download log? Every patron\'s download history and unlocks go with it, so their limits start from zero. Export it first if you want to keep a copy.', false, 'log') ?>
+          <?= $action('log', 'Clear Download Log', 'Delete the whole download log? Every patron\'s download history and unlocks go with it, so their limits start from zero. Export it first if you want to keep a copy.', 'log') ?>
         </div>
         <div class="tool">
           <div><b>Backups</b><p class="muted small"><span data-stat="backups">Counting…</span></p></div>
@@ -781,11 +914,11 @@ admin_start('Settings', 'settings');
         </div>
         <div class="tool">
           <div><b>Unused Images</b><p class="muted small"><span data-stat="unused">Counting…</span> <a href="/admin/images.php?unused=1">Review them in Images</a>.</p></div>
-          <?= $action('unused', 'Delete Unused Images', 'Delete all images and 3D files that are not used anywhere? This can\'t be undone.', false, 'unused') ?>
+          <?= $action('unused', 'Delete Unused Images', 'Delete all images and 3D files that are not used anywhere? This can\'t be undone.', 'unused') ?>
         </div>
         <div class="tool">
           <div><b>Temporary Files</b><p class="muted small"><span data-stat="temp">Counting…</span></p></div>
-          <?= $action('temp', 'Delete Temporary Files', '', false, 'temp') ?>
+          <?= $action('temp', 'Delete Temporary Files', '', 'temp') ?>
         </div>
         <div class="tool">
           <div><b>Cloudflare Cache</b><?= tip('If a replaced image still shows the old version: Cloudflare → Caching → Configuration → Purge Everything.') ?><p class="muted small">For images that still show the old version.</p></div>

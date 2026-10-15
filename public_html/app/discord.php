@@ -124,12 +124,11 @@ function m3d_discord_after_save(string $kind, array $old, array $new): void
             if (!$res['ok']) m3d_problem('Discord', 'Post about ' . $last['what'] . ' failed: ' . $res['error']);
         }
         $done = array_flip(array_merge($mark, $posted));
-        $stored = m3d_settings(true)['discord'] ?? [];
-        m3d_save_settings(['discord' => [
+        m3d_save_setting_keys('discord', [
             'sent'  => array_slice(array_merge($d['sent'], $mark, $posted), -DISCORD_SENT_MAX),
             'retry' => array_values(array_unique(array_merge(array_filter($d['retry'], fn($c) => !isset($done[$c])), $failed))),
             'last'  => $last,
-        ] + $stored]);
+        ]);
     } catch (Throwable $ex) {
         m3d_problem('Discord', $ex->getMessage());
     }
@@ -148,8 +147,7 @@ function m3d_discord_free(string $kind, array $item): void
         unset($e['timestamp']);
         $res = m3d_discord_post($d['webhook'], $d['message'], [$e]);
         if (!$res['ok']) m3d_problem('Discord', 'Post “' . $item['name'] . ' is now free” failed: ' . $res['error']);
-        $stored = m3d_settings(true)['discord'] ?? [];
-        m3d_save_settings(['discord' => ['last' => ['at' => gmdate('c'), 'ok' => $res['ok'], 'error' => $res['error'], 'what' => $item['name'] . ' (now free)']] + $stored]);
+        m3d_save_setting_keys('discord', ['last' => ['at' => gmdate('c'), 'ok' => $res['ok'], 'error' => $res['error'], 'what' => $item['name'] . ' (now free)']]);
     } catch (Throwable $ex) {
         m3d_problem('Discord', $ex->getMessage());
     }
@@ -246,8 +244,7 @@ function m3d_discord_stills_after_save(array $old, array $new): void
             $queue[] = $id;
         }
         if (!$queue) return;
-        $stored = m3d_settings(true)['discord'] ?? [];
-        m3d_save_settings(['discord' => ['stills_queue' => $queue, 'stills_due' => time() + DISCORD_STILLS_DELAY, 'stills_tries' => 0] + $stored]);
+        m3d_save_setting_keys('discord', ['stills_queue' => $queue, 'stills_due' => time() + DISCORD_STILLS_DELAY, 'stills_tries' => 0]);
     } catch (Throwable $ex) {
         m3d_problem('Discord', 'New Gallery pictures: ' . $ex->getMessage());
     }
@@ -258,61 +255,52 @@ function m3d_discord_stills_tick(): void
 {
     $d = m3d_settings()['discord'] ?? [];
     if (empty($d['stills_queue']) || !is_int($d['stills_due'] ?? null) || $d['stills_due'] > time()) return;
-    register_shutdown_function(function () {
-        if (function_exists('fastcgi_finish_request')) fastcgi_finish_request();
-        elseif (function_exists('litespeed_finish_request')) litespeed_finish_request();
-        m3d_session_release();
-        m3d_discord_stills_run();
-    });
+    m3d_after_response(fn() => m3d_discord_stills_run());
 }
 
 /** Posts the waiting Gallery pictures (once, under a lock): those still visible to everyone, in the gallery's order. */
 function m3d_discord_stills_run(): void
 {
-    $lock = @fopen(M3D_PRIVATE . '/data/.stills-lock', 'c');
-    if (!$lock || !flock($lock, LOCK_EX | LOCK_NB)) return;   // another request is on it
-    try {
-        m3d_settings(true);   // read again under the lock: another request may have posted and emptied the queue since this page read them
-        $d = m3d_discord();
-        if (!$d['stills_queue'] || $d['stills_due'] === null || $d['stills_due'] > time()) return;
-        $wait = array_flip($d['stills_queue']);
-        $post = [];
-        if (m3d_discord_on() && $d['stills']) {
-            foreach (m3d_gallery(true)['stills'] as $s) if (isset($wait[$s['id']]) && m3d_still_public_view($s) !== 'hidden') $post[] = $s;
+    m3d_with_lock('.stills-lock', function () {   // another request on it: nothing to do
+        try {
+            m3d_settings(true);   // read again under the lock: another request may have posted and emptied the queue since this page read them
+            $d = m3d_discord();
+            if (!$d['stills_queue'] || $d['stills_due'] === null || $d['stills_due'] > time()) return;
+            $wait = array_flip($d['stills_queue']);
+            $post = [];
+            if (m3d_discord_on() && $d['stills']) {
+                foreach (m3d_gallery(true)['stills'] as $s) if (isset($wait[$s['id']]) && m3d_still_public_view($s) !== 'hidden') $post[] = $s;
+            }
+            $post = array_slice($post, 0, DISCORD_EMBEDS * DISCORD_MESSAGES);   // a bigger batch: the rest is dropped, not flooded
+            // taken off the queue before posting: when the settings can't be written (disk full), nothing is posted, rather than
+            // the same pictures on every page view
+            if (!m3d_save_setting_keys('discord', ['stills_queue' => [], 'stills_due' => null])) {
+                m3d_problem('Discord', 'New Gallery pictures: the settings could not be saved, so nothing was posted.');
+                return;
+            }
+            $posted = [];
+            $res = ['ok' => true, 'error' => ''];
+            foreach (m3d_discord_chunks(array_map(fn($s) => [$s['id'], m3d_discord_still_embed($s)], $post)) as $chunk) {
+                if (!$res['ok']) break;
+                $res = m3d_discord_post($d['webhook'], '', array_column($chunk, 1));
+                if ($res['ok']) $posted = array_merge($posted, array_column($chunk, 0));
+            }
+            $left = array_values(array_diff(array_column($post, 'id'), $posted));
+            $tries = $left ? $d['stills_tries'] + 1 : 0;
+            if ($left && $tries >= DISCORD_STILLS_TRIES) $left = [];   // given up: Home → Needs a look and Site problems say so
+            $what = m3d_plural(count($post), 'new Gallery picture');
+            if (!$res['ok']) m3d_problem('Discord', 'Post of ' . $what . ' failed: ' . $res['error'] . ($left ? ' It will be tried again in ' . intdiv(DISCORD_STILLS_DELAY, 60) . ' minutes.' : ''));
+            $stored = m3d_settings(true)['discord'] ?? [];
+            $queue = array_values(array_unique(array_merge($left, (array) ($stored['stills_queue'] ?? []))));   // pictures queued while posting stay
+            $new = ['stills_sent' => array_slice(array_merge($d['stills_sent'], $posted), -DISCORD_SENT_MAX), 'stills_queue' => $queue,
+                'stills_due' => $queue ? ($stored['stills_due'] ?? null ?: time() + DISCORD_STILLS_DELAY) : null,   // a gallery save meanwhile set its own time
+                'stills_tries' => $tries];
+            if ($post) $new['last'] = ['at' => gmdate('c'), 'ok' => $res['ok'], 'error' => $res['error'], 'what' => $what, 'stills' => true];
+            m3d_save_setting_keys('discord', $new);
+        } catch (Throwable $ex) {
+            m3d_problem('Discord', 'New Gallery pictures: ' . $ex->getMessage());
         }
-        $post = array_slice($post, 0, DISCORD_EMBEDS * DISCORD_MESSAGES);   // a bigger batch: the rest is dropped, not flooded
-        // taken off the queue before posting: when the settings can't be written (disk full), nothing is posted, rather than
-        // the same pictures on every page view
-        $stored = m3d_settings(true)['discord'] ?? [];
-        if (!m3d_save_settings(['discord' => ['stills_queue' => [], 'stills_due' => null] + $stored])) {
-            m3d_problem('Discord', 'New Gallery pictures: the settings could not be saved, so nothing was posted.');
-            return;
-        }
-        $posted = [];
-        $res = ['ok' => true, 'error' => ''];
-        foreach (m3d_discord_chunks(array_map(fn($s) => [$s['id'], m3d_discord_still_embed($s)], $post)) as $chunk) {
-            if (!$res['ok']) break;
-            $res = m3d_discord_post($d['webhook'], '', array_column($chunk, 1));
-            if ($res['ok']) $posted = array_merge($posted, array_column($chunk, 0));
-        }
-        $left = array_values(array_diff(array_column($post, 'id'), $posted));
-        $tries = $left ? $d['stills_tries'] + 1 : 0;
-        if ($left && $tries >= DISCORD_STILLS_TRIES) $left = [];   // given up: Home → Needs a look and Site problems say so
-        $what = m3d_plural(count($post), 'new Gallery picture');
-        if (!$res['ok']) m3d_problem('Discord', 'Post of ' . $what . ' failed: ' . $res['error'] . ($left ? ' It will be tried again in ' . intdiv(DISCORD_STILLS_DELAY, 60) . ' minutes.' : ''));
-        $stored = m3d_settings(true)['discord'] ?? [];
-        $queue = array_values(array_unique(array_merge($left, (array) ($stored['stills_queue'] ?? []))));   // pictures queued while posting stay
-        $new = ['stills_sent' => array_slice(array_merge($d['stills_sent'], $posted), -DISCORD_SENT_MAX), 'stills_queue' => $queue,
-            'stills_due' => $queue ? ($stored['stills_due'] ?? null ?: time() + DISCORD_STILLS_DELAY) : null,   // a gallery save meanwhile set its own time
-            'stills_tries' => $tries];
-        if ($post) $new['last'] = ['at' => gmdate('c'), 'ok' => $res['ok'], 'error' => $res['error'], 'what' => $what, 'stills' => true];
-        m3d_save_settings(['discord' => $new + $stored]);
-    } catch (Throwable $ex) {
-        m3d_problem('Discord', 'New Gallery pictures: ' . $ex->getMessage());
-    } finally {
-        flock($lock, LOCK_UN);
-        fclose($lock);
-    }
+    });
 }
 
 /** One Gallery picture as a Discord embed: the caption (else "New render · names"), the characters linked to their pages,

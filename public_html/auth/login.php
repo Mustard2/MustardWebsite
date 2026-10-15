@@ -2,7 +2,7 @@
 // Step 1: send the visitor to Patreon to log in.
 require dirname(__DIR__) . '/app/_init.php';
 
-m3d_start_session($M3D);   // the session (and its cookie) starts here, when someone chooses to log in
+m3d_start_session();   // the session (and its cookie) starts here, when someone chooses to log in
 $_SESSION['oauth_state'] = bin2hex(random_bytes(16));
 $_SESSION['return_to'] = m3d_safe_return($_GET['return'] ?? null);
 

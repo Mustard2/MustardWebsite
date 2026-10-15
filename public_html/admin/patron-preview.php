@@ -28,4 +28,16 @@ $_SESSION['preview'] = [
     'updates'     => max(0, min(20, (int) ($_POST['updates'] ?? ($old['updates'] ?? 0)))),   // simulated updates (m3d_patron_history)
     'as'          => preg_match('/^\d{1,20}$/', $as) ? $as : '',
 ];
+// the real start date of the patron below, kept while the months stay the same (m3d_preview_patron())
+if (!empty($old['since']) && $_SESSION['preview']['as'] === ($old['as'] ?? '') && $_SESSION['preview']['months'] === (int) ($old['months'] ?? -1)) $_SESSION['preview']['since'] = $old['since'];
+// a real Patreon ID (newly typed in the bar, or "Preview as This Patron" on Admin → Downloads, real=1): start from the membership saved
+// with their newest download, months counted to today from the saved start
+$pv = &$_SESSION['preview'];
+if ($pv['as'] !== '' && ($pv['as'] !== ($old['as'] ?? '') || ($_POST['real'] ?? '') === '1') && ($m = m3d_patron_saved_membership($pv['as']))) {
+    if ($m['since'] !== '') { $pv['since'] = $m['since'] . 'T12:00:00Z'; $pv['months'] = min(999, (int) m3d_months_since($pv['since'])); }
+    elseif ($m['months'] !== null) $pv['months'] = min(999, $m['months']);
+    if ($m['tier_cents']) $pv['tier_cents'] = min(1000000, $m['tier_cents']);
+    if ($m['total_cents'] !== null) $pv['total_cents'] = min(99999999, $m['total_cents']);
+}
+unset($pv);
 m3d_redirect($back);

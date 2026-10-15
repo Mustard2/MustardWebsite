@@ -13,39 +13,56 @@ $reason = m3d_get_text('reason');
 [$title, $text] = $texts[$reason] ?? ['A Patreon Tier Is Needed', 'Join any tier on Patreon, then log in again.'];
 $return = m3d_safe_return($_GET['return'] ?? null, '/#catalog');
 
+// the model/outfit the refusal is about (requirements, limit)
+$kind = ($_GET['type'] ?? '') === 'outfit' ? 'outfits' : 'models';
+$slug = m3d_get_text('item');
+$item = in_array($reason, ['requirements', 'limit'], true) ? m3d_item($kind, $slug) : null;
+if ($item && !m3d_can_view($kind, $item)) $item = null;   // drafts, locked password items
+
 // Extra requirements of one model/outfit
-$item = $check = null;
+$check = null;
+$reqMet = false;   // opened again later with the requirements met since (a new tier, Check Again)
 if ($reason === 'requirements') {
-    $kind = ($_GET['type'] ?? '') === 'outfit' ? 'outfits' : 'models';
-    $slug = m3d_get_text('item');
-    $item = preg_match('/^[a-z0-9-]{1,64}$/', $slug) ? m3d_item($kind, $slug) : null;
-    if ($item && m3d_can_view($kind, $item)) {
+    if ($item) {
         $check = m3d_check_requirements($item, m3d_patron($M3D));
         $title = 'This Download Needs a Little More';
         $text = 'Thanks for being a patron! ' . $item['name'] . ' has extra requirements your membership doesn’t meet yet' . ($check['mode'] === 'or' ? (m3d_requirements($item)['tier_cents'] ? ' (for time and total support, one of the two is enough):' : ' (one of the two is enough):') : ':');
+        $reqMet = $check['ok'] && $check['rows'] && !empty(m3d_patron($M3D)['access']);
+        if ($reqMet) {
+            $title = 'You Can Download This Now';
+            $text = $item['name'] . ' can be downloaded: your membership meets its requirements.';
+        }
     }
 }
 
 // Download limit reached (Admin → Access → Download rules)
 $limits = null;
-$when = fn(int $t) => (new DateTimeImmutable('@' . $t))->setTimezone(new DateTimeZone('Europe/Berlin'))->format('l j F, H:i T');
+$when = fn(int $t) => m3d_berlin($t, 'l j F, H:i T');
 if ($reason === 'limit') {
-    $kind = ($_GET['type'] ?? '') === 'outfit' ? 'outfits' : 'models';
-    $slug = m3d_get_text('item');
-    $item = preg_match('/^[a-z0-9-]{1,64}$/', $slug) ? m3d_item($kind, $slug) : null;
-    if ($item && m3d_can_view($kind, $item)) {
+    if ($item) {
         $limits = m3d_check_limits(m3d_patron($M3D), $kind, $slug);
-        // the rule that frees up last decides when the next unlock comes (every full rule must free up)
-        $blocking = array_values(array_filter($limits['rows'], fn($r) => !$r['ok']));
-        usort($blocking, fn($a, $b) => ($b['next'] ?? 0) <=> ($a['next'] ?? 0));
-        $o = $blocking[0] ?? null;
-        $what = $o['rule']['what'] ?? 'models';
-        $title = 'You’ve Used All Your ' . ($what === 'all' ? '' : ucfirst(DL_WHAT[$what][0] ?? 'model') . ' ') . 'Unlocks';
+        $o = m3d_blocking_row($limits['rows']);   // it says when the next unlock comes
+        $title = 'You’ve Used All Your ' . ucfirst($o ? m3d_rule_noun($o['rule']) : 'model ') . 'Unlocks';
         $text = $o && $o['next'] ? 'You can download ' . $item['name'] . ' from ' . $when((int) $o['next']) . '.' : 'Try again later.';
         if ($limits['ok']) {   // opened again later: an unlock freed up, or the rules changed
             $title = 'You Can Download This Now';
             $text = $item['name'] . ' can be downloaded again.';
         }
+    }
+}
+
+// Daily download cap reached (Admin → Access → Daily Download Cap)
+$cap = null;
+if ($reason === 'cap') {
+    $p = m3d_patron($M3D);
+    $until = m3d_dl_capped($p);
+    $cap = ['until' => $until];
+    if ($until !== null) {
+        $title = 'You’ve Reached the Daily Download Limit';
+        $text = 'Each patron can download ' . m3d_plural(m3d_dl_settings()['cap'], 'time') . ' in 24 hours. You can download again from ' . $when($until) . '.';
+    } else {
+        $title = 'You Can Download Again';
+        $text = 'Your downloads are open again.';
     }
 }
 
@@ -55,7 +72,13 @@ layout_start('Patreon Membership Needed', 'Downloads are available to Patreon me
     <p class="eyebrow">Downloads</p>
     <h1><?= e($title) ?></h1>
     <p class="lead"><?= e($text) ?></p>
-    <?php if ($limits): ?>
+    <?php if ($cap): ?>
+      <div class="cta">
+        <?php if ($cap['until'] === null): ?><a class="btn btn-primary" href="<?= e($return) ?>">Back to the Download</a><?php endif ?>
+        <a class="btn <?= $cap['until'] === null ? 'btn-ghost' : 'btn-primary' ?>" href="/account/">See My Account</a>
+        <a class="btn btn-ghost" href="/#catalog">Browse Models</a>
+      </div>
+    <?php elseif ($limits): ?>
       <div class="cta">
         <?php if ($limits['ok']): ?><a class="btn btn-primary" href="<?= e(m3d_item_url($kind, $slug)) ?>">Go to <?= e($item['name']) ?></a><?php endif ?>
         <a class="btn <?= $limits['ok'] ? 'btn-ghost' : 'btn-primary' ?>" href="/account/">See My Account</a>
@@ -74,8 +97,9 @@ layout_start('Patreon Membership Needed', 'Downloads are available to Patreon me
       </div>
       <p class="small muted">Values from Patreon at login: log in again if they look out of date.</p>
       <div class="cta">
+        <?php if ($reqMet): ?><a class="btn btn-primary" href="<?= e(m3d_item_url($kind, $slug)) ?>">Go to <?= e($item['name']) ?></a><?php endif ?>
         <?php if (!$check['tier_ok'] && social_url('patreon') !== ''): ?><a class="btn btn-patreon" href="<?= e(social_url('patreon')) ?>" rel="noopener" target="_blank">Upgrade on Patreon ↗</a><?php endif ?>
-        <a class="btn btn-primary" href="/account/">See My Membership</a>
+        <a class="btn <?= $reqMet ? 'btn-ghost' : 'btn-primary' ?>" href="/account/">See My Membership</a>
         <a class="btn btn-ghost" rel="nofollow" href="/auth/login.php?return=<?= e(rawurlencode($return)) ?>">Check Again with Patreon</a>
       </div>
     <?php else: ?>

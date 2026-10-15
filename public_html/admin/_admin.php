@@ -2,7 +2,6 @@
 // Shared by every admin page: access control, JSON helpers, validation, admin layout.
 declare(strict_types=1);
 require dirname(__DIR__) . '/app/_init.php';
-require_once __DIR__ . '/_links.php';
 
 header('X-Frame-Options: DENY');
 header('X-Robots-Tag: noindex, nofollow');
@@ -35,6 +34,27 @@ function admin_json(array $data, int $code = 200): never
     exit;
 }
 
+/** upload.php / upload-3d.php: the file sent as "file", or the JSON error. */
+function admin_uploaded_file(): array
+{
+    $f = $_FILES['file'] ?? null;
+    if ($f && is_uploaded_file($f['tmp_name'] ?? '')) return $f;
+    $msg = in_array($f['error'] ?? UPLOAD_ERR_NO_FILE, [UPLOAD_ERR_INI_SIZE, UPLOAD_ERR_FORM_SIZE], true)
+        ? 'The file is larger than the server allows (now ' . ini_get('upload_max_filesize') . '; upload_max_filesize and post_max_size in hPanel → PHP Configuration).'
+        : 'No file received.';
+    admin_json(['ok' => false, 'error' => $msg], 400);
+}
+
+/** The media folder named by POST "model" (made when missing) and a new file name from the uploaded one: [folder, dir, base]. */
+function admin_upload_target(string $name, string $fallback): array
+{
+    $folder = preg_replace('/[^a-z0-9-]/', '', strtolower((string) ($_POST['model'] ?? ''))) ?: 'misc';
+    $dir = M3D_SITE . '/media/' . $folder;
+    if (!is_dir($dir) && !@mkdir($dir, 0755, true)) admin_json(['ok' => false, 'error' => 'Could not create the media folder.'], 500);
+    $base = trim(preg_replace('/[^a-z0-9]+/', '-', strtolower(pathinfo($name, PATHINFO_FILENAME))) ?? '', '-') ?: $fallback;
+    return [$folder, $dir, substr($base, 0, 60) . '-' . bin2hex(random_bytes(3))];
+}
+
 /** POST endpoints: admin + same CSRF token as the page that sent the request. */
 function admin_post_guard(array $cfg): void
 {
@@ -50,13 +70,6 @@ function admin_post_guard(array $cfg): void
 }
 
 // ── Validation: turns whatever the editor sends into a clean model ───────────
-/** A file size for people: "840 KB", "12.4 MB", "1.2 GB". */
-function human_size(int $b): string
-{
-    if ($b <= 0) return '0 KB';
-    return $b >= 1073741824 ? sprintf('%.1f GB', $b / 1073741824) : ($b >= 1048576 ? sprintf('%.1f MB', $b / 1048576) : sprintf('%d KB', max(1, (int) ceil($b / 1024))));
-}
-
 /** One line of text from a form: spaces and line breaks squeezed to one space, cut to $max characters. */
 function clean_line(mixed $v, int $max): string
 {
@@ -87,8 +100,9 @@ function clean_text(mixed $v, int $max = 2000): string
 {
     $s = is_scalar($v) ? (string) $v : '';
     $s = str_replace(["\r\n", "\r"], "\n", $s);
-    // drop control characters, keep newlines and the joiners of emoji sequences (👨‍👩‍👧) and scripts that need them
-    $s = preg_replace('/[^\P{C}\n\t\x{200C}\x{200D}]/u', '', $s) ?? '';
+    // drop control characters, keep newlines and the joiners of emoji sequences (👨‍👩‍👧) and scripts that need them, the tags of
+    // flag emoji (🏴 + tags) and characters newer than the server's Unicode tables (Cn: recent emoji would be lost otherwise)
+    $s = preg_replace('/[^\P{C}\p{Cn}\n\t\x{200C}\x{200D}\x{E0020}-\x{E007F}]/u', '', $s) ?? '';
     $s = trim($s);
     return mb_substr($s, 0, $max);
 }
@@ -114,6 +128,14 @@ function clean_url(mixed $v, bool $allowLocal = true): string
     if ($allowLocal && preg_match('#^/[A-Za-z0-9/_\-.%]+$#', $s) && !str_contains($s, '..')) return $s;
     if (preg_match('#^https?://[^\s"<>]+$#i', $s) && filter_var($s, FILTER_VALIDATE_URL)) return $s;
     throw new InvalidArgumentException("Not a valid link or image address: $s");
+}
+
+/** A download link's address: https://…, or a short link to a file in the MEGA S4 bucket, "s4:<file>" (app/s4.php). */
+function clean_dl_url(mixed $v): string
+{
+    $s = clean_text($v, 1000);
+    if (preg_match('#^s4:/*([^"<>\x00-\x1f]+)$#i', $s, $m)) return 's4:' . trim($m[1]);
+    return clean_url($s, false);
 }
 
 function check_slug(string $slug): void
@@ -184,7 +206,7 @@ function clean_release(array $in, array &$out): void
 function admin_release_local(array $item): array
 {
     $r = m3d_release($item);
-    $f = fn(?int $t) => $t === null ? '' : (new DateTimeImmutable('@' . $t))->setTimezone(new DateTimeZone('Europe/Berlin'))->format('Y-m-d\TH:i');
+    $f = fn(?int $t) => $t === null ? '' : m3d_berlin($t, 'Y-m-d\TH:i');
     return ['patrons' => $f($r['patrons']), 'public' => $f($r['public']), 'before' => $r['before']];
 }
 
@@ -211,11 +233,12 @@ function clean_links(mixed $v): array
     $out = [];
     foreach ((array) $v as $l) {
         if (!is_array($l)) continue;
-        $url = clean_url($l['url'] ?? '', false);
+        $url = clean_dl_url($l['url'] ?? '');
         $label = clean_text($l['label'] ?? '', 60);
         if ($url === '' && $label === '') continue;
         if ($url === '') throw new InvalidArgumentException('The download "' . $label . '" has no address.');
-        $out[] = ['label' => $label !== '' ? $label : 'Download', 'url' => $url, 'access' => ($l['access'] ?? '') === 'public' ? 'public' : 'patrons'];
+        $out[] = ['label' => $label !== '' ? $label : 'Download', 'url' => $url, 'access' => ($l['access'] ?? '') === 'public' ? 'public' : 'patrons']
+            + (!empty($l['off']) ? ['off' => true] : []);   // switched off in the editor: kept, but not on the site and /get/ refuses it
         if (count($out) >= 20) break;
     }
     return $out;
@@ -394,7 +417,7 @@ function clean_model(array $in, ?array $existing): array
         if (!ctype_digit($major) || (int) $major < 1 || (int) $major > 99) throw new InvalidArgumentException('Major version must be a whole number from 1 to 99.');
         $m['majorVersion'] = (int) $major;
     }
-    $m['status'] = m3d_status($in);
+    $m['status'] = clean_text((string) ($in['status'] ?? ''), 20);   // the stored status (m3d_status() would read Public past a public date)
     if (!isset(M3D_STATUSES[$m['status']])) throw new InvalidArgumentException('Unknown status.');
     if (!empty($in['featured'])) $m['featured'] = true;
     foreach (['thumb', 'cover'] as $k) { $u = clean_url($in[$k] ?? ''); if ($u !== '') $m[$k] = $u; }
@@ -567,9 +590,9 @@ function discord_preview_html(string $message): string
     $em = discord_sample_embed();
     $color = isset($em['color']) ? sprintf('#%06x', $em['color']) : '#1e1f22';
     $name = site_name();
-    $now = (new DateTimeImmutable('now', new DateTimeZone('Europe/Berlin')))->format('H:i');
+    $now = m3d_berlin(time(), 'H:i');
     $foot = (string) ($em['footer']['text'] ?? '');
-    if (isset($em['timestamp'])) $foot .= ($foot !== '' ? ' • ' : '') . (new DateTimeImmutable($em['timestamp']))->setTimezone(new DateTimeZone('Europe/Berlin'))->format('d/m/Y');
+    if (isset($em['timestamp'])) $foot .= ($foot !== '' ? ' • ' : '') . m3d_berlin((string) $em['timestamp'], 'd/m/Y');
     return '<div class="dc-prev" aria-hidden="true"><div class="dc-msg">'
         . '<span class="dc-ava">' . e(mb_strtoupper(mb_substr($name, 0, 1))) . '</span>'
         . '<div class="dc-body"><div class="dc-head"><b class="dc-name">' . e($name) . '</b><span class="dc-app">APP</span><span class="dc-time">Today at ' . e($now) . '</span></div>'
@@ -587,20 +610,21 @@ function admin_links_summary(array $links, array $dead = []): string
 {
     // $dead = lc_dead_for() [url => …]: those names are red in the hover list ("Mega · dead link"), the text is red and opens Link Check
     // (the row turns red too, .has-dead-link). Dead add-ons get their own group, so an item whose only dead address is an add-on shows it
-    $names = ['patrons' => [], 'public' => [], 'addons' => []];
+    // links switched off are listed under "Hidden" and not counted
+    $names = ['patrons' => [], 'public' => [], 'off' => [], 'addons' => []];
     $seen = [];
     foreach ($links as $l) {
         $url = trim((string) ($l['url'] ?? ''));
         $n = trim((string) ($l['label'] ?? '')) ?: 'Download';
-        $names[($l['access'] ?? 'patrons') === 'public' ? 'public' : 'patrons'][] = isset($dead[$url]) ? ['n' => $n, 'dead' => true] : $n;
+        $names[!empty($l['off']) ? 'off' : (($l['access'] ?? 'patrons') === 'public' ? 'public' : 'patrons')][] = isset($dead[$url]) ? ['n' => $n, 'dead' => true] : $n;
         $seen[$url] = true;
     }
     foreach ($dead as $url => $d) if (!isset($seen[$url])) $names['addons'][] = ['n' => $d['label'], 'dead' => true];
     [$p, $f] = [count($names['patrons']), count($names['public'])];
-    if (!$p && !$f && !$dead) return '<span class="warn-dot" title="No download links">—</span>';
+    if (!$p && !$f && !$dead && !$names['off']) return '<span class="warn-dot" title="No download links">—</span>';
     $txt = ($p ? '<span class="ok-dot">' . $p . ' patron</span>' : '') . ($p && $f ? '<br>' : '') . ($f ? '<span class="muted">' . $f . ' public</span>' : '') . ($p || $f ? '' : '—');
     $label = fn(array $list) => implode(', ', array_map(fn($x) => is_array($x) ? $x['n'] . ' (dead link)' : $x, $list));
-    $aria = implode('; ', array_filter([$p ? 'Patrons: ' . $label($names['patrons']) : '', $f ? 'Public: ' . $label($names['public']) : '', $names['addons'] ? 'Add-ons: ' . $label($names['addons']) : '']));
+    $aria = implode('; ', array_filter([$p ? 'Patrons: ' . $label($names['patrons']) : '', $f ? 'Public: ' . $label($names['public']) : '', $names['off'] ? 'Hidden: ' . $label($names['off']) : '', $names['addons'] ? 'Add-ons: ' . $label($names['addons']) : '']));
     $attrs = ' data-tip-links="' . e(json_encode($names, JSON_UNESCAPED_UNICODE)) . '" aria-label="' . e($aria) . '"';
     return $dead ? '<a class="links-sum is-dead" href="/admin/links.php"' . $attrs . '>' . $txt . '</a>' : '<span class="links-sum" tabindex="0"' . $attrs . '>' . $txt . '</span>';
 }
@@ -683,7 +707,7 @@ function admin_forget_items(string $kind, array $gone, array $vis = []): void
 {
     if (!$gone) return;
     $slugs = array_map('strval', array_keys($gone));
-    if (function_exists('m3d_bugs_update') && is_file(M3D_PRIVATE . '/data/bugs.json')) {
+    if (is_file(M3D_PRIVATE . '/data/bugs.json')) {
         m3d_bugs_update(function (array $bugs, int $next) use ($kind, $gone, $vis) {
             foreach ($bugs as &$b) {
                 [$k, $slug] = m3d_bug_about_parts((string) ($b['about'] ?? ''));
@@ -718,13 +742,13 @@ function admin_forget_items(string $kind, array $gone, array $vis = []): void
     });
     if (!is_file(m3d_log_file())) return;
     $pre = $kind === 'outfits' ? 'outfit:' : '';
-    $date = (new DateTime('now', new DateTimeZone('Europe/Berlin')))->format('Y-m-d');
+    $date = m3d_today();
     $clean = fn($n) => trim((string) preg_replace('/\s+/u', ' ', (string) $n));
     $same = array_count_values(array_map($clean, $gone));
     // items already in the log: a model of the same name deleted earlier today (major versions share a name) keeps its own history
     $taken = [];
     if ($fh = @fopen(m3d_log_file(), 'rb')) {
-        while (($line = fgets($fh)) !== false) if (str_contains($line, '(removed ')) $taken[str_getcsv(rtrim($line, "\r\n"), ',', '"', '')[3] ?? ''] = true;
+        while (($line = fgets($fh)) !== false) if (str_contains($line, '(removed ')) $taken[m3d_log_cols($line)[3] ?? ''] = true;
         fclose($fh);
     }
     $map = [];   // log item => new log item
@@ -733,22 +757,29 @@ function admin_forget_items(string $kind, array $gone, array $vis = []): void
         $new = $pre . (($same[$name] ?? 0) > 1 ? "$name · $slug" : $name) . " (removed $date)";
         if (isset($taken[$new])) $new = $pre . "$name · $slug (removed $date)";
         if ($pre === '' && str_starts_with($new, 'outfit:')) $new = 'Model ' . $new;   // would read as an accessory
-        $map[$pre . $slug] = $new;
+        $map[m3d_log_item($kind, (string) $slug)] = $new;
     }
     m3d_log_rename_items($map);
 }
 
 // ── Folder pickers (Images page, Admin → Gallery → Add pictures) ─────────────
 /** All images in media/ (large versions only; the "-sm", "-md", "-xs" files are their other versions, img_versions()). */
-function media_library(): array
+/** Every file in media/: address ("/media/<folder>/<name>") => its SplFileInfo. */
+function media_walk(): array
 {
     $root = M3D_SITE . '/media';
     if (!is_dir($root)) return [];
-    $items = [];
+    $out = [];
     $it = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($root, FilesystemIterator::SKIP_DOTS));
-    foreach ($it as $f) {
-        if (!$f->isFile() || !preg_match('/\.(webp|jpe?g|png|gif)$/i', $f->getFilename())) continue;
-        $url = '/media/' . str_replace('\\', '/', substr($f->getPathname(), strlen($root) + 1));
+    foreach ($it as $f) if ($f->isFile()) $out['/media/' . str_replace('\\', '/', substr($f->getPathname(), strlen($root) + 1))] = $f;
+    return $out;
+}
+
+function media_library(): array
+{
+    $items = [];
+    foreach (media_walk() as $url => $f) {
+        if (!preg_match('/\.(webp|jpe?g|png|gif)$/i', $f->getFilename())) continue;
         if (img_large($url) !== $url) continue;   // another version of a picture: listed with it
         if (str_starts_with($url, '/media/site/')) continue;   // the site logo and icons (Settings → Site identity)
         if (str_starts_with($url, '/media/bugs/')) continue;   // pictures of bug reports (Admin → Bugs)
@@ -773,17 +804,117 @@ function media_library(): array
 /** The 3D preview files in media/ (.glb, app/model3d.php): the Images page's "3D Files" tab. Kept apart from media_library(), which the picture picker uses too. */
 function media_3d_files(): array
 {
-    $root = M3D_SITE . '/media';
-    if (!is_dir($root)) return [];
     $items = [];
-    $it = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($root, FilesystemIterator::SKIP_DOTS));
-    foreach ($it as $f) {
-        if (!$f->isFile() || strtolower($f->getExtension()) !== 'glb') continue;
-        $url = '/media/' . str_replace('\\', '/', substr($f->getPathname(), strlen($root) + 1));
+    foreach (media_walk() as $url => $f) {
+        if (strtolower($f->getExtension()) !== 'glb') continue;
         if (!m3d_glb_path($url) || preg_match('#^/media/(site|bugs)/#', $url)) continue;
         $items[] = ['url' => $url, 'folder' => basename(dirname($url)), 'name' => $f->getFilename(), 'bytes' => $f->getSize(), 'time' => $f->getMTime()];
     }
     return $items;
+}
+
+/** An item's name in the admin's lists and menus: "Alice (Gen 4)", "Summer dress (outfit)". */
+function admin_item_label(string $kind, array $it): string
+{
+    if ($kind === 'outfits') return $it['name'] . ' (' . mb_strtolower(m3d_accessory_type($it)) . ')';
+    return $it['name'] . (($it['generation'] ?? '') !== '' ? ' (Gen ' . $it['generation'] . ')' : '');
+}
+
+// ── Where pictures are used, and the unused ones (Admin → Images, Settings → Tools) ──
+/** The pictures stored on this site that a data value uses: the value itself when it is an address, else the pictures written in
+ *  it as text (![caption](/media/…)) and the links to them ([reference sheet](/media/…)). */
+function media_in(mixed $v): array
+{
+    if (!is_string($v) || !str_contains($v, '/media/')) return [];
+    $self = rtrim(abs_url('/'), '/');   // a full address of this site ("https://<site>/media/…") is a picture of this site too
+    if (str_starts_with($v, $self . '/media/')) $v = substr($v, strlen($self));
+    if (str_starts_with($v, '/media/')) return [$v];
+    return preg_match_all('/\]\((?:' . preg_quote($self, '/') . ')?(\/media\/[^\s)]+)\)/', $v, $mm) ? $mm[1] : [];
+}
+
+/** The file of a library picture (or 3D preview file, .glb) that may be deleted, or null: never the site logo / icons (media/site/) or bug report pictures (media/bugs/). */
+function media_deletable(string $url): ?string
+{
+    if (!preg_match('/\.(webp|jpe?g|png|gif|glb)$/i', $url) || preg_match('#^/media/(site|bugs)/#', $url)) return null;
+    $p = media_path($url);
+    return $p && is_file($p) ? $p : null;
+}
+
+/** url => [ editKey => name, ... ] for every image (and 3D file: `model3d`) address used by a model, an outfit, a FAQ answer, a docs page or the gallery. */
+function usage_map(array $models, ?array $outfits = null): array
+{
+    $use = [];
+    foreach ($models as $m) {
+        array_walk_recursive($m, function ($v) use (&$use, $m) {
+            foreach (media_in($v) as $u) $use[$u]['models:' . $m['slug']] = admin_item_label('models', $m);
+        });
+    }
+    foreach (m3d_texts() as $t) {   // FAQ answers and docs pages
+        foreach (media_in($t['text']) as $u) $use[$u][$t['key']] = $t['name'];
+    }
+    foreach ($outfits ?? m3d_outfits() as $o) {
+        array_walk_recursive($o, function ($v) use (&$use, $o) {
+            foreach (media_in($v) as $u) $use[$u]['outfits:' . $o['slug']] = admin_item_label('outfits', $o);
+        });
+    }
+    foreach (media_in(outfits_intro()) as $u) $use[$u]['other:outfits-page'] = 'Accessories Page Text';
+    foreach (media_in(m3d_welcome()['text']) as $u) $use[$u]['other:welcome'] = 'Welcome Page Text';
+    foreach (m3d_gallery()['stills'] as $st) {
+        $who = m3d_still_name($st, '');
+        $use[$st['src']]['gallery:' . $st['id']] = 'Gallery' . ($who !== '' ? ' (' . $who . ')' : '');
+    }
+    return $use;
+}
+
+/** Images (large file + its versions) that nothing uses: no model, outfit, FAQ answer or docs page points to any of them. */
+function unused_images(array $use): array
+{
+    $any = media_mentioned();
+    return array_values(array_filter(media_library(), fn($i) => !array_filter([$i['url'], ...$i['versions']], fn($u) => !empty($use[$u]) || isset($any[$u]))));
+}
+
+/** Every /media/… address written anywhere in the site's data, also where usage_map() doesn't look (a bare path in a text,
+ *  a Gallery full size link to a file on this site): a picture named there is never "unused", so a clean-up never deletes it. */
+function media_mentioned(): array
+{
+    static $any = null;
+    if ($any !== null) return $any;
+    $all = json_encode([m3d_models(), m3d_outfits(), m3d_faq(), m3d_docs(), m3d_gallery(), outfits_intro(), m3d_welcome()['text']], JSON_UNESCAPED_SLASHES);
+    preg_match_all('#/media/[A-Za-z0-9/_.-]+#', (string) $all, $mm);
+    $any = [];
+    foreach ($mm[0] as $u) { $any[$u] = $any[img_large($u)] = true; foreach (img_versions($u) as $v) $any[$v] = true; }   // a text using only "-sm" keeps the large file too
+    return $any;
+}
+
+/** 3D preview files (.glb) that no model or accessory uses (left by uploads never saved). */
+function unused_3d(array $use): array
+{
+    return array_values(array_filter(media_3d_files(), fn($g) => empty($use[$g['url']]) && !isset(media_mentioned()[$g['url']])));
+}
+
+/** "3 images and 1 3D file" (the parts that aren't 0). */
+function unused_words(int $images, int $files3d): string
+{
+    return implode(' and ', array_filter([$images ? m3d_plural($images, 'image') : '', $files3d ? m3d_plural($files3d, '3D file') : ''])) ?: '0 images';
+}
+
+/** Deletes every unused image (its large file and versions) and 3D file: [images deleted, bytes freed, 3D files deleted]. Images → "Delete all
+ *  unused" and Settings → Tools → Delete Unused Images. */
+function media_purge_unused(): array
+{
+    $n = 0; $freed = 0;
+    $use = usage_map(m3d_models());
+    foreach (unused_images($use) as $i) {
+        $gone = false;   // counted per image: its large file and its versions together
+        foreach ([$i['url'], ...$i['versions']] as $u) {
+            $f = media_deletable($u);
+            if ($f) { $size = (int) filesize($f); if (@unlink($f)) { $freed += $size; $gone = true; } }
+        }
+        if ($gone) $n++;
+    }
+    $n3 = 0;
+    foreach (unused_3d($use) as $g) if (($f = media_deletable($g['url'])) && @unlink($f)) { $freed += $g['bytes']; $n3++; }
+    return [$n, $freed, $n3];
 }
 
 /**
@@ -796,11 +927,11 @@ function admin_folder_picks(array $models): array
     $names = $pick = [];
     $picUrl = fn(string $u) => str_starts_with($u, '/media/') ? img_thumb($u) : '';   // only our own pictures, never another website's
     foreach ($models as $m) {
-        $names[$m['slug']] = $m['name'] . (($m['generation'] ?? '') !== '' ? ' (Gen ' . $m['generation'] . ')' : '');
+        $names[$m['slug']] = admin_item_label('models', $m);
         $pick[$m['slug']] = ['kind' => 'model', 'name' => $m['name'], 'gen' => (string) ($m['generation'] ?? ''), 'ver' => (string) ($m['majorVersion'] ?? ''), 'sub' => (string) ($m['franchise'] ?? ''), 'thumb' => $picUrl(item_pic('models', $m))];
     }
     foreach (m3d_outfits() as $o) {
-        $names['outfit-' . $o['slug']] = $o['name'] . ' (' . mb_strtolower(m3d_accessory_type($o)) . ')';
+        $names['outfit-' . $o['slug']] = admin_item_label('outfits', $o);
         $pick['outfit-' . $o['slug']] = ['kind' => 'outfit', 'name' => $o['name'], 'sub' => m3d_accessory_type($o), 'thumb' => $picUrl(outfit_preview($o)), 'icon' => accessory_icon_paths(m3d_accessory_type($o))];
     }
     $names += ['gallery' => 'Gallery', 'docs' => 'Docs', 'faq' => 'FAQ', 'misc' => 'Other (misc)'];
@@ -851,7 +982,7 @@ function clean_still(array $in, array $old): array
 function clean_still_link(mixed $l): array
 {
     $l = is_array($l) ? $l : [];
-    $url = clean_url($l['url'] ?? '', false);
+    $url = clean_dl_url($l['url'] ?? '');
     if ($url === '') return [];
     $link = ['url' => $url, 'access' => ($l['access'] ?? '') === 'public' ? 'public' : 'patrons'];
     $size = clean_text($l['size'] ?? '', 40);
@@ -878,7 +1009,7 @@ function admin_gallery_payload(): array
     }
     $models = array_map(fn($m) => ['slug' => $m['slug'], 'name' => $m['name'], 'gen' => (string) ($m['generation'] ?? ''), 'franchise' => (string) ($m['franchise'] ?? ''),
         'thumb' => img_thumb(item_pic('models', $m)), 'vis' => m3d_visibility($m)], m3d_models());
-    return ['stills' => $stills, 'chars' => $chars, 'models' => $models, 'visibility' => GALLERY_VISIBILITY, 'today' => (new DateTime('now', new DateTimeZone('Europe/Berlin')))->format('Y-m-d')];
+    return ['stills' => $stills, 'chars' => $chars, 'models' => $models, 'visibility' => GALLERY_VISIBILITY, 'today' => m3d_today()];
 }
 
 /**
@@ -887,7 +1018,7 @@ function admin_gallery_payload(): array
  */
 const SETTINGS_TABS = [
     'site' => ['Site', ['identity', 'social', 'homepage', 'notice', 'legal']],
-    'features' => ['Features', ['bugs', 'discord', 'mustardui', 'smutbase']],
+    'features' => ['Features', ['welcome', 'bugs', 'discord', 's4', 'mustardui', 'smutbase']],
     'patreon' => ['Patreon', ['patreon', 'logins']],
     'maintenance' => ['Maintenance', ['maintenance', 'problems', 'tools', 'system']],
 ];
@@ -956,6 +1087,21 @@ function admin_auto_backup(): ?string
     return $name;
 }
 
+/** A one-time message after an action ("✓ Saved", "Not saved: …"), shown as a floating message with a ✕ by admin_end()
+ *  instead of a box that pushes the page down: ok / info fade out by themselves (admin.js), err stays until closed.
+ *  $html is already escaped. */
+function admin_flash(string $html, string $kind = 'ok'): void
+{
+    site_flash($html, $kind);
+}
+
+/** The usual pair of a page's result messages: $done = what was done, $error = why not, after $label. */
+function admin_result($done, $error, string $label = 'Not saved:'): void
+{
+    if ($done) admin_flash('✓ ' . e((string) $done));
+    if ($error) admin_flash('<b>' . e($label) . '</b> ' . e((string) $error), 'err');
+}
+
 function admin_start(string $title, string $active = ''): void
 {
     $autoBackup = admin_auto_backup();
@@ -1007,9 +1153,7 @@ function admin_start(string $title, string $active = ''): void
     </div>
   </header>
   <main id="main" class="wrap admin-main">
-<?php if ($autoBackup): ?>
-    <p class="notice">✓ Weekly automatic backup made (content, counts, download log and code; without images). <a href="/admin/backups.php">See Backups</a></p>
-<?php endif ?>
+<?php if ($autoBackup) admin_flash('✓ Weekly automatic backup made (content, counts, download log and code; without images). <a href="/admin/backups.php">See Backups</a>') ?>
 <?php if (m3d_maintenance()): ?>
     <p class="notice maint-notice"><b>Maintenance mode is on:</b> visitors see the “Back Soon” page; only admins can use the site. <a href="<?= settings_url('maintenance') ?>">Turn it off in Settings</a></p>
 <?php endif ?>
@@ -1020,8 +1164,7 @@ function admin_end(): void
 {
     ?>
   </main>
-  <div class="toast" data-toast hidden></div>
-  <script src="<?= e(asset('admin.js')) ?>" data-viewer="<?= e(asset('vendor/model-viewer.min.js')) ?>" defer></script>
+<?= flash_stack() ?>  <script src="<?= e(asset('admin.js')) ?>" data-viewer="<?= e(asset('vendor/model-viewer.min.js')) ?>" defer></script>
 </body>
 </html>
 <?php

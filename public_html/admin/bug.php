@@ -23,6 +23,8 @@ switch ($do) {
         $st = bug_str($_POST['status'] ?? '');
         if (!isset(BUG_STATUSES[$st])) { $error = 'Pick a status.'; break; }
         $fixed = $st === 'fixed' ? bug_line($_POST['fixed'] ?? '', 80) : '';   // a version from the menu (up to 60 characters + its stage), 'next:' + one, or a typed one
+        // a "Next Version" fix shows (and posts) the version it became once there is one: not a change, keep it as stored
+        if ($fixed !== '' && str_starts_with((string) ($b['fixed'] ?? ''), BUG_NEXT) && $fixed === m3d_bug_fixed_in($b)['label']) $fixed = (string) $b['fixed'];
         $reason = $st === 'closed' && isset(BUG_REASONS[bug_str($_POST['reason'] ?? '')]) ? (string) $_POST['reason'] : '';
         $dup = $reason === 'duplicate' ? (int) bug_str($_POST['dup'] ?? '') : 0;
         // (a number saved before may since have been deleted: it doesn't block the other changes)

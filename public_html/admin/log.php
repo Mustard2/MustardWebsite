@@ -40,12 +40,17 @@ foreach ($sameGen as $same) {
         count($same) > 1 ? 'v' . (!empty($m['majorVersion']) ? (int) $m['majorVersion'] : $i + 1) : '',
     ]));
 }
-$names = [];
-foreach (m3d_models() as $m) $names[$m['slug']] = $m['name'] . ($genTag[$m['slug']] !== '' ? ' (' . $genTag[$m['slug']] . ')' : '');
-foreach (m3d_outfits() as $o) $names['outfit:' . $o['slug']] = $o['name'] . ' · ' . m3d_accessory_type($o);
-$tags = [];   // item => [name, tag, kind] for the table (the name, then the generation / type as a small tag)
-foreach (m3d_models() as $m) $tags[$m['slug']] = [$m['name'], $genTag[$m['slug']], 'models', $m];
-foreach (m3d_outfits() as $o) $tags['outfit:' . $o['slug']] = [$o['name'], m3d_accessory_type($o), 'outfits', $o];
+$names = [];   // log item => its name in the menus and the search ("Alice (Gen 1)", "Dress · Outfit")
+$tags = [];   // log item => [name, tag, kind, item] for the table (the name, then the generation / type as a small tag)
+foreach (m3d_models() as $m) {
+    $names[$m['slug']] = $m['name'] . ($genTag[$m['slug']] !== '' ? ' (' . $genTag[$m['slug']] . ')' : '');
+    $tags[$m['slug']] = [$m['name'], $genTag[$m['slug']], 'models', $m];
+}
+foreach (m3d_outfits() as $o) {
+    $key = m3d_log_item('outfits', $o['slug']);
+    $names[$key] = $o['name'] . ' · ' . m3d_accessory_type($o);
+    $tags[$key] = [$o['name'], m3d_accessory_type($o), 'outfits', $o];
+}
 // A small picture next to each name (the "-xs" thumb, lazy): admins see every picture, so never blurred; the kind's icon without one.
 $pic = function (?array $it, string $kind, string $icon): string {
     static $done = [];
@@ -65,6 +70,14 @@ $date = fn($v) => is_string($v) && preg_match('/^\d{4}-\d{2}-\d{2}$/', $v) ? $v 
 $berlin = function (string $d, string $fmt = 'Y-m-d H:i:s'): string {
     try { return (new DateTimeImmutable($d, new DateTimeZone('UTC')))->setTimezone(new DateTimeZone('Europe/Berlin'))->format($fmt); }
     catch (Exception) { return $d; }
+};
+// the membership saved with a line (m3d_log_membership()): "4 mo" in the Patron column, the rest in its hover text
+$memText = function (array $m) use ($berlin): string {
+    return implode(' · ', array_filter([
+        $m['months'] !== null ? m3d_plural($m['months'], 'month') . ' as a patron' . ($m['since'] !== '' ? ' (since ' . $berlin($m['since'] . 'T12:00:00Z', 'j M Y') . ')' : '') : '',
+        $m['tier_cents'] !== null ? m3d_tier_label($m['tier_cents']) : '',
+        $m['total_cents'] !== null ? m3d_money($m['total_cents']) . ' total support' : '',
+    ]));
 };
 $f = [
     'q'      => trim(mb_substr(m3d_get_text('q'), 0, 100)),
@@ -102,10 +115,10 @@ if (isset($_GET['csv'])) {   // the rows of the current view
     header('Content-Disposition: attachment; filename="downloads-' . gmdate('Y-m-d') . ($filtered ? '-filtered' : '') . '.csv"');
     $out = fopen('php://output', 'wb');
     fwrite($out, "\xEF\xBB\xBF");   // so Excel reads it as UTF-8 (names with accents)
-    fputcsv($out, ['date_utc', 'patreon_id', 'name', 'item', 'link', 'version', 'free'], ',', '"', '');
+    fputcsv($out, ['date_utc', 'patreon_id', 'name', 'item', 'link', 'version', 'note', 'months_as_patron', 'patron_since', 'tier_cents', 'total_support_cents'], ',', '"', '');
     // a cell starting with = + - @ would run as a formula in a spreadsheet (patrons choose their own Patreon name): a ' in front keeps it text
     $cell = fn($v) => preg_match('/^[=+\-@\t\r]/', (string) $v) ? "'" . $v : $v;
-    foreach ($found as $r) fputcsv($out, array_map($cell, array_slice(array_pad($r, 7, ''), 0, 7)), ',', '"', '');
+    foreach ($found as $r) fputcsv($out, array_map($cell, array_slice(array_pad($r, 11, ''), 0, 11)), ',', '"', '');
     exit;
 }
 
@@ -133,7 +146,7 @@ $daysAgo = fn(int $n) => (new DateTimeImmutable('today', new DateTimeZone('Europ
 $stats = m3d_stats();
 $all = [];
 foreach (m3d_models() as $m) $all[] = ['name' => $m['name'], 'tag' => $genTag[$m['slug']], 'kind' => 'models', 'find' => $m['franchise'] ?? '', 'key' => $m['slug'], 'href' => '/models/' . $m['slug'] . '/', 'likes' => m3d_like_count($m['slug']), 'item' => $m] + m3d_downloads('models', $m['slug'], $stats);
-foreach (m3d_outfits() as $o) $all[] = ['name' => $o['name'], 'tag' => m3d_accessory_type($o), 'kind' => 'outfits', 'find' => 'accessory', 'key' => 'outfit:' . $o['slug'], 'href' => m3d_item_url('outfits', $o['slug']), 'likes' => m3d_like_count($o['slug'], 'outfits'), 'item' => $o] + m3d_downloads('outfits', $o['slug'], $stats);
+foreach (m3d_outfits() as $o) $all[] = ['name' => $o['name'], 'tag' => m3d_accessory_type($o), 'kind' => 'outfits', 'find' => 'accessory', 'key' => m3d_log_item('outfits', $o['slug']), 'href' => m3d_item_url('outfits', $o['slug']), 'likes' => m3d_like_count($o['slug'], 'outfits'), 'item' => $o] + m3d_downloads('outfits', $o['slug'], $stats);
 usort($all, fn($a, $b) => [$b['total'], $b['likes']] <=> [$a['total'], $a['likes']]);
 $maxTotal = max(1, ...array_column($all, 'total') ?: [0]);
 $kinds = array_count_values(array_column($all, 'kind'));
@@ -212,7 +225,7 @@ admin_start('Downloads', 'log');
     </section>
 
     <section class="sec log-sec" id="log">
-    <div class="log-head">
+    <div class="dl-log-head">
       <div>
         <h2 class="small-h">Patron Download Log<?= tip('Downloads of patron links from the last ' . (int) ($M3D['log_retention_days'] ?? 365) . ' days, in German time (CET in winter, CEST in summer). It also decides what each patron has unlocked.') ?></h2>
       </div>
@@ -226,8 +239,8 @@ admin_start('Downloads', 'log');
         </div>
       <?php endif ?>
     </div>
-    <?php if ($removed !== null && !empty($_GET['rows'])): ?><p class="notice"><?= $removed ? '✓ ' . m3d_plural($removed, 'download') . ' removed from the log.' : 'Nothing removed: those downloads were already gone.' ?></p>
-    <?php elseif ($removed !== null): $all = !empty($_GET['all']); ?><p class="notice"><?= $removed ? '✓ ' . m3d_plural($removed, 'download') . ' removed: ' . ($all ? 'every patron starts' : 'that patron starts') . ' again with nothing unlocked.' : 'Nothing to remove: ' . ($all ? 'the log was already empty.' : 'that patron had no downloads in the log.') ?></p><?php endif ?>
+    <?php if ($removed !== null && !empty($_GET['rows'])) admin_flash($removed ? '✓ ' . m3d_plural($removed, 'download') . ' removed from the log.' : 'Nothing removed: those downloads were already gone.', $removed ? 'ok' : 'info');
+    elseif ($removed !== null) { $all = !empty($_GET['all']); admin_flash($removed ? '✓ ' . m3d_plural($removed, 'download') . ' removed: ' . ($all ? 'every patron starts' : 'that patron starts') . ' again with nothing unlocked.' : 'Nothing to remove: ' . ($all ? 'the log was already empty.' : 'that patron had no downloads in the log.'), $removed ? 'ok' : 'info'); } ?>
     <?php if (!$rows): ?>
       <p class="muted">No downloads logged yet.</p>
     <?php else: ?>
@@ -261,20 +274,23 @@ admin_start('Downloads', 'log');
         <noscript><button class="btn btn-ghost btn-sm">Apply</button></noscript>
       </form>
 
-      <?php if ($f['patron'] !== ''): $who = $pname[$f['patron']] ?? $f['patron']; $mine = array_filter($rows, fn($r) => $r[1] === $f['patron']); $dates = array_column($mine, 0); ?>
+      <?php if ($f['patron'] !== ''): $who = $pname[$f['patron']] ?? $f['patron']; $mine = array_filter($rows, fn($r) => $r[1] === $f['patron']); $dates = array_column($mine, 0);
+        $lastMem = null;   // the membership saved with their newest download that has one
+        foreach ($mine as $r) if (($m = m3d_log_membership($r)) && ($lastMem === null || strcmp($r[0], $lastMem[0]) >= 0)) $lastMem = [$r[0], $m]; ?>
         <!-- filtered by one patron: who they are, their totals, and the reset for them only -->
         <div class="log-patron">
           <div>
             <p class="muted small">Patron</p>
             <b class="log-patron-name"><?= e($who !== '' ? $who : $f['patron']) ?></b>
             <span class="muted small">Patreon ID <?= e($f['patron']) ?> · <?= m3d_plural(count($mine), 'download') ?> · <?php $ni = count(array_unique(array_column($mine, 3))); ?><?= $ni ?> <?= $ni === 1 ? 'model/accessory' : 'models/accessories' ?><?= $dates ? ' · first ' . e($berlin(min($dates), 'j M Y')) . ', last ' . e($berlin(max($dates), 'j M Y')) : '' ?></span>
+            <?php if ($lastMem): ?><span class="muted small log-patron-mem">Membership on <?= e($berlin($lastMem[0], 'j M Y')) ?>: <?= e($memText($lastMem[1])) ?></span><?php endif ?>
           </div>
           <div class="log-patron-btns">
             <?php if (preg_match('/^\d{1,20}$/', $f['patron'])): $hasEx = m3d_exception($f['patron']) !== null; ?>
             <form method="post" action="/admin/patron-preview.php">
               <input type="hidden" name="csrf" value="<?= e(m3d_csrf()) ?>" /><input type="hidden" name="return" value="/account/" />
-              <input type="hidden" name="tier" value="ok" /><input type="hidden" name="as" value="<?= e($f['patron']) ?>" /><input type="hidden" name="dl_models" value="0" /><input type="hidden" name="dl_outfits" value="0" /><input type="hidden" name="updates" value="0" />
-              <button class="btn btn-sm btn-preview" name="do" value="apply" title="Their My Account page, with their real downloads and their exception">Preview as This Patron</button>
+              <input type="hidden" name="tier" value="ok" /><input type="hidden" name="as" value="<?= e($f['patron']) ?>" /><input type="hidden" name="dl_models" value="0" /><input type="hidden" name="dl_outfits" value="0" /><input type="hidden" name="updates" value="0" /><input type="hidden" name="real" value="1" />
+              <button class="btn btn-sm btn-preview" name="do" value="apply" title="<?= e('Their My Account page, with their real downloads and their exception' . ($lastMem ? ', and the membership saved with their newest download' : '')) ?>">Preview as This Patron</button>
             </form>
             <a class="btn btn-ghost btn-sm" href="/admin/users.php?<?= e($hasEx ? 'ex=' . rawurlencode($f['patron']) . '#ex-' . $f['patron'] : http_build_query(['add' => $f['patron'], 'name' => $who !== $f['patron'] ? $who : '']) . '#add-user') ?>"><?= $hasEx ? 'Edit Exception' : 'Add Exception' ?></a>
             <?php endif ?>
@@ -327,11 +343,11 @@ admin_start('Downloads', 'log');
                 <th><span class="th-i"><?= $ico('patron') ?>Patron</span></th><th><span class="th-i"><?= $ico('item') ?>Model / Accessory</span></th><th><span class="th-i"><?= $ico('version') ?>Version</span></th><th><span class="th-i"><?= $ico('link') ?>Link</span></th>
               </tr></thead>
               <tbody>
-                <?php foreach ($shown as $r): [$d, $id, $name, $item, $link, $ver] = $r; [$iname, $itag, $ikind, $iitem] = $tags[$item] ?? [$names[$item] ?? $item, '', str_starts_with($item, 'outfit:') ? 'outfits' : 'models', null]; ?>
+                <?php foreach ($shown as $r): [$d, $id, $name, $item, $link, $ver] = $r; [$iname, $itag, $ikind, $iitem] = $tags[$item] ?? [$names[$item] ?? $item, '', m3d_log_item_parts($item)[0], null]; ?>
                   <tr>
                     <td class="c-check"><input type="checkbox" name="rows[]" value="<?= e(m3d_log_row_key($r)) ?>" aria-label="<?= e('Select ' . $name . ', ' . $iname . ', ' . $berlin($d)) ?>" /></td>
                     <td class="log-when" title="<?= e($berlin($d, 'Y-m-d H:i:s T')) ?>"><?= e($berlin($d, 'Y-m-d')) ?> <span class="muted"><?= e($berlin($d, 'H:i')) ?></span></td>
-                    <td><a class="log-who" href="<?= e($url(['patron' => $id])) ?>" title="Only this patron"><?= e($name !== '' ? $name : $id) ?></a><span class="log-id muted"><?= e($id) ?></span></td>
+                    <td><a class="log-who" href="<?= e($url(['patron' => $id])) ?>" title="Only this patron"><?= e($name !== '' ? $name : $id) ?></a><span class="log-id muted"><?= e($id) ?><?php if (($mem = m3d_log_membership($r)) && $mem['months'] !== null): ?> · <span class="tip log-mem" tabindex="0" data-tip="<?= e('At this download: ' . $memText($mem)) ?>"><?= $mem['months'] ?> mo</span><?php endif ?></span></td>
                     <td><span class="tot-item"><?= $pic($iitem, $ikind, $ikind === 'outfits' ? accessory_icon_paths($itag) : LOG_ICONS['patron']) ?><span class="tot-name"><a class="log-who" href="<?= e($url(['item' => $item])) ?>" title="Only this model or accessory"><?= e($iname) ?></a><?php if ($itag !== ''): ?><span class="tot-tag tot-tag-<?= e($ikind) ?>"><svg viewBox="0 0 24 24" aria-hidden="true"><?= $ikind === 'outfits' ? accessory_icon_paths($itag) : LOG_ICONS['patron'] ?></svg><?= e($itag) ?></span><?php endif ?></span></span></td>
                     <td class="log-ver"><?= $ver !== '' ? e($ver) : '<span class="muted">—</span>' ?></td>
                     <td class="muted"><?= e($link) ?></td>

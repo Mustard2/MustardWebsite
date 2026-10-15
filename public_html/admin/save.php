@@ -29,7 +29,7 @@ try {
             $have = array_column($g['stills'], 'src');
             $taken = array_column($g['stills'], 'id');
             $slugs = array_flip(array_column(m3d_models(), 'slug'));
-            $today = (new DateTime('now', new DateTimeZone('Europe/Berlin')))->format('Y-m-d');
+            $today = m3d_today();
             $new = [];
             foreach (array_slice((array) ($in['srcs'] ?? []), 0, 200) as $src) {
                 $src = img_large(clean_url($src));
@@ -178,11 +178,6 @@ try {
     }
     if (!m3d_save_items($kind, $items)) throw new RuntimeException(m3d_write_error('data'));
     if ($existing && ($existing['model3d'] ?? '') !== ($item['model3d'] ?? '')) m3d_glb_forget([(string) ($existing['model3d'] ?? '')]);   // replaced or removed
-    if ($existing && $original !== $item['slug']) {
-        m3d_rename_counts($kind, $original, $item['slug']);
-        if ($kind === 'models') m3d_gallery_rename_model($original, $item['slug']);
-        m3d_bugs_rename_item($kind, $original, $item['slug']);
-    }
     admin_json(['ok' => true, 'slug' => $item['slug'], 'created' => !$existing, 'rev' => admin_item_rev(m3d_item($kind, $item['slug']) ?? $item)]);
 } catch (InvalidArgumentException $ex) {
     admin_json(['ok' => false, 'error' => $ex->getMessage()], 422);

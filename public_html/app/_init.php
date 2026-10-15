@@ -26,4 +26,6 @@ require_once __DIR__ . '/discord.php';
 require_once __DIR__ . '/bugs.php';
 require_once __DIR__ . '/gallery.php';
 require_once __DIR__ . '/links.php';
+require_once __DIR__ . '/s4.php';
 require_once __DIR__ . '/model3d.php';
+require_once __DIR__ . '/welcome.php';

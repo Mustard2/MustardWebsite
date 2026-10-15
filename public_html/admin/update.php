@@ -78,7 +78,7 @@ $newest = $check['releases'][0] ?? null;
 $installed = $result['to'] ?? M3D_VERSION;
 $ago = max(0, time() - (int) $check['at']);
 $agoText = $ago < 60 ? 'just now' : ($ago < 3600 ? m3d_plural(intdiv($ago, 60), 'minute') . ' ago' : m3d_plural(intdiv($ago, 3600), 'hour') . ' ago');
-$expires = $check['expires'] !== '' && ($t = strtotime($check['expires'])) ? (new DateTimeImmutable('@' . $t))->setTimezone(new DateTimeZone('Europe/Berlin'))->format('j M Y') : '';
+$expires = $check['expires'] !== '' && ($t = strtotime($check['expires'])) ? m3d_berlin($t, 'j M Y') : '';
 const UPDATE_SHOWN = 10;   // versions listed in "What changed"
 const CHANNEL_ICONS = [
     'stable' => '<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="m9 12 2 2 4-4"/>',                             // shield with a tick
@@ -98,7 +98,7 @@ $keyText = $keyState === 'ok' ? 'Key works' . ($expires !== '' ? ' · expires ' 
     <?php if ($result): ?>
       <section class="sec ok-box">
         <p><b class="res-ok">Update installed ✓</b> <?= $result['files'] ? (int) $result['files'] . ' files changed' : 'No file needed changing' ?> (<?= e($result['from']) ?> → <?= e($result['to']) ?>).</p>
-        <?php if ($result['backup'] !== ''): ?><p class="muted small">The previous code was saved as <code><?= e($result['backup']) ?></code>: you can go back to it in <a href="/admin/backups.php#code">Backups</a>.</p><?php endif; ?>
+        <?php if ($result['backup'] !== ''): ?><p class="muted small">The previous code was saved as <code><?= e($result['backup']) ?></code>: you can go back to it in <a href="/admin/backups.php#all">Backups</a>.</p><?php endif; ?>
         <p><a class="btn btn-ghost btn-sm" href="/" target="_blank">Check the Site ↗</a></p>
       </section>
     <?php elseif ($error): ?>
@@ -124,7 +124,7 @@ $keyText = $keyState === 'ok' ? 'Key works' . ($expires !== '' ? ' · expires ' 
         <p class="muted small up-msg"><?= count($newer) === 1 ? 'New Version Available' : count($newer) . ' New Versions Available' ?></p>
         <ul class="up-list">
           <?php foreach (array_slice($newer, 0, UPDATE_SHOWN) as $r): ?>
-            <li><h3><?= e($r['v']) ?> <small>· <?= e((new DateTimeImmutable('@' . $r['at']))->setTimezone(new DateTimeZone('Europe/Berlin'))->format('j M, H:i T')) ?></small></h3>
+            <li><h3><?= e($r['v']) ?> <small>· <?= e(m3d_berlin($r['at'], 'j M, H:i T')) ?></small></h3>
               <?= gh_notes_html($r['notes']) ?></li>
           <?php endforeach ?>
         </ul>

@@ -1,5 +1,5 @@
 <?php
-// Link check (Admin → Assets → Link check, admin/links.php; the page's rows are in admin/_links.php): is every download link still alive?
+// Link check (Admin → Assets → Link check, admin/links.php, which also makes the page's rows): is every download link still alive?
 // Only MEGA and transfer.it links by default; links on other websites only once the admin adds the website (settings.json → linkcheck.sites).
 // The admin presses "Check all links" (or "Check again" on one row) and admin.js asks links.php to check the links one by one; with the
 // automatic check on (settings.json → linkcheck.auto / every), lc_auto_tick() also checks a few due links after a page now and then.
@@ -15,12 +15,6 @@ const LC_TRANSFER_API = 'https://bt7.api.mega.co.nz/cs';
 const LC_AUTO_BATCH = 5;      // automatic check: links per run (after a page, one at a time)
 const LC_AUTO_GAP = 600;      // seconds between two runs while links are due
 const LC_EVERY_MAX = 90;      // days
-
-/** "840 KB", "12.4 MB", "1.2 GB". */
-function lc_size(int $b): string
-{
-    return $b >= 1073741824 ? sprintf('%.1f GB', $b / 1073741824) : ($b >= 1048576 ? sprintf('%.1f MB', $b / 1048576) : sprintf('%d KB', max(1, (int) ceil($b / 1024))));
-}
 
 /** The links Link check looks at: MEGA and transfer.it links, and links on the websites the admin added (lc_sites()). */
 function lc_links(): array
@@ -68,7 +62,7 @@ function lc_all_links(): array
     $out = [];
     $add = function (array $l) use (&$out) {
         $url = trim((string) $l['url']);
-        if (!preg_match('#^https?://#i', $url)) return;   // pages of this site (add-ons like /mustardui/) aren't checked
+        if (!preg_match('#^https?://#i', $url) && !m3d_s4_short($url)) return;   // pages of this site (add-ons like /mustardui/) aren't checked; "s4:" links are
         $out[] = ['h' => md5($url), 'url' => $url, 'host' => lc_host($url)] + $l;
     };
     foreach (['models', 'outfits'] as $kind) {
@@ -81,7 +75,7 @@ function lc_all_links(): array
                      'edit' => '/admin/edit.php?' . ($kind === 'outfits' ? 'kind=outfits&slug=' : 'slug=') . rawurlencode($slug)];
             foreach ((array) ($it['links'] ?? []) as $l) {
                 if (!is_array($l)) continue;
-                $add($base + ['url' => (string) ($l['url'] ?? ''), 'label' => (string) ($l['label'] ?? 'Download'), 'access' => ($l['access'] ?? '') === 'public' ? 'Public' : 'Patrons']);
+                $add($base + ['url' => (string) ($l['url'] ?? ''), 'label' => (string) ($l['label'] ?? 'Download'), 'access' => (($l['access'] ?? '') === 'public' ? 'Public' : 'Patrons') . (!empty($l['off']) ? ' · Hidden' : '')]);
             }
             foreach ((array) ($it['addons'] ?? []) as $a) {
                 if (!is_array($a)) continue;
@@ -89,21 +83,19 @@ function lc_all_links(): array
             }
         }
     }
-    $models = [];
-    foreach (m3d_models() as $m) $models[(string) $m['slug']] = (string) $m['name'];
     foreach (m3d_gallery()['stills'] as $s) {
         if (!is_array($s['link'] ?? null) || ($s['link']['url'] ?? '') === '') continue;
-        $chars = array_map(fn($c) => $models[(string) $c] ?? (string) $c, (array) ($s['chars'] ?? []));
-        $name = trim((string) ($s['caption'] ?? '')) ?: (implode(', ', $chars) ?: 'Untitled picture');
+        $name = m3d_still_name($s, 'Untitled picture');
         $add(['kind' => 'gallery', 'slug' => (string) $s['id'], 'name' => $name, 'sub' => 'Gallery' . (($s['date'] ?? '') !== '' ? ' · ' . $s['date'] : ''),
               'edit' => '/admin/gallery.php?still=' . rawurlencode((string) $s['id']), 'url' => (string) $s['link']['url'], 'label' => 'Full size', 'access' => ($s['link']['access'] ?? '') === 'public' ? 'Public' : 'Patrons']);
     }
     return $out;
 }
 
-/** What an address is: ['mega-file', handle, key] | ['mega-folder', handle, key] | ['transfer', handle, ''] | ['mega-other' | 'transfer-other' | 'web', '', '']. */
+/** What an address is: ['mega-file', handle, key] | ['mega-folder', handle, key] | ['transfer', handle, ''] | ['s4' (a MEGA S4 file), '', ''] | ['mega-other' | 'transfer-other' | 'web', '', '']. */
 function lc_parse(string $url): array
 {
+    if (m3d_s4_short($url)) return ['s4', '', ''];
     $p = parse_url($url);
     $host = strtolower(preg_replace('/^www\./i', '', (string) ($p['host'] ?? '')));
     $path = (string) ($p['path'] ?? '');
@@ -122,6 +114,7 @@ function lc_parse(string $url): array
         if (preg_match('#^/t/([A-Za-z0-9_-]{8,20})/?$#', $path, $m)) return ['transfer', $m[1], ''];
         return ['transfer-other', '', ''];
     }
+    if (m3d_s4_on() && m3d_s4_parse($url)) return ['s4', '', ''];   // switched off: a full S4 address is sent as it is, so it is checked like any other
     return ['web', '', ''];
 }
 
@@ -131,6 +124,7 @@ function lc_host(string $url): string
     return match (lc_parse($url)[0]) {
         'mega-file' => 'MEGA file', 'mega-folder' => 'MEGA folder', 'mega-other' => 'MEGA',
         'transfer', 'transfer-other' => 'transfer.it',
+        's4' => 'MEGA S4',
         default => strtolower(preg_replace('/^www\./i', '', (string) parse_url($url, PHP_URL_HOST))),
     };
 }
@@ -145,7 +139,7 @@ function lc_group(string $host): string
 function lc_settings_save(array $changes): bool
 {
     $cur = m3d_settings(true)['linkcheck'] ?? [];
-    $cur = is_array($cur) ? array_intersect_key($cur, ['sites' => 1, 'auto' => 1, 'every' => 1]) : [];   // drops the MEGA app key and skip list of earlier versions
+    $cur = is_array($cur) ? $cur : [];
     $new = array_filter(array_merge($cur, $changes), fn($v) => $v !== null && $v !== '' && $v !== [] && $v !== false);
     return m3d_save_settings(['linkcheck' => $new ?: null]);
 }
@@ -252,6 +246,7 @@ function lc_check(string $url): array
     $err = '';
     if ($type === 'mega-other') return ['st' => 'unknown', 'why' => str_starts_with((string) parse_url($url, PHP_URL_FRAGMENT), 'P!') ? 'Password-protected MEGA link: it can’t be checked' : 'Not a MEGA file or folder link: it can’t be checked'];
     if ($type === 'transfer-other') return ['st' => 'unknown', 'why' => 'Not a transfer link (transfer.it/t/…): it can’t be checked'];
+    if ($type === 's4') return lc_check_s4($url);
     if ($type === 'mega-file' || $type === 'mega-folder' || $type === 'transfer') {
         $r = match ($type) {
             'mega-file'   => lc_mega_call(LC_MEGA_API, [], ['a' => 'g', 'p' => $h], $err),
@@ -275,16 +270,31 @@ function lc_mega_result(string $type, array|int $r, string $key): array
     if ($type === 'mega-file') {
         $name = lc_mega_name((string) ($r['at'] ?? ''), $key);
         $size = (int) ($r['s'] ?? 0);
-        $what = implode(' · ', array_filter([$name, $size > 0 ? lc_size($size) : '']));
+        $what = implode(' · ', array_filter([$name, $size > 0 ? m3d_size($size) : '']));
         return ['st' => 'ok', 'why' => ($what !== '' ? $what : 'File found') . $noKey];
     }
     if ($type === 'mega-folder') {
         $files = 0;
         $bytes = 0;
         foreach ((array) ($r['f'] ?? []) as $n) if (is_array($n) && (int) ($n['t'] ?? -1) === 0) { $files++; $bytes += (int) ($n['s'] ?? 0); }
-        return ['st' => 'ok', 'why' => ($files ? m3d_plural($files, 'file') . ($bytes > 0 ? ' · ' . lc_size($bytes) : '') : 'Folder found (empty?)') . $noKey];
+        return ['st' => 'ok', 'why' => ($files ? m3d_plural($files, 'file') . ($bytes > 0 ? ' · ' . m3d_size($bytes) : '') : 'Folder found (empty?)') . $noKey];
     }
     return ['st' => 'ok', 'why' => 'Transfer found'];
+}
+
+/** A MEGA S4 file (signed with the keys of Settings → Features → MEGA S4): asks for its first byte. */
+function lc_check_s4(string $url): array
+{
+    if (!m3d_s4_on()) return ['st' => 'unknown', 'why' => 'MEGA S4 downloads are off (Settings → Features): this link doesn’t download'];
+    if (!m3d_s4_parse($url)) return ['st' => 'unknown', 'why' => m3d_s4_error_text('no bucket')];
+    $r = m3d_s4_probe($url);
+    if ($r['ok']) {
+        $name = basename((string) m3d_s4_parse($url)[2]);
+        return ['st' => 'ok', 'why' => $name . ($r['size'] > 0 ? ' · ' . m3d_size($r['size']) : '')];
+    }
+    if ($r['code'] === 0) return ['st' => 'unknown', 'why' => 'S4 didn’t answer (' . $r['err'] . ')'];
+    $dead = in_array($r['err'], ['NoSuchKey', 'NoSuchBucket'], true) || $r['code'] === 404;
+    return ['st' => $dead ? 'dead' : 'unknown', 'why' => m3d_s4_error_text($r['err'])];
 }
 
 /** Any other address: it must answer. 2xx / 3xx = works, 404 / 410 or an address that doesn't exist = dead, anything else = couldn't check. */
@@ -375,53 +385,45 @@ function lc_auto_tick(): void
     if (!lc_auto()['on']) return;
     $next = (m3d_read_json('linkcheck') ?? [])['next'] ?? 0;
     if (is_int($next) && $next > time()) return;
-    register_shutdown_function(function () {
-        if (function_exists('fastcgi_finish_request')) fastcgi_finish_request();
-        elseif (function_exists('litespeed_finish_request')) litespeed_finish_request();
-        m3d_session_release();
-        lc_auto_run();
-    });
+    m3d_after_response(fn() => lc_auto_run());
 }
 
 /** One automatic run (under a lock): the LC_AUTO_BATCH links checked longest ago (never checked first), one at a time; then sets `next`. */
 function lc_auto_run(): void
 {
-    $lock = @fopen(M3D_PRIVATE . '/data/.linkcheck-run.lock', 'c');
-    if (!$lock || !flock($lock, LOCK_EX | LOCK_NB)) return;   // another request is on it
-    try {
-        // read again under the lock: a run that ended since this page looked has already moved `next`
-        $next = (m3d_read_json('linkcheck') ?? [])['next'] ?? 0;
-        if (is_int($next) && $next > time()) return;
-        ignore_user_abort(true);
-        @set_time_limit(180);
-        $every = lc_auto()['every'] * 86400;
-        $due = lc_auto_due($every);
-        $slow = false;
-        foreach (array_slice($due, 0, LC_AUTO_BATCH) as $i => $url) {
-            if ($i) sleep(1);
-            $res = lc_check($url);
-            // MEGA didn't answer or asked to slow down: nothing saved, so the last real result (a dead link stays red) is kept
-            // and the link stays due; the rest waits for the next run
-            if (!empty($res['slow'])) { $slow = true; break; }
-            lc_save(md5($url), $res);
+    m3d_with_lock('.linkcheck-run.lock', function () {   // another request on it: nothing to do
+        try {
+            // read again under the lock: a run that ended since this page looked has already moved `next`
+            $next = (m3d_read_json('linkcheck') ?? [])['next'] ?? 0;
+            if (is_int($next) && $next > time()) return;
+            ignore_user_abort(true);
+            @set_time_limit(180);
+            $every = lc_auto()['every'] * 86400;
+            $due = lc_auto_due($every);
+            $slow = false;
+            foreach (array_slice($due, 0, LC_AUTO_BATCH) as $i => $url) {
+                if ($i) sleep(1);
+                $res = lc_check($url);
+                // MEGA didn't answer or asked to slow down: nothing saved, so the last real result (a dead link stays red) is kept
+                // and the link stays due; the rest waits for the next run
+                if (!empty($res['slow'])) { $slow = true; break; }
+                lc_save(md5($url), $res);
+            }
+            // more due: again in a while; else when the oldest result gets old enough
+            $left = lc_auto_due($every);
+            if ($left) $next = time() + ($slow ? 3 * LC_AUTO_GAP : LC_AUTO_GAP);
+            else {
+                $res = lc_results();
+                $ats = [];
+                foreach (lc_links() as $l) if (isset($res[$l['h']]['at'])) $ats[] = (int) $res[$l['h']]['at'];
+                $next = max(time() + LC_AUTO_GAP, ($ats ? min($ats) : time()) + $every);
+            }
+            lc_set_next($next);
+        } catch (Throwable $ex) {
+            m3d_problem('link check', $ex->getMessage());
+            lc_set_next(time() + 6 * LC_AUTO_GAP);
         }
-        // more due: again in a while; else when the oldest result gets old enough
-        $left = lc_auto_due($every);
-        if ($left) $next = time() + ($slow ? 3 * LC_AUTO_GAP : LC_AUTO_GAP);
-        else {
-            $res = lc_results();
-            $ats = [];
-            foreach (lc_links() as $l) if (isset($res[$l['h']]['at'])) $ats[] = (int) $res[$l['h']]['at'];
-            $next = max(time() + LC_AUTO_GAP, ($ats ? min($ats) : time()) + $every);
-        }
-        lc_set_next($next);
-    } catch (Throwable $ex) {
-        m3d_problem('link check', $ex->getMessage());
-        lc_set_next(time() + 6 * LC_AUTO_GAP);
-    } finally {
-        flock($lock, LOCK_UN);
-        fclose($lock);
-    }
+    });
 }
 
 /** The addresses an automatic run should check, oldest result first (never checked first). */

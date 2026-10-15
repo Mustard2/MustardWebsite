@@ -17,8 +17,7 @@ admin_start('Models', 'models');
     </div>
     <?= assets_menu('models') ?>
 
-    <?php if ($done): ?><p class="notice"><b class="res-ok">✓</b> <?= e($done) ?></p><?php endif ?>
-    <?php if ($error): ?><p class="notice"><b class="res-err">Not saved:</b> <?= e($error) ?></p><?php endif ?>
+    <?php admin_result($done, $error) ?>
     <?= admin_start_box('models', (bool) ($done || $error)) ?>
 
 

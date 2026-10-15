@@ -127,7 +127,6 @@ if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST') {
     }
 }
 
-admin_require($M3D);
 $profile = (string) (m3d_settings()['import_profile'] ?? '');
 admin_start('Import from SmutBase', 'models');
 ?>
@@ -139,7 +138,7 @@ admin_start('Import from SmutBase', 'models');
     </div>
 
     <section class="sec import-sec" data-import>
-      <h2 class="small-h">1. Find Your Projects<?= tip('The projects become draft models (only admins see them) with their description, features, sidebar sections, credits, changelog, pictures (copied to this site) and a “SmutBase” download link. Check each one in the editor, then make it public. Videos are not imported.') ?></h2>
+      <h2 class="small-h">1. Find Your Projects<?= tip('The projects become draft models (only admins see them) with their description, features, notes, credits, changelog, pictures (copied to this site) and a “SmutBase” download link. Check each one in the editor, then make it public. Videos are not imported.') ?></h2>
       <form class="import-find" data-import-find>
         <label class="field"><span class="lbl">SmutBase Profile</span>
           <input class="input" type="url" name="url" value="<?= e($profile) ?>" placeholder="https://smutba.se/user/10157/" required spellcheck="false" />

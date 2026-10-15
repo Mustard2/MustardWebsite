@@ -15,3 +15,7 @@ private/data/.*
 !private/data/models.json
 !private/data/outfits.json
 __pycache__/
+
+# MEGA S4 and update-channel keys (Admin → Settings)
+private/s4.php
+private/github.php

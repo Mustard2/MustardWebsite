@@ -7,15 +7,7 @@ require __DIR__ . '/_admin.php';
 admin_require($M3D);
 
 if (!admin_form_post() || !in_array($_POST['do'] ?? '', ['batch', 'tags'], true)) {
-    // old addresses: Admin → Bugs (?show=, ?by=, ?q=), the Tags tab
-    $show = bug_str($_GET['show'] ?? '');
-    $q = array_filter([
-        'status' => $show === 'open' ? '' : (in_array($show, ['fixed', 'closed', 'unseen', 'pending', 'hidden'], true) ? $show : 'all'),   // the list opens on Open
-        'q' => bug_line($_GET['q'] ?? '', 80),
-        'by' => preg_match('/^[0-9A-Za-z_-]{1,40}$/', bug_str($_GET['by'] ?? '')) ? (string) $_GET['by'] : '',
-        'done' => (int) ($_GET['deleted'] ?? 0) > 0 ? 'Report #' . (int) $_GET['deleted'] . ' deleted.' : '',
-    ], fn($v) => $v !== '');
-    m3d_redirect('/bugs/' . ($q ? '?' . http_build_query($q) : ''));
+    m3d_redirect('/bugs/');   // nothing to show here: the list is /bugs/
 }
 
 // back to the page as it was (the list's filters and page), without an earlier ?done= / ?err= / ?edit=
@@ -39,7 +31,7 @@ if ($_POST['do'] === 'tags') {
         if ($name === '') continue;
         if (!preg_match('/^#[0-9a-f]{6}$/', $color)) $color = BUG_TAG_COLORS[count($list) % count(BUG_TAG_COLORS)];
         if (!isset($old[$id]) || isset($ids[$id])) {   // a new tag: an id from its name
-            $base = trim((string) preg_replace('/[^a-z0-9]+/', '-', bug_fold($name)), '-') ?: 'tag';
+            $base = trim((string) preg_replace('/[^a-z0-9]+/', '-', m3d_fold($name)), '-') ?: 'tag';
             if (ctype_digit($base)) $base = "tag-$base";   // never digits only ("2024"): PHP would turn it into a number key
             $base = substr($base, 0, 30);
             $id = $base;

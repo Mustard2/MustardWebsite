@@ -53,8 +53,7 @@ function m3d_bug_settings(): array
 /** Saves some keys of settings.json → bugs, keeping the others (tags, blocked people…). */
 function m3d_bug_settings_save(array $changes): bool
 {
-    $s = m3d_settings(true)['bugs'] ?? [];
-    return m3d_save_settings(['bugs' => array_merge(is_array($s) ? $s : [], $changes)]);
+    return m3d_save_setting_keys('bugs', $changes);
 }
 
 function m3d_bugs_on(): bool { return m3d_bug_settings()['on']; }
@@ -110,8 +109,6 @@ function m3d_bugs_update(callable $fn): mixed
         $d = is_array($d) ? $d : [];
         $bugs = array_values(array_filter((array) ($d['bugs'] ?? []), 'is_array'));
         $next = max((int) ($d['next'] ?? 1), 1 + max([0, ...array_map(fn($b) => (int) ($b['n'] ?? 0), $bugs)]));
-        foreach ($bugs as &$b) $b['fol'] = m3d_bug_followers($b);   // reports from before following existed get their followers now
-        unset($b);
         [$bugs, $next, $res] = $fn($bugs, $next);
         return [['version' => 1, 'next' => $next, 'bugs' => array_values($bugs)], $res];
     });
@@ -181,7 +178,7 @@ function m3d_bug_abouts(): array
     $out = [];
     foreach (m3d_items('models') as $m) {
         if (!m3d_can_view('models', $m)) continue;
-        $out['models:' . $m['slug']] = [$m['name'] . (m3d_model_versions($m) ? ' v' . (int) $m['majorVersion'] : ''), 'Models', $m];
+        $out['models:' . $m['slug']] = [m3d_model_name($m), 'Models', $m];
     }
     foreach (m3d_items('outfits') as $o) {
         if (!m3d_can_view('outfits', $o)) continue;
@@ -198,7 +195,7 @@ function m3d_bug_abouts_all(): array
 {
     $out = [];
     foreach (['models' => 'Models', 'outfits' => 'Accessories'] as $kind => $group) foreach (m3d_items($kind) as $it) {
-        $out["$kind:" . $it['slug']] = [$it['name'] . ($kind === 'models' && m3d_model_versions($it) ? ' v' . (int) $it['majorVersion'] : '') . (m3d_visibility($it) === 'draft' ? ' (draft)' : ''), $group];
+        $out["$kind:" . $it['slug']] = [m3d_model_name($it) . (m3d_visibility($it) === 'draft' ? ' (draft)' : ''), $group];
     }
     return $out + ['site' => ['The Website', 'Other'], 'other' => ['Something Else', 'Other']];
 }
@@ -218,7 +215,7 @@ function m3d_bug_about(array $b): array
     [$kind, $slug] = m3d_bug_about_parts((string) ($b['about'] ?? ''));
     if ($slug !== '') {
         $it = m3d_item($kind, $slug);
-        $name = $it ? (string) $it['name'] . ($kind === 'models' && m3d_model_versions($it) ? ' v' . (int) $it['majorVersion'] : '') : (string) ($b['about_name'] ?? $slug);
+        $name = $it ? m3d_model_name($it) : (string) ($b['about_name'] ?? $slug);
         return ['name' => $name, 'kind' => $kind === 'models' ? 'Model' : ($it ? m3d_accessory_type($it) : 'Accessory'),
             'url' => $it && m3d_can_view($kind, $it) ? m3d_item_url($kind, $slug) : '', 'item' => $it, 'kindKey' => $kind];
     }
@@ -341,21 +338,11 @@ function m3d_bug_fixes_for(string $kind, array $item, array $log): array
 // Writing, commenting or pressing Me Too follows it; the Follow button turns it off or on. Admins don't follow (Admin → Bugs
 // has its own "not seen"). What is new for a follower: comments by others and status changes after that time.
 
-/** code => last opened. A report from before following existed: its reporter, commenters and Me Too, as seen up to its last activity. */
+/** code => last opened. */
 function m3d_bug_followers(array $b): array
 {
-    if (isset($b['fol']) && is_array($b['fol'])) {
-        $out = [];
-        foreach ($b['fol'] as $c => $t) $out[(string) $c] = (int) $t;
-        return $out;
-    }
-    $seen = (int) ($b['act'] ?? $b['at'] ?? 0);
-    $owners = m3d_owner_ids($GLOBALS['M3D']);
-    $ids = [(string) ($b['by'] ?? '')];
-    foreach ((array) ($b['log'] ?? []) as $x) if (($x['t'] ?? '') === 'c' && empty($x['admin'])) $ids[] = (string) ($x['by'] ?? '');
     $out = [];
-    foreach (array_unique($ids) as $id) if ($id !== '' && !in_array($id, $owners, true)) $out[m3d_like_code($id)] = $seen;
-    foreach ((array) ($b['metoo'] ?? []) as $c) $out[(string) $c] ??= $seen;
+    foreach ((array) ($b['fol'] ?? []) as $c => $t) $out[(string) $c] = (int) $t;
     return $out;
 }
 
@@ -436,16 +423,6 @@ function bug_text(mixed $v, int $max): string
 function bug_str(mixed $v): string
 {
     return is_scalar($v) ? (string) $v : '';
-}
-
-/** Lower case without accents, for the searches. */
-function bug_fold(string $s): string
-{
-    $s = mb_strtolower($s);
-    // like the header search (search_fold()): every accent ("più", "Ägypten"); the short list below only without the intl extension
-    if (class_exists('Normalizer')) return (string) preg_replace('/\p{Mn}+/u', '', (string) Normalizer::normalize($s, Normalizer::FORM_D));
-    return strtr($s, ['à' => 'a', 'á' => 'a', 'â' => 'a', 'ä' => 'a', 'é' => 'e', 'è' => 'e', 'ê' => 'e', 'ë' => 'e', 'í' => 'i', 'ï' => 'i', 'ó' => 'o', 'ö' => 'o', 'ô' => 'o', 'ú' => 'u', 'ü' => 'u', 'ñ' => 'n', 'ç' => 'c',
-        'ì' => 'i', 'î' => 'i', 'ò' => 'o', 'ù' => 'u', 'û' => 'u', 'ã' => 'a', 'õ' => 'o', 'å' => 'a', 'ø' => 'o']);
 }
 
 /** Up to BUG_LINKS https addresses (screenshots, videos). */
@@ -548,6 +525,7 @@ function bug_status_label(array $b): string
 function bug_status_badge(array $b): string
 {
     $tone = (BUG_STATUSES[$b['status'] ?? 'new'] ?? BUG_STATUSES['new'])[1];
+    if (($b['status'] ?? '') === 'closed') return '<span class="badge tone-' . $tone . ' st-closed">' . bug_icon('closed') . e(bug_status_label($b)) . '</span>';   // ⊘ instead of the dot
     return '<span class="badge tone-' . $tone . '">' . e(bug_status_label($b)) . '</span>';
 }
 
@@ -602,6 +580,7 @@ const BUG_ICONS = [
     'link'    => '<path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"/>',
     'img'     => '<rect x="3" y="4" width="18" height="16" rx="3"/><circle cx="9" cy="10" r="2"/><path d="m21 16-5-5-9 9"/>',
     'check'   => '<path d="m5 12 5 5 9-10"/>',
+    'closed'  => '<circle cx="12" cy="12" r="9"/><path d="m5.6 5.6 12.8 12.8"/>',
     'lock'    => '<rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/>',
     'pen'     => '<path d="M4 20h4L19 9a2.8 2.8 0 0 0-4-4L4 16z"/><path d="m13.5 6.5 4 4"/>',
     'ui'      => '<path d="M4 6h9M17 6h3M4 12h3M11 12h9M4 18h11M19 18h1"/><circle cx="15" cy="6" r="2"/><circle cx="9" cy="12" r="2"/><circle cx="17" cy="18" r="2"/>',
@@ -681,8 +660,7 @@ function bug_ago(int $t): string
     if ($d < 3600) return m3d_plural((int) round($d / 60), 'minute') . ' ago';
     if ($d < 86400) return m3d_plural((int) round($d / 3600), 'hour') . ' ago';
     if ($d < 86400 * 14) return m3d_plural((int) round($d / 86400), 'day') . ' ago';
-    $z = (new DateTimeImmutable('@' . $t))->setTimezone(new DateTimeZone('Europe/Berlin'));
-    return 'on ' . $z->format($z->format('Y') === (new DateTimeImmutable('now', new DateTimeZone('Europe/Berlin')))->format('Y') ? 'j M' : 'j M Y');
+    return 'on ' . m3d_berlin($t, m3d_berlin($t, 'Y') === m3d_berlin(time(), 'Y') ? 'j M' : 'j M Y');
 }
 
 /** Initial of a name for the round avatars, and a hue from the name. */

@@ -27,14 +27,13 @@ $recent = [];              // the newest rows
 $logOn = !empty($M3D['log_downloads']);
 if (($fh = @fopen(m3d_log_file(), 'rb'))) {
     while (($line = fgets($fh)) !== false) {
-        while (substr_count($line, '"') % 2 && ($more = fgets($fh)) !== false) $line .= $more;   // a quoted field with a line break
-        $r = str_getcsv(rtrim($line, "\r\n"), ',', '"', '');
+        $r = m3d_log_cols($line);
         if (!isset($r[3]) || ($t = strtotime((string) $r[0])) === false) continue;
         $id = (string) $r[1];
         if (!isset($first[$id]) || $t < $first[$id]) $first[$id] = $t;
         $day = (new DateTimeImmutable('@' . $t))->setTimezone($tz)->format('Y-m-d');
         if (isset($days[$day])) $days[$day]++;
-        [$k, $s] = str_starts_with($r[3], 'outfit:') ? ['outfits', substr($r[3], 7)] : ['models', $r[3]];
+        [$k, $s] = m3d_log_item_parts($r[3]);
         if ($t >= $weekFrom) { $week++; $top["$k:$s"] = ($top["$k:$s"] ?? 0) + 1; }
         elseif ($t >= $prevFrom) $prevWeek++;
         $recent[] = [$t, $id, (string) $r[2], $k, $s, (string) ($r[5] ?? '')];

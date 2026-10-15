@@ -45,7 +45,10 @@ if ($me['status'] !== 200 || !$me['json']) {
     $fail('error');
 }
 
-$result = m3d_evaluate_identity($me['json'], $M3D);
+// the pledge history, read with the creator's token (Patreon leaves it out of the patron's own answer): a patron who came back counts
+// from the new pledge (m3d_pledge_restart()); without a token, or when Patreon refuses, Patreon's start date counts
+$events = m3d_session_pause(fn() => m3d_member_pledge_events(m3d_identity_member_id($me['json'], $M3D)));
+$result = m3d_evaluate_identity($me['json'], $M3D, $events);
 if ($setup && $result['id'] !== '') {
     m3d_save_settings(['owners' => [$result['id']]]);
     // the creator's own campaign, when Patreon gives it (scope "campaigns"); else the setup asks for its id
@@ -75,5 +78,8 @@ if (!empty($M3D['debug'])) {
     exit;
 }
 
-if (!m3d_apply_exception($result)['access']) $fail($result['reason']);   // Admin → Access exceptions ("Bypass Tier") count here too
+$patron = m3d_apply_exception($result);
+if (!$patron['access']) $fail($result['reason']);   // Admin → Access exceptions ("Bypass Tier") count here too
+// a paying patron's first login: the welcome page first (Admin → Settings → Features → Welcome Page), which continues to $return
+if (m3d_welcome_due($patron)) $return = '/welcome/' . ($return !== '/' ? '?return=' . rawurlencode($return) : '');
 m3d_redirect($return);

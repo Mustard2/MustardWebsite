@@ -28,8 +28,7 @@ admin_start('Accessories', 'outfits');
     </div>
     <?= assets_menu('outfits') ?>
 
-    <?php if ($done): ?><p class="notice"><b class="res-ok">✓</b> <?= e($done) ?></p><?php endif ?>
-    <?php if ($error): ?><p class="notice"><b class="res-err">Not saved:</b> <?= e($error) ?></p><?php endif ?>
+    <?php admin_result($done, $error) ?>
 
     <details class="sec intro-sec"<?= ($done || $error) && !$startDone && !$startError ? ' open' : '' ?>>
       <summary><b>Page Text</b> <span class="muted small">under the title of the <a href="/accessories/" target="_blank">Accessories page</a></span></summary>

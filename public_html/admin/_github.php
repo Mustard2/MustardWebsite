@@ -102,7 +102,7 @@ function gh_problem(string $channel, int $status, array $headers, string $err): 
     if ($status === 401) return 'GitHub refused the key: it is wrong or has expired. Make a new one and save it below.';
     if (($status === 403 || $status === 429) && (($headers['x-ratelimit-remaining'] ?? '') === '0')) {
         $at = (int) ($headers['x-ratelimit-reset'] ?? 0);
-        return 'GitHub asks this server to wait (too many checks from it)' . ($at ? ', until ' . (new DateTimeImmutable('@' . $at))->setTimezone(new DateTimeZone('Europe/Berlin'))->format('H:i T') : '') . '.';
+        return 'GitHub asks this server to wait (too many checks from it)' . ($at ? ', until ' . m3d_berlin($at, 'H:i T') : '') . '.';
     }
     if ($status === 403 || $status === 404) {
         return UPDATE_CHANNELS[$channel][2]
@@ -179,12 +179,7 @@ function gh_check_cached(string $channel): ?array
     $c = json_decode((string) @file_get_contents(gh_cache_file($channel)), true);
     $c = is_array($c) && isset($c['releases']) ? $c : null;
     if (!$c || ($c['at'] ?? 0) <= time() - CHECK_TTL) {
-        register_shutdown_function(function () use ($channel) {
-            if (function_exists('fastcgi_finish_request')) fastcgi_finish_request();
-            elseif (function_exists('litespeed_finish_request')) litespeed_finish_request();
-            m3d_session_release();
-            gh_check($channel, true);
-        });
+        m3d_after_response(fn() => gh_check($channel, true));
     }
     return $c;
 }

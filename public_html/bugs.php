@@ -207,13 +207,11 @@ if ($n > 0) {
   <div class="wrap bug-page">
     <?= $offNote ?>
     <a class="back" href="/bugs/" data-back>← All Bug Reports</a>
-    <?php if (!empty($_GET['sent'])): ?>
-      <p class="bug-notice ok"><?= bug_icon('check') ?><span><b>Thanks, your report was sent.</b> <?= !empty($b['pending']) ? 'The creator checks new reports before they show on the site: until then only you can see it.' : 'You’ll find the answers here.' ?></span></p>
-    <?php elseif (!empty($b['pending'])): ?>
+    <?php if (!empty($_GET['sent'])) site_flash('✓ <b>Thanks, your report was sent.</b> ' . (!empty($b['pending']) ? 'The creator checks new reports before they show on the site: until then only you can see it.' : 'You’ll find the answers here.')) ?>
+    <?php if (!empty($b['pending'])): ?>
       <div class="bug-notice"><span>Waiting for the creator to check it: only you<?= $admin ? ' (and admins)' : '' ?> can see this report.</span><?php if ($creator): ?><form method="post" action="<?= e($act) ?>"><?= $keys ?><button class="btn btn-primary btn-sm" name="do" value="publish">Publish</button></form><?php endif ?></div>
     <?php endif ?>
-    <?php if ($done !== ''): ?><p class="bug-notice ok"><?= bug_icon('check') ?><span><?= e($done) ?></span></p><?php endif ?>
-    <?php if ($fail !== ''): ?><p class="bug-notice err"><span><b>Not saved:</b> <?= e($fail) ?></span></p><?php endif ?>
+    <?php if ($done !== '') site_flash('✓ ' . e($done)); if ($fail !== '') site_flash('<b>Not saved:</b> ' . e($fail), 'err') ?>
     <?php if (!empty($b['hidden'])): ?><p class="bug-notice"><span>Hidden from the site: only admins see this report.</span></p><?php endif ?>
     <header class="bug-top">
       <div class="bug-top-row"><?= bug_status_badge($b) ?><?php if (!empty($b['pin']) && in_array($status, BUG_OPEN, true)): ?><span class="pin-tag"><?= bug_icon('pin') ?>Known Issue</span><?php endif ?></div>
@@ -235,10 +233,12 @@ if ($n > 0) {
             $fixAt = $fixIn['label'] !== '' ? m3d_changelog_find($fixLog, $fixIn['label']) : null;
             $fixTs = $fixAt !== null ? m3d_changelog_ts((string) (array_values($fixLog)[$fixAt]['date'] ?? '')) : null;
             $fixSoon = $fixTs !== null && $fixTs > time(); ?>
-          <div class="fixed-bar"><?= bug_icon('check') ?><span>Fixed<?= $fixIn['next'] ? ' in the next version of <b>' . e($a['name']) . '</b>' : ($fixIn['label'] !== '' ? ' in <b>' . e($a['name'] . ' ' . $fixIn['label']) . '</b>' : '') ?><?= $fixSoon ? ', coming ' . e(m3d_release_day($fixTs)) : ($fixAt !== null ? ', out now' : '') ?>.</span><?php if ($a['url'] !== '' && $a['item'] && !$fixSoon && !$fixIn['next']): ?><a class="btn btn-sm btn-ghost" href="<?= e($a['url']) ?>#changelog">Get the Update →</a><?php endif ?></div>
+          <div class="fixed-bar"><?= bug_icon('check') ?><span>Fixed<?= $fixIn['next'] ? ' in the next version of <b>' . e($a['name']) . '</b>' : ($fixIn['label'] !== '' ? ' in <b>' . e($a['name'] . ' ' . $fixIn['label']) . '</b>' : '') ?><?= $fixSoon ? ', coming ' . e(m3d_release_day($fixTs)) : ($fixAt !== null ? ', out now' : '') ?>.</span><?php if ($a['url'] !== '' && $a['item'] && !$fixSoon && !$fixIn['next'] && ($fixIn['label'] === '' || $fixAt !== null)): ?><a class="btn btn-sm btn-ghost" href="<?= e($a['url']) ?>#changelog">Get the Update →</a><?php endif ?></div>
         <?php elseif ($status === 'closed' && ($b['reason'] ?? '') === 'duplicate' && (int) ($b['dup'] ?? 0) > 0): ?>
           <?php $dupB = m3d_bug((int) $b['dup']); /* a hidden, waiting or deleted report would be a dead link */ ?>
-          <?php if ($dupB && m3d_bug_visible($dupB, $p)): ?><div class="fixed-bar is-dup"><span>Same bug as <a href="/bugs/<?= (int) $b['dup'] ?>/"><b>#<?= (int) $b['dup'] ?></b></a>: follow that report instead.</span></div><?php endif ?>
+          <?php if ($dupB && m3d_bug_visible($dupB, $p)): ?><div class="fixed-bar is-dup"><span>Same bug as <a href="/bugs/<?= (int) $b['dup'] ?>/"><b>#<?= (int) $b['dup'] ?></b></a>: follow that report instead.</span></div><?php else: ?><div class="fixed-bar is-closed"><?= bug_icon('closed') ?><span>Closed: <b>duplicate</b>.</span></div><?php endif ?>
+        <?php elseif ($status === 'closed'): ?>
+          <div class="fixed-bar is-closed"><?= bug_icon('closed') ?><span>Closed<?= isset(BUG_REASONS[$b['reason'] ?? '']) ? ': <b>' . e(mb_strtolower(BUG_REASONS[$b['reason']])) . '</b>' : '' ?>.</span></div>
         <?php endif ?>
         <article class="post" id="report">
           <div class="post-head"><?= bug_avatar((string) $b['name']) ?><b><?= e($b['name'] ?: 'Someone') ?></b> reported this · <?= e(bug_ago((int) $b['at'])) ?>
@@ -533,7 +533,7 @@ $myCode = $p ? m3d_like_code((string) $p['id']) : '';
 $all = array_values(array_filter(m3d_bugs(), fn($b) => m3d_bug_visible($b, $p)));
 $kindOf = fn($b) => in_array($k = m3d_bug_about_parts((string) ($b['about'] ?? ''))[0], ['models', 'outfits'], true) ? $k : 'other';
 $statusOf = fn($b) => in_array($b['status'] ?? 'new', BUG_OPEN, true) ? 'open' : (string) $b['status'];
-$fold = 'bug_fold';
+$fold = 'm3d_fold';
 // everything but the status: the status chips count inside the other filters
 $base = array_values(array_filter($all, function ($b) use ($f, $kindOf, $myCode, $p, $fold, $creator) {
     if ($f['by'] !== '' && (string) ($b['by'] ?? '') !== $f['by']) return false;
@@ -606,8 +606,7 @@ layout_start('Bug Reports', 'Known bugs in the models, accessories and website o
         <a class="btn btn-primary" href="/bugs/report/<?= $f['about'] !== '' ? '?about=' . e(rawurlencode($f['about'])) : '' ?>"><?= bug_icon('bug') ?>Report a Bug</a>
       </div>
     </header>
-    <?php if ($okMsg !== ''): ?><p class="bug-notice ok"><?= bug_icon('check') ?><span><?= e($okMsg) ?></span></p><?php endif ?>
-    <?php if ($errMsg !== ''): ?><p class="bug-notice err"><span><b>Not saved:</b> <?= e($errMsg) ?></span></p><?php endif ?>
+    <?php if ($okMsg !== '') site_flash('✓ ' . e($okMsg)); if ($errMsg !== '') site_flash('<b>Not saved:</b> ' . e($errMsg), 'err') ?>
 
     <nav class="chips bugs-status" aria-label="Status">
       <?= $chip('Open <span>' . $counts['open'] . '</span>', ['status' => ''], $f['status'] === '', '<i class="sdot" style="--c:#7cc4ff"></i>') ?>
@@ -669,7 +668,7 @@ layout_start('Bug Reports', 'Known bugs in the models, accessories and website o
         <?php foreach ($list as $b): $a = m3d_bug_about($b); $st = (string) ($b['status'] ?? 'new'); $done = !in_array($st, BUG_OPEN, true);
           $me = count((array) ($b['metoo'] ?? [])); $com = count(array_filter((array) ($b['log'] ?? []), fn($x) => ($x['t'] ?? '') === 'c'));
           $unseen = $creator && empty($b['seen']); ?>
-          <li><?php if ($creator): ?><label class="bug-tick"><input type="checkbox" name="ns[]" value="<?= (int) $b['n'] ?>" aria-label="Select #<?= (int) $b['n'] ?>" /></label><?php endif ?><a class="bug-row<?= $done ? ' is-done' : '' ?><?= $st === 'fixed' ? ' is-fixed' : '' ?><?= $pin($b) ? ' is-pinned' : '' ?><?= $news($b) || $unseen ? ' has-new' : '' ?>" href="/bugs/<?= (int) $b['n'] ?>/<?= $news($b) ? '#new' : '' ?>">
+          <li><?php if ($creator): ?><label class="bug-tick"><input type="checkbox" name="ns[]" value="<?= (int) $b['n'] ?>" aria-label="Select #<?= (int) $b['n'] ?>" /></label><?php endif ?><a class="bug-row<?= $done ? ' is-done' : '' ?><?= $st === 'fixed' ? ' is-fixed' : ($st === 'closed' ? ' is-closed' : '') ?><?= $pin($b) ? ' is-pinned' : '' ?><?= $news($b) || $unseen ? ' has-new' : '' ?>" href="/bugs/<?= (int) $b['n'] ?>/<?= $news($b) ? '#new' : '' ?>">
             <?= bug_about_pic($a, 'bpic bug-pic') ?>
             <span class="bug-main">
               <span class="bug-title"><?php if ($pin($b)): ?><span class="pin-tag"><?= bug_icon('pin') ?>Known Issue</span><?php endif ?><span class="bug-title-t"><?= e($b['title']) ?></span><?php foreach ((array) ($b['tags'] ?? []) as $t) echo bug_tag_html((string) $t, $tags) ?></span>
@@ -707,7 +706,7 @@ layout_start('Bug Reports', 'Known bugs in the models, accessories and website o
     <?php if ($pages > 1): ?>
       <nav class="pager" aria-label="Pages">
         <?php if ($page > 1): ?><a class="chip" href="<?= e(bugs_url(['_page' => $page - 1 > 1 ? $page - 1 : ''], $cur)) ?>" aria-label="Previous page">‹</a><?php endif ?>
-        <?php for ($i = 1; $i <= $pages; $i++): if ($pages > 7 && $i > 2 && $i < $pages - 1 && abs($i - $page) > 1) { if ($i === 3 || $i === $pages - 2) echo '<span class="pager-gap">…</span>'; continue; } ?>
+        <?php $gap = false; for ($i = 1; $i <= $pages; $i++): if ($pages > 7 && $i > 2 && $i < $pages - 1 && abs($i - $page) > 1) { if (!$gap) echo '<span class="pager-gap">…</span>'; $gap = true; continue; } $gap = false; ?>
           <a class="chip" href="<?= e(bugs_url(['_page' => $i > 1 ? $i : ''], $cur)) ?>"<?= $i === $page ? ' aria-current="page"' : '' ?>><?= $i ?></a>
         <?php endfor ?>
         <?php if ($page < $pages): ?><a class="chip" href="<?= e(bugs_url(['_page' => $page + 1], $cur)) ?>" aria-label="Next page">›</a><?php endif ?>

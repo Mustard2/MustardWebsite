@@ -8,10 +8,10 @@
 require __DIR__ . '/_admin.php';
 admin_require($M3D);
 
-/** Rules in reading order: by months as a patron (from, then to; empty = 0 / no end), so the list goes from new patrons to old ones. */
+/** Rules in reading order: "Any Tier" first, then by tier price, each by months as a patron (from, then to; empty = 0 / no end), so the list goes from new patrons to old ones. */
 function dl_rules_sorted(array $rules): array
 {
-    $key = fn(array $r) => [(int) ($r['from'] ?? 0), ($r['to'] ?? '') === '' ? PHP_INT_MAX : (int) $r['to']];
+    $key = fn(array $r) => [(int) ($r['tier'] ?? 0), (int) ($r['from'] ?? 0), ($r['to'] ?? '') === '' ? PHP_INT_MAX : (int) $r['to']];
     usort($rules, fn($a, $b) => $key($a) <=> $key($b));
     return $rules;
 }
@@ -30,11 +30,13 @@ function dl_rule_post(string $id, bool $on): array
     };
     $from = $month('from') ?: null;   // "at least 0 months" = everyone: saved as empty (else the rule reads "0 months or more")
     $to = $month('to');
+    $tier = trim((string) ($_POST['tier'] ?? ''));
+    if ($tier !== '' && (!preg_match('/^\d{1,7}$/', $tier) || (int) $tier < 1)) throw new InvalidArgumentException('Pick a tier from the list.');
     if ($max < 1 || $max > 999) throw new InvalidArgumentException('The number of downloads is between 1 and 999.');
     if (!isset(DL_WHAT[$what]) || !isset(DL_PERIODS[$per])) throw new InvalidArgumentException('Pick what the rule counts and the period.');
     if ($from !== null && $to !== null && $to <= $from) throw new InvalidArgumentException('“Less than” months must be more than “at least” months.');
     if ($to === 0) throw new InvalidArgumentException('“Less than 0 months” matches nobody: leave it empty for no upper limit.');
-    return ['id' => $id, 'on' => $on, 'max' => $max, 'what' => $what, 'per' => $per, 'from' => $from ?? '', 'to' => $to ?? ''];
+    return ['id' => $id, 'on' => $on, 'max' => $max, 'what' => $what, 'per' => $per, 'from' => $from ?? '', 'to' => $to ?? '', 'tier' => $tier === '' ? '' : (int) $tier];
 }
 
 $done = $error = null;
@@ -52,6 +54,14 @@ if ($posted && str_starts_with((string) ($_POST['do'] ?? ''), 'dl-')) {
             if (!preg_match('/^\d{1,2}$/', $wait) || (int) $wait > 60) throw new InvalidArgumentException('The waiting time is between 0 and 60 seconds.');
             $dl['wait'] = (int) $wait;
             $done = $dl['wait'] ? "Downloads now start after {$dl['wait']} seconds." : 'Downloads now start right away (no waiting page).';
+        } elseif ($do === 'dl-cap') {
+            $cap = trim((string) ($_POST['cap'] ?? ''));
+            if (!preg_match('/^\d{1,3}$/', $cap)) throw new InvalidArgumentException('The daily download cap is a number from 0 (off) to 999.');
+            $dl['cap'] = (int) $cap;
+            $done = $dl['cap'] ? 'Each patron can now download ' . m3d_plural($dl['cap'], 'time') . ' in 24 hours, then waits 24 hours.' : 'Daily download cap off.';
+        } elseif ($do === 'dl-updates') {
+            $dl['updates'] = !empty($_POST['updates']);
+            $done = $dl['updates'] ? 'A new version of an item already unlocked now uses another unlock.' : 'New versions of an item already unlocked are free again.';
         } elseif ($do === 'dl-add') {
             $rules[] = $r = dl_rule_post(bin2hex(random_bytes(4)), true);
             $done = 'Rule added: ' . m3d_rule_text($r) . '.';
@@ -67,7 +77,7 @@ if ($posted && str_starts_with((string) ($_POST['do'] ?? ''), 'dl-')) {
                 throw new InvalidArgumentException('Unknown action.');
             }
         }
-        if (!m3d_save_settings(['downloads' => ['wait' => $dl['wait'], 'rules' => dl_rules_sorted($rules)]])) throw new RuntimeException(m3d_write_error());
+        if (!m3d_save_settings(['downloads' => ['wait' => $dl['wait'], 'rules' => dl_rules_sorted($rules)] + ($dl['updates'] ? ['updates' => true] : []) + ($dl['cap'] ? ['cap' => $dl['cap']] : [])])) throw new RuntimeException(m3d_write_error());
     } catch (InvalidArgumentException | RuntimeException $ex) {
         $error = $ex->getMessage();
     }
@@ -117,7 +127,7 @@ if (($fh = @fopen(m3d_log_file(), 'rb'))) {
 }
 $dl = m3d_dl_settings();
 $dl['rules'] = dl_rules_sorted($dl['rules']);
-$date = fn(string $iso) => ($d = date_create_immutable($iso)) ? $d->setTimezone(new DateTimeZone('Europe/Berlin'))->format('d/m/Y') : '';
+$date = fn(string $iso) => m3d_berlin($iso, 'd/m/Y');
 
 admin_start('Access', 'users');
 ?>
@@ -125,8 +135,7 @@ admin_start('Access', 'users');
       <div><h1>Access</h1></div>
     </div>
 
-    <?php if ($done): ?><p class="notice"><b class="res-ok">✓</b> <?= e($done) ?></p><?php endif ?>
-    <?php if ($error): ?><p class="notice"><b class="res-err">Not saved:</b> <?= e($error) ?></p><?php endif ?>
+    <?php admin_result($done, $error) ?>
 
     <div class="users-grid">
     <section class="sec" id="wait">
@@ -138,12 +147,28 @@ admin_start('Access', 'users');
       </form>
     </section>
 
+    <section class="sec" id="cap">
+      <h2 class="small-h">Daily Download Cap<?= tip('Saves file hosting traffic: a patron who downloads this many times within 24 hours (any patron link, downloading the same file again too) can’t download for the next 24 hours. Public links aren’t counted (nobody is logged in). 0 = off.') ?></h2>
+      <form method="post" class="dl-wait-form">
+        <?= form_keys() ?>
+        <label class="dl-secs"><input class="input input-sm" type="number" name="cap" min="0" max="999" step="1" value="<?= (int) $dl['cap'] ?>" required aria-label="Downloads per patron in 24 hours" /> <span class="muted">downloads per patron in 24 hours, then a 24-hour pause</span></label>
+        <button class="btn btn-primary btn-sm" name="do" value="dl-cap">Save</button>
+      </form>
+    </section>
+
     <section class="sec" id="downloads">
-      <h2 class="small-h">Unlock Limits <span class="muted small">(<?= count(array_filter($dl['rules'], fn($r) => !empty($r['on']))) ?> on<?= count($dl['rules']) ? ' of ' . count($dl['rules']) : '' ?>)</span><?= tip('How many different models or accessories a patron can unlock (first download) per period, by months as a patron. Every matching rule must allow it. Downloading again is always free; items set to “Exclude from Unlock Limits” never count.') ?></h2>
+      <h2 class="small-h">Unlock Limits <span class="muted small">(<?= count(array_filter($dl['rules'], fn($r) => !empty($r['on']))) ?> on<?= count($dl['rules']) ? ' of ' . count($dl['rules']) : '' ?>)</span><?= tip('How many different models or accessories a patron can unlock (first download) per period, by tier and months as a patron. Every matching rule must allow it; a rule for a patron’s own tier replaces the “Any Tier” rules that count the same things (models, accessories). Downloading again is free (new versions too, unless “Updates Use an Unlock” is on); items set to “Exclude from Unlock Limits” never count.') ?></h2>
       <?php if (empty($M3D['log_downloads'])): ?><p class="notice"><b class="res-err">Limits are not counted:</b> the download log is off (<code>log_downloads</code> in config.php), and limits are counted from it.</p><?php elseif ((int) ($M3D['log_retention_days'] ?? 365) < 30): ?><p class="notice">The download log keeps only <?= (int) $M3D['log_retention_days'] ?> days (<code>log_retention_days</code>): 30-day limits can't see older downloads.</p><?php endif ?>
       <?php
-        // one rule as a table row: Patrons with [1] – [3] months · can unlock [2] [models] · every [30 days]
-        $ruleFields = function (string $f, array $r): void { ?>
+        // one rule as a table row: [Any Tier] patrons with [1] – [3] months · can unlock [2] [models] · every [30 days]
+        // tiers: the ones seen at patron logins (m3d_known_tiers()), plus a rule's own when it's no longer among them
+        $tiers = m3d_known_tiers();
+        foreach ($dl['rules'] as $r) if ((int) ($r['tier'] ?? 0) > 0 && !isset($tiers[(int) $r['tier']])) $tiers[(int) $r['tier']] = '';
+        ksort($tiers);
+        $ruleFields = function (string $f, array $r) use ($tiers): void { ?>
+            <span class="rule-cell rule-tier" data-lbl="Tier">
+              <select class="input input-sm" form="<?= $f ?>" name="tier" aria-label="Tier"><option value="">Any Tier</option><?php foreach ($tiers as $c => $t): ?><option value="<?= $c ?>" <?= (int) ($r['tier'] ?? 0) === $c ? 'selected' : '' ?>><?= e($t !== '' ? $t . ' (' . m3d_money($c) . ')' : m3d_money($c) . ' Tier') ?></option><?php endforeach ?></select>
+            </span>
             <span class="rule-cell rule-who" data-lbl="Patron Months">
               <input class="input input-sm rule-num" form="<?= $f ?>" type="number" name="from" min="0" max="999" value="<?= e((string) ($r['from'] ?? '')) ?>" placeholder="0" aria-label="At least this many months" />
               <span class="muted">–</span>
@@ -159,7 +184,7 @@ admin_start('Access', 'users');
             </span>
       <?php }; ?>
       <div class="rules">
-        <div class="rule-row rule-head" aria-hidden="true"><span></span><span>Patron Months</span><span>Max Unlocks</span><span>Period</span><span></span></div>
+        <div class="rule-row rule-head" aria-hidden="true"><span></span><span>Tier</span><span>Patron Months</span><span>Max Unlocks</span><span>Period</span><span></span></div>
         <?php foreach ($dl['rules'] as $i => $r): $f = 'rule-' . $i; ?>
           <div class="rule-row<?= empty($r['on']) ? ' rule-off' : '' ?>">
             <label class="rule-on" title="On/off: saved at once"><input type="checkbox" class="switch" form="<?= $f ?>" name="on" value="1" <?= !empty($r['on']) ? 'checked' : '' ?> onchange="this.form.querySelector('[value=dl-save]').click()" aria-label="Rule on" /></label>
@@ -177,6 +202,10 @@ admin_start('Access', 'users');
           <form id="rule-new" method="post" class="rule-btns"><?= form_keys() ?></form>
         </div>
       </div>
+      <form method="post" class="dl-updates-form">
+        <?= form_keys('dl-updates') ?>
+        <label class="toggle"><input type="checkbox" class="switch" name="updates" value="1" <?= $dl['updates'] ? 'checked' : '' ?> onchange="this.form.submit()" /><span>Updates Use an Unlock<?= tip('Off: once a patron unlocked an item, every new version of it is free. On: downloading a new version uses another unlock, like a new item. Saved at once.') ?></span></label>
+      </form>
     </section>
     </div>
 

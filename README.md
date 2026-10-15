@@ -62,10 +62,11 @@ make_update.py      builds an update zip for the admin's Update page
 
    The page creates `private/config.php` from the example by itself; afterwards everything is editable in Admin → Settings.
 
-**Without the setup page** (or to change what it can't): in `private/` copy `config.example.php` to `config.php` and fill it
-in. To **find your campaign id and your Patreon user id** by hand, set `'debug' => true` in `config.php`, log in with Patreon:
-the page shows *Your Patreon user id* and the *Campaign ids*; put them into `campaign_id` and `owner_user_ids` (the admins),
-then set `'debug' => false` again.
+**Patreon keys** (Client ID, Client Secret, Redirect URI, campaign id) are set only by the setup page and in
+Admin → Settings → Patreon (saved in `private/patreon.php`), never in `config.php`. To **find your campaign id and your Patreon
+user id** by hand, set `'debug' => true` in `config.php`, log in with Patreon: the page shows *Your Patreon user id* and the
+*Campaign ids*; put your id into `owner_user_ids` (the admins) and the campaign id into Admin → Settings → Patreon, then set
+`'debug' => false` again.
 
 ### First steps in the admin
 

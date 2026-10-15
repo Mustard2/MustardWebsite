@@ -2,7 +2,7 @@
 // SmutBase import (Admin → Models → Import from SmutBase, admin/import.php): reads a SmutBase profile (the list of
 // projects) and project pages, and turns a project into a draft model: name, franchise and major version from the
 // title ("[Franchise] Name - Version 2"), the description split by its headings (features, requirements, credits,
-// changelog, everything else as sidebar sections), pictures copied into media/, a "SmutBase" download link.
+// changelog, instructions as notes, everything else as one note each), pictures copied into media/, a "SmutBase" download link.
 declare(strict_types=1);
 defined('M3D_PRIVATE') or exit;
 
@@ -193,7 +193,7 @@ function sb_blocks(DOMNode $n): array
         $tag = strtolower($c->tagName);
         $isBlock = in_array($tag, ['p', 'div', 'ul', 'ol', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'hr', 'blockquote', 'pre', 'table', 'section'], true);
         if (!$isBlock) { $text .= $c->ownerDocument->saveHTML($c); continue; }
-        if (trim($text) !== '') { $blocks[] = ['p', sb_frag($text, $n)]; }
+        if (trim($text) !== '') { $blocks[] = ['p', sb_frag($text)]; }
         $text = '';
         if (in_array($tag, ['p', 'div', 'section'], true) && $c->getElementsByTagName('*')->length
             && ($x = new DOMXPath($c->ownerDocument)) && $x->query('./p|./ul|./ol|./h1|./h2|./h3|./h4|./hr|./div', $c)->length) {
@@ -202,12 +202,12 @@ function sb_blocks(DOMNode $n): array
         }
         $blocks[] = [$tag, $c];
     }
-    if (trim($text) !== '') $blocks[] = ['p', sb_frag($text, $n)];
+    if (trim($text) !== '') $blocks[] = ['p', sb_frag($text)];
     return $blocks;
 }
 
 /** Loose inline HTML (text between blocks) as an element, for sb_inline(). */
-function sb_frag(string $html, DOMNode $ctx): DOMElement
+function sb_frag(string $html): DOMElement
 {
     $d = new DOMDocument();
     libxml_use_internal_errors(true);
@@ -294,7 +294,10 @@ function sb_changelog(array $blocks): array
             if ($date === '' && preg_match('#^\(?(\d{1,2}/\d{1,2}/\d{4})\)?\s*(?:[-–—:]\s*)?(.*)$#', $rest, $d)) { $date = sb_date($d[1]); $rest = trim($d[2]); }
             $cur = ['version' => $m[1], 'date' => $date, 'highlight' => mb_substr(rtrim($rest, '.'), 0, 120), 'changes' => [], 'notes' => []];
             // the stage: in the version ("3.2-beta") or the note's first word ("Beta - …"); not any "alpha" in the note (alpha maps)
-            if (preg_match('/(alpha|beta)/i', $m[1], $st)) $cur['stage'] = strtolower($st[1]);
+            if (preg_match('/(alpha|beta)/i', $m[1], $st)) {
+                $cur['stage'] = strtolower($st[1]);
+                $cur['version'] = preg_replace('/[._-]*(?:alpha|beta)$/i', '', $m[1]) ?: $m[1];   // "3.2-beta" → 3.2 (the site adds "Beta" itself)
+            }
             elseif (preg_match('/^(alpha|beta)\b[\s.:\-–—]*(.*)$/isu', $rest, $st)) {
                 $cur['stage'] = strtolower($st[1]);
                 $cur['highlight'] = mb_substr(rtrim($st[2], '.'), 0, 120);   // "Version 1.0 Beta": not "Beta" as the highlight too

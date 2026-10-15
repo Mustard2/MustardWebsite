@@ -1,5 +1,83 @@
 # Changelog
 
+## 2026.10.15-15 · 15 Oct 2026
+
+- Fix: Previewing the site as a non-member no longer shows "Update" tags and the update dot.
+- Fix: The fields and buttons of the patron preview bar line up.
+- Change: Shorter labels in the patron preview bar.
+- Change: The email address on the Contacts page is now only for legal matters about the website's content, such as copyright or privacy requests.
+- New: The Contacts page sends technical problems with the website to Bug Reports, while bug reports are on.
+- New: Switch in Admin → Access to make new versions of an already unlocked item use another unlock (off by default)
+- New: Welcome page shown once after a patron's first login, explaining how the site, downloads and unlock rules work (Admin → Settings → Features, off by default)
+- Fix: patrons who cancelled and pledged again count their months as a patron from the new pledge, for the Months requirement and the unlock limits; billing pauses don't reset anyone.
+- New: Unlock limit rules can be linked to a single Patreon tier; a tier's own rules replace the "Any Tier" rules for its patrons.
+- Fix: Spacing of the Welcome Page settings, without the format help between the fields
+- Change: Admin messages after saving float at the bottom with a close button instead of pushing the page down; confirmations fade out by themselves, errors stay until closed.
+- Fix: Admin messages shown while a window is open (picture picker, image window) appear on top of it instead of behind it.
+- New: The welcome page links MustardUI in "Before Your First Download" while the MustardUI page is on.
+- New: Admin → Downloads shows each patron's months as a patron, tier and total support at the time of every download.
+- New: Preview as This Patron starts from that patron's real membership saved with their newest download.
+- Change: The privacy page says the membership details are kept in the download log.
+- Change: The welcome page's "Get Help" card is now called "Support".
+- New: Downloads of files stored in MEGA S4 go through a temporary address that expires after a set time (5 minutes to 7 days), so shared download addresses stop working (Settings → Features → MEGA S4 Downloads).
+- New: With the S4 bucket set in Settings, a download link can be just "s4:" and the file name.
+- New: An "S4…" button next to each download link picks a file from the S4 bucket.
+- New: A "Use S4 Downloads" switch turns S4 off everywhere while keeping the keys and bucket saved.
+- New: Link Check also checks files stored in MEGA S4.
+- New: Each download link has an on/off switch in the editor; a switched-off link stays saved but isn't shown or downloadable.
+- New: Daily Download Cap in Admin → Access: after that many downloads within 24 hours, a patron can't download for 24 hours.
+- Change: in My Account → My Models, the Download button of a model or accessory with several files now opens its download box, so every file can be picked
+- Change: Site problems notes when Patreon leaves out a patron's pledge history at login, so a re-pledge that isn't detected can be traced.
+- Fix: "Months as a patron" counts from a patron's latest re-pledge once the creator's token is saved in Settings → Patreon → Pledge History.
+- New: Settings → Patreon → Pledge History box with "Save and Test" for the creator's access and refresh tokens.
+- Fix: Pledge History "Save and Test" checks paying patrons instead of the first member, and no longer says "Not saved" when only the test failed.
+- Change: The Creator's Access Token and Creator's Refresh Token fields are now in the Patreon box, after Client Secret, in the same order as on Patreon's client page.
+- Change: Patreon keys are kept only in the site's own key file. Keys still in config.php are copied there once, and the "From config.php" / "Saved Here" badges and the "Use config.php" button are removed.
+- Change: Patreon keys are read only from the site's own key file. Keys in config.php no longer count.
+- Fix: My Account no longer shows the real pictures of Teaser items in the "Update" rows.
+- Fix: a picture written as `/\other-site/…` in a text is no longer loaded or linked.
+- Fix: on phones, the picture viewer's ‹ › buttons no longer cover the caption and the "Download Full Size" button.
+- Fix: a shared catalog link with `?owned=` no longer counts as a filter for visitors who don't have the Unlocked row.
+- Fix: the preview bar's Tier and Total arrows step by 1 instead of 1 cent.
+- Fix: the download counters no longer count a download twice when they are first built.
+- Fix: the "needs a little more" page says "You Can Download This Now" once the requirements are met.
+- Fix: the bug list's page numbers no longer show "… …" on the first and last page.
+- Fix: a fixed bug report shows "Get the Update" only once its version is in the changelog.
+- Fix: saving Creator Tools on a report fixed in "Next Version" no longer sends followers a false status change.
+- Fix: recent emoji and flag emoji are no longer removed from admin texts when saving.
+- Fix: restoring an old Settings version keeps the release-date and Discord state, the admins and the bug report settings.
+- Fix: pictures used in the Welcome page text are no longer deleted as unused, and follow crops and copies.
+- Fix: a manual backup whose note ends in "uploaded" counts as the newest backup again.
+- Fix: uploaded backups get their "Uploaded" tag.
+- Fix: deleting a picture through one of its smaller files checks that it isn't in use.
+- Fix: replacing a cropped picture keeps texts on the large file when there is no medium size.
+- Fix: removing a FAQ question or topic asks with its question text.
+- Fix: saving a picture in Admin → Gallery no longer puts back an address the Images page changed meanwhile.
+- Fix: SmutBase import stores "Version 3.2-beta" as Beta 3.2, not "Beta 3.2-beta".
+- Change: The picture window stays open when an upload finishes, showing what was uploaded, and "Add N Pictures" puts them in.
+- New: the model editor's Franchise and Game fields list the ones already in use while you type (typos and capitals ignored), so a new one is only made on purpose
+- Change: the accessory editor's Type field suggests types the same way
+- Change: "Coming Soon" model and accessory pages can now be found by search engines and are listed in the sitemap.
+- Fix: Admin → Update's link to the backups opens the backups list again.
+- Fix: a docs page address made from its title no longer ends with a dash.
+- Change: Settings → Tools counts and deletes unused images exactly like the Images page.
+- Change: old Admin → Bugs addresses open the bug list.
+- Change: removed leftover code and joined repeated code into shared helpers (no visible change).
+- Change: old download addresses without a link number (`/get/<model>/`) now show "Page not found".
+- Change: removed code that read data formats the site no longer has (no visible change).
+- Change: joined the repeated search and style code in the site's scripts and stylesheets (no visible change).
+- Fix: Logging in with Patreon works again (you came back to the site still logged out).
+- Fix: Saving Settings → Patreon with an empty Client ID, Redirect URI or Campaign ID no longer deletes it.
+- Fix: "Delete Unused Images" no longer deletes pictures that a text or a Gallery full size link still names.
+- Fix: Quoted "**Warning:**" boxes show in the warning colour again.
+- Fix: The Gallery's order is kept if the site's code is rolled back from a backup.
+- New: "+ Add from S4…" in the model and accessory editors adds several S4 files as download links at once
+- Change: The welcome page shows each patron only the unlock rules of their own tier, and says when their tier wasn't found.
+- Change: Download buttons on model and accessory pages are now the same width and line up in two columns (one column on phones)
+- Change: closed bug reports look clearly closed in the list (dashed, faded row with a closed icon) and show a grey "Closed" bar on their page.
+- Change: messages after an action on public pages (bug reports, Publish on a model page) float at the bottom with a ✕ instead of pushing the page down.
+- Change: The icon on the download buttons sits at their left edge, with the name centred beside it
+
 ## 2026.10.14-3 · 14 Oct 2026
 
 - Update page: new versions come from GitHub, with what changed, and install with one click

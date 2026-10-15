@@ -16,15 +16,49 @@ function el(tag, attrs = {}, ...kids) {
   return n;
 }
 
+// Text compared without accents or case: searches and suggestions (the same as searchFold() in site.js).
+const fold = (t) => String(t ?? '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+const foldWords = (q) => fold(q).split(/\s+/).filter(Boolean);   // the typed words, each to be found
+
+// A page address from a title: lowercase letters and digits joined by single dashes, at most `max` characters, never ending with a dash.
+const slugify = (t, max = 64) => fold(t).replace(/[^a-z0-9]+/g, '-').replace(/^-+/, '').slice(0, max).replace(/-+$/, '');
+
+// Floating messages at the bottom ([data-toasts]): toast() from the scripts, and the ones a page prints after an action
+// (admin_flash() in _admin.php). Each has a ✕; ok / info ones fade out by themselves (longer texts stay longer; the pointer
+// or the focus on one keeps it), errors stay until closed. The same text again replaces the older one; 4 at most.
+// While a window (<dialog> opened with showModal()) is open, everything outside it is under it and can't be clicked,
+// so the message goes in a stack of its own inside that window, which goes away with it.
 function toast(msg, kind = 'ok') {
-  const t = document.querySelector('[data-toast]');
-  if (!t) return alert(msg);
-  t.textContent = msg;
-  t.className = 'toast ' + kind;
-  t.hidden = false;
-  clearTimeout(toast.timer);
-  toast.timer = setTimeout(() => (t.hidden = true), kind === 'err' ? 8000 : 3000);
+  let box = document.querySelector('[data-toasts]');
+  if (!box) return alert(msg);
+  let modal = null;
+  try { modal = [...document.querySelectorAll('dialog')].filter((d) => d.matches(':modal')).pop() || null; } catch (e) { /* no :modal (old browsers) */ }
+  if (modal) box = modal.querySelector(':scope > .toasts') || modal.appendChild(el('div', { class: 'toasts' }));
+  for (const old of box.querySelectorAll('.toast')) if (old.querySelector('.toast-msg').textContent === msg) old.remove();
+  const t = el('div', { class: 'toast ' + kind, role: kind === 'err' ? 'alert' : 'status' },
+    el('span', { class: 'toast-msg' }, msg), el('button', { type: 'button', class: 'toast-x', 'aria-label': 'Close', title: 'Close' }, '✕'));
+  box.append(t);
+  const all = box.querySelectorAll('.toast');
+  for (let i = 0; i < all.length - 4; i++) all[i].remove();
+  toastWire(t);
 }
+
+function toastWire(t) {
+  const close = () => {
+    if (t.classList.contains('is-out')) return;
+    t.classList.add('is-out');
+    setTimeout(() => t.remove(), matchMedia('(prefers-reduced-motion: reduce)').matches ? 0 : 250);
+  };
+  t.querySelector('.toast-x').addEventListener('click', close);
+  if (t.classList.contains('err')) return;
+  const wait = Math.min(10000, 3000 + t.textContent.length * 45);
+  let timer = setTimeout(close, wait), held = 0;
+  const hold = () => { held++; clearTimeout(timer); };
+  const free = () => { if (--held <= 0) { held = 0; timer = setTimeout(close, 2000); } };
+  t.addEventListener('pointerenter', hold); t.addEventListener('pointerleave', free);
+  t.addEventListener('focusin', hold); t.addEventListener('focusout', free);
+}
+document.querySelectorAll('[data-toasts] .toast').forEach(toastWire);
 
 async function post(url, body, again = true) {
   const r = await fetch(url, {
@@ -83,13 +117,14 @@ function sendFile(endpoint, file, model, onProgress, retried = false) {
 
 // Progress bar for uploads (the picture picker, Images → Upload images): run(files, folder) uploads them one after the other
 // and resolves to the addresses of the ones that worked (each failure is a toast). The bar counts bytes over all the files;
-// files pushed onto the same array while it runs (dropped during an upload) join the queue.
+// files pushed onto the same array while it runs (dropped during an upload) join the queue; the files that failed are in .failed.
+// finish(text): the full bar with that text (the picture picker stays open after an upload).
 function uploadProgress() {
   const text = el('span', { class: 'up-prog-tx' });
   const fill = el('span', { class: 'up-prog-fill' });
   const node = el('div', { class: 'up-prog', hidden: true, role: 'progressbar', 'aria-valuemin': '0', 'aria-valuemax': '100', 'aria-live': 'polite' }, text, el('span', { class: 'up-prog-bar' }, fill));
   const run = async (files, folder) => {
-    const urls = [];
+    const urls = [], failed = [];
     let before = 0;
     node.hidden = false;
     for (let k = 0; k < files.length; k++) {
@@ -104,13 +139,14 @@ function uploadProgress() {
         text.textContent = busy ? `Optimizing ${tag}${f.name}…` : `Uploading ${tag}${f.name} · ${pct}%`;
       };
       show(0, false);
-      try { urls.push(await upload(f, folder, show)); } catch (e) { toast(`${f.name}: ${e.message}`, 'err'); }
+      try { urls.push(await upload(f, folder, show)); } catch (e) { failed.push(f); toast(`${f.name}: ${e.message}`, 'err'); }
       before += f.size;
     }
     node.classList.remove('busy');
-    return urls;
+    return Object.assign(urls, { failed });
   };
-  return { node, run, hide: () => { node.hidden = true; } };
+  const finish = (msg) => { fill.style.width = '100%'; node.setAttribute('aria-valuenow', '100'); text.textContent = msg; };
+  return { node, run, finish, hide: () => { node.hidden = true; } };
 }
 
 function autoGrow(ta) {
@@ -521,7 +557,6 @@ const FP_GRID_ICON = '<path d="M4 4h7v7H4zM13 4h7v7h-7zM4 13h7v7H4zM13 13h7v7h-7
 const FP_PAGE_ICON = '<path d="M6.5 3.5h7l4 4v11c0 1.1-.9 2-2 2h-9c-1.1 0-2-.9-2-2v-13c0-1.1.9-2 2-2z"/><path d="M13.5 3.5v4h4M8.5 12.5h7M8.5 16h5"/>';
 const FP_QUESTION_ICON = '<circle cx="12" cy="12" r="8.5"/><path d="M9.6 9.6a2.5 2.5 0 1 1 3.4 2.3c-.6.3-1 .8-1 1.5v.4"/><path d="M12 16.8v.2"/>';
 function folderPicker(sel) {
-  const fold = (t) => t.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
   const upload = sel.dataset.folderPick === 'upload';
   const items = [...sel.options].map((o) => ({
     value: o.value, kind: o.dataset.kind || (o.value === '' ? 'all' : 'other'), name: o.dataset.name || o.textContent,
@@ -595,7 +630,7 @@ function folderPicker(sel) {
     ts[n]?.scrollIntoView({ block: 'nearest' });
   };
   const render = () => {
-    const words = fold(search.value).split(/\s+/).filter(Boolean);
+    const words = foldWords(search.value);
     const hit = (r) => words.every((w) => r.text.includes(w));
     list.replaceChildren();
     let n = 0;
@@ -701,10 +736,9 @@ document.querySelectorAll('select[data-folder-pick]').forEach((s) => { if (!s.hi
 let pickLib = null;   // the library, loaded once per page (an upload clears it)
 function pickImages({ multiple = false, folder = 'misc', title = '', exclude = [], excludeLabel = 'Already Added', note = '' } = {}) {
   return new Promise((resolve) => {
-    const fold = (t) => String(t || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
     const LIB_MAX = 120;   // pictures drawn at once: a search or a folder narrows the rest
     const excluded = new Set(exclude);
-    let chosen = [], files = [], pane = 'library', lib = null;
+    let chosen = [], files = [], queue = [], done = [], pane = 'library', lib = null;   // files: every one chosen; queue: the upload under way; done: addresses uploaded
     const tabBtn = (k, label) => el('a', { href: '#', 'data-src': k, 'aria-current': k === 'library' ? 'page' : null, onclick: (e) => { e.preventDefault(); setPane(k); } }, label);
     const libFolder = el('select', { class: 'input', 'data-folder-pick': 'filter', 'data-search-ph': 'Search models, accessories…', 'aria-label': 'Folder' }, el('option', { value: '' }, 'All Folders'));
     const search = el('input', { class: 'input', type: 'search', placeholder: 'Search a picture name…', 'aria-label': 'Search the pictures' });
@@ -732,17 +766,17 @@ function pickImages({ multiple = false, folder = 'misc', title = '', exclude = [
     const close = (v) => { if (busy) return; files.forEach((f) => URL.revokeObjectURL(f.preview)); dlg.close(); dlg.remove(); resolve(v); };
     dlg.addEventListener('cancel', (e) => { e.preventDefault(); close([]); });
     const drawPicked = () => {
-      const n = pane === 'library' ? chosen.length : files.length;
+      const n = pane === 'library' ? chosen.length : busy ? files.length : done.length;
       const thumbs = pane === 'library' ? chosen.slice(0, 6).map((u) => el('img', { src: lib?.find((i) => i.url === u)?.small || u, alt: '' })) : files.slice(0, 6).map((f) => el('img', { src: f.preview, alt: '' }));
-      picked.replaceChildren(...thumbs, n ? el('b', {}, multiple ? `${n} selected` : '') : el('span', { class: 'muted small' }, pane === 'library' ? (multiple ? 'Click pictures to pick them.' : 'Click a picture to pick it.') : (multiple ? 'Pictures upload as soon as you choose or drop them.' : 'The picture uploads as soon as you choose or drop it.')));
+      picked.replaceChildren(...thumbs, n ? el('b', {}, multiple ? `${n} ${pane === 'upload' && !busy ? 'uploaded' : 'selected'}` : '') : el('span', { class: 'muted small' }, pane === 'library' ? (multiple ? 'Click pictures to pick them.' : 'Click a picture to pick it.') : (multiple ? 'Pictures upload as soon as you choose or drop them.' : 'The picture uploads as soon as you choose or drop it.')));
       go.disabled = !n || busy;
-      go.hidden = pane === 'upload' && !busy;   // uploads start by themselves
-      go.textContent = !multiple ? (pane === 'upload' ? 'Upload and Use It' : 'Use This Picture') : n ? `${pane === 'upload' ? 'Upload' : 'Add'} ${n} ${n === 1 ? 'Picture' : 'Pictures'}` : 'Add Pictures';
+      go.hidden = pane === 'upload' && !busy && !done.length;   // uploads start by themselves
+      go.textContent = !multiple ? 'Use This Picture' : n ? `Add ${n} ${n === 1 ? 'Picture' : 'Pictures'}` : 'Add Pictures';
       if (busy) go.textContent = 'Uploading…';
     };
     const drawLib = () => {
       if (!lib) return;
-      const words = fold(search.value).split(/\s+/).filter(Boolean);
+      const words = foldWords(search.value);
       const match = lib.filter((i) => (!libFolder.value || i.folder === libFolder.value) && !(onlyNew.checked && excluded.has(i.url)) && words.every((w) => fold(i.label).includes(w)));
       grid.replaceChildren(...match.slice(0, LIB_MAX).map((i) => {
         const n = chosen.indexOf(i.url);
@@ -766,8 +800,9 @@ function pickImages({ multiple = false, folder = 'misc', title = '', exclude = [
     const addFiles = (list) => {
       const imgs = [...list].filter((f) => /^image\//.test(f.type));
       if (!imgs.length || (busy && !multiple)) return;
-      if (!multiple) { files.forEach((f) => URL.revokeObjectURL(f.preview)); files = []; imgs.splice(1); }
-      for (const f of imgs) files.push(Object.assign(f, { preview: URL.createObjectURL(f) }));   // during an upload: they join its queue
+      if (!multiple) { files.forEach((f) => URL.revokeObjectURL(f.preview)); files = []; done = []; imgs.splice(1); }
+      if (!busy) queue = [];
+      for (const f of imgs) { files.push(Object.assign(f, { preview: URL.createObjectURL(f) })); queue.push(f); }   // during an upload: they join its queue
       upMsg.textContent = '';
       drawPicked();
       if (!busy) startUpload();   // no extra click: choosing or dropping starts the upload
@@ -783,19 +818,23 @@ function pickImages({ multiple = false, folder = 'misc', title = '', exclude = [
       if (!multiple) drop.classList.add('is-busy');   // several pictures: more can be dropped meanwhile
       upFolder.disabled = true;
       const where = upFolder.value || folder;
-      const urls = await prog.run(files, where);
+      const urls = await prog.run(queue, where);
       busy = false;
       drop.classList.remove('is-busy');
       upFolder.disabled = false;
-      if (urls.length) { fpRemember(where); pickLib = null; close(Object.assign(urls, { uploaded: true })); return; }
-      prog.hide();
-      files.forEach((f) => URL.revokeObjectURL(f.preview));
-      files = [];
-      upMsg.textContent = 'Nothing was uploaded. Try again.';
+      files = files.filter((f) => !urls.failed.includes(f) || (URL.revokeObjectURL(f.preview), false));   // the thumbnails show only what was uploaded
+      done.push(...urls);
+      if (urls.length) { fpRemember(where); pickLib = null; }
+      // the window stays open: it shows what was uploaded, and "Add N Pictures" / "Use This Picture" puts them in
+      if (done.length) prog.finish(`✓ ${done.length} ${done.length === 1 ? 'picture' : 'pictures'} uploaded` + (urls.failed.length ? ` · ${urls.failed.length} failed` : ''));
+      else prog.hide();
+      upMsg.textContent = done.length ? '' : 'Nothing was uploaded. Try again.';
       drawPicked();
+      if (done.length && pane === 'upload') go.focus();
     }
     go.addEventListener('click', () => {
       if (pane === 'library') close(chosen);
+      else if (done.length && !busy) close(Object.assign([...done], { uploaded: true }));
     });
     document.body.append(dlg);
     dlg.showModal();
@@ -851,7 +890,6 @@ if (lib) {
   const PER = 60;   // 2 to 6 to a row: full rows on every screen
   let page = Math.max(1, parseInt(new URLSearchParams(location.search).get('page'), 10) || 1);
   let shown = cards;   // every card the search and filters match, on every page (the picture window goes through them)
-  const fold = (t) => t.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
   cards.forEach((c) => { c.foldedName = fold(c.dataset.name); });
   // ‹ 1 2 … 9 › under the grid (like the homepage catalog); the page is kept in ?page= so a reload (upload, crop) comes back to it
   const renderPager = (pages) => {
@@ -878,7 +916,7 @@ if (lib) {
   };
   function apply(keepPage = false) {
     if (keepPage !== true) page = 1;
-    const words = fold(search.value).split(/\s+/).filter(Boolean);
+    const words = foldWords(search.value);
     // the search box: file name and where it is used (every word, accents ignored); the menu: any of the card's groups
     const match = cards.filter((c) => words.every((w) => c.foldedName.includes(w)) && (!folder.value || c.dataset.folder.split(' ').includes(folder.value)) && (!unused.checked || c.dataset.used === '0'));
     shown = match;
@@ -925,7 +963,6 @@ if (lib) {
     let cur = card, mode = tab;
     const I = () => info[cur.dataset.url] || {};
     const used = () => I().uses?.length || 0;
-    const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
     const title = el('span', { class: 'iw-title' });
     const pos = el('span', { class: 'iw-pos' });
     const full = el('a', { class: 'btn btn-ghost btn-sm iw-full', target: '_blank', rel: 'noopener', title: 'Open full size in a new tab' }, el('span', { class: 't' }, 'Open Full Size '), '↗');
@@ -1084,7 +1121,6 @@ function initDocsEditor(data) {
   const mark = () => { dirty = true; edits++; };
   let cur = null;   // { s: section index, p: page index }
   const allPages = () => docs.sections.flatMap((x) => x.pages);
-  const slugify = (t) => t.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60);
   const uniqueSlug = (base, except) => {
     const used = new Set(allPages().filter((p) => p !== except).map((p) => p.slug));
     let s = base || 'page', n = 2;
@@ -1204,11 +1240,11 @@ function initDocsEditor(data) {
     title.addEventListener('input', () => {
       page.title = title.value;
       // only before the page's first save: a saved page keeps its address (isNew goes on save)
-      if (!slugTouched && page.isNew) { page.slug = uniqueSlug(slugify(title.value) || 'page', page); slug.value = page.slug; }
+      if (!slugTouched && page.isNew) { page.slug = uniqueSlug(slugify(title.value, 60) || 'page', page); slug.value = page.slug; }
       tree.querySelector('.dt-page.active .dt-link').firstChild.textContent = title.value || 'Untitled Page';
     });
     slug.addEventListener('input', () => { slugTouched = true; page.slug = slug.value.trim(); });
-    slug.addEventListener('change', () => { page.slug = slugify(slug.value) || uniqueSlug('page', page); slug.value = page.slug; viewLink.href = urlOf(page); history.replaceState(null, '', `?page=${encodeURIComponent(page.slug)}`); });
+    slug.addEventListener('change', () => { page.slug = slugify(slug.value, 60) || uniqueSlug('page', page); slug.value = page.slug; viewLink.href = urlOf(page); history.replaceState(null, '', `?page=${encodeURIComponent(page.slug)}`); });
     sum.addEventListener('input', () => (page.summary = sum.value));
     const draft = el('input', { type: 'checkbox', checked: !!page.draft });
     draft.addEventListener('change', () => { page.draft = draft.checked; mark(); renderTree(); viewLink.href = urlOf(page); });
@@ -1329,7 +1365,7 @@ function initFaqEditor(data) {
     ta.value = ta.value.slice(0, a) + text + ta.value.slice(b);
     ta.dispatchEvent(new Event('input', { bubbles: true }));
   };
-  const card = (cls, head, body, onRemove, confirmText) => {
+  const card = (cls, head, body, confirmText) => {
     const item = el('details', { class: 'rep-item ' + cls }, head, body);
     head.prepend(dragHandle(() => item));
     head.querySelector('.row-btns').append(   // reorder by dragging ⠿ (or focus it and use the arrow keys)
@@ -1404,6 +1440,90 @@ function lbl(label, hint) {
   return el('span', { class: 'lbl' }, label, hint && tip(hint));
 }
 
+// A text field that offers the values already in use (the editors' Franchise, Game and accessory Type): typing lists the matches
+// (case, accents and small typos don't matter), Enter or a click takes one, so a variant never becomes a new value by accident.
+// A new value is a choice of its own: the last row "+ New …", or leaving the field; it then shows "New" (and "Did you mean…?" when
+// close to one in use). A value that differs from one in use only by case / accents / spaces takes that one's spelling on leaving.
+// values = [{v, n (items using it), f? (group, e.g. a game's franchise)}]; o = {noun: 'franchise', unit: ['model', 'models'], group: () => text}
+function suggestField(input, values, o) {
+  const key = (t) => fold(t).replace(/\s+/g, ' ').trim();   // values compared without accents, case or extra spaces
+  const dist = (a, b) => {   // edit distance (Levenshtein), for typos
+    if (Math.abs(a.length - b.length) > 3) return 9;
+    let prev = Array.from({ length: b.length + 1 }, (_, j) => j);
+    for (let i = 1; i <= a.length; i++) {
+      const cur = [i];
+      for (let j = 1; j <= b.length; j++) cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+      prev = cur;
+    }
+    return prev[b.length];
+  };
+  const close = (q, v) => q.length >= 4 && (dist(q, v) <= Math.max(1, Math.floor(v.length / 6)) || dist(q, v.slice(0, q.length)) <= 1);
+  const same = (t) => values.find((x) => key(x.v) === key(t));
+  const noun = o.noun, Noun = noun[0].toUpperCase() + noun.slice(1);
+  const sugg = el('div', { class: 'g-sugg sg-list', hidden: true, role: 'listbox' });
+  const note = el('div', { class: 'sg-note', hidden: true });
+  let act = 0;
+  input.setAttribute('autocomplete', 'off');
+  const set = (v) => { input.value = v; input.dispatchEvent(new Event('change', { bubbles: true })); state(); };
+  const hide = () => { sugg.hidden = true; input.setAttribute('aria-expanded', 'false'); };
+  const show = () => {
+    const typed = input.value.trim(), q = key(typed), g = key(o.group?.() || '');
+    const score = (x) => {   // lower = better; null = not a match
+      const v = key(x.v), grp = g && key(x.f) === g ? 0 : 1;
+      if (!q) return grp * 10;
+      if (v === q) return -1;
+      if (v.startsWith(q)) return 1 + grp * 10;
+      if (q.split(' ').every((w) => v.includes(w))) return 2 + grp * 10;
+      return close(q, v) ? 3 + grp * 10 : null;
+    };
+    let rows = values.map((x) => [x, score(x)]).filter(([, sc]) => sc !== null).sort((a, b) => a[1] - b[1] || b[0].n - a[0].n).map(([x]) => x);
+    if (!q && g && rows.some((x) => key(x.f) === g)) rows = rows.filter((x) => key(x.f) === g);   // empty Game: this franchise's games
+    rows = rows.slice(0, 8);
+    sugg.replaceChildren(...rows.map((x) => el('button', { type: 'button', class: 'g-sugg-row', role: 'option', onmousedown: (e) => e.preventDefault(), onclick: () => { set(x.v); hide(); } },
+      el('span', {}, x.v), el('small', { class: 'muted' }, [x.f && x.f !== o.group?.() ? x.f : '', x.n ? x.n + ' ' + o.unit[x.n === 1 ? 0 : 1] : ''].filter(Boolean).join(' · ')))));
+    if (typed && !same(typed)) sugg.append(el('button', { type: 'button', class: 'g-sugg-row sg-add', role: 'option', onmousedown: (e) => e.preventDefault(), onclick: () => { set(typed); hide(); } },
+      el('span', { class: 'sg-plus' }, '+'), el('span', {}, `New ${Noun} “${typed}”`)));
+    act = 0;
+    [...sugg.children].forEach((r, i) => r.classList.toggle('act', i === act));
+    sugg.hidden = !sugg.children.length;
+    input.setAttribute('aria-expanded', String(!sugg.hidden));
+  };
+  // under the field: "New" for a value no other item uses, with the closest one in use when it looks like a typo
+  const state = () => {
+    const typed = input.value.trim();
+    const isNew = typed !== '' && !same(typed);
+    note.hidden = !isNew;
+    input.classList.toggle('is-new', isNew);
+    if (!isNew) return;
+    const q = key(typed);
+    const near = values.filter((x) => close(q, key(x.v)) || (q.length >= 3 && (key(x.v).startsWith(q) || q.startsWith(key(x.v))))).sort((a, b) => dist(q, key(a.v)) - dist(q, key(b.v)))[0];
+    note.replaceChildren(el('span', { class: 'sg-new' }, 'New ' + Noun),
+      near ? el('span', {}, ' Did you mean ', el('button', { type: 'button', class: 'sg-mean', onclick: () => set(near.v) }, near.v), '?') : ` No other ${o.unit[0]} uses it yet.`);
+  };
+  input.addEventListener('input', () => { show(); note.hidden = true; input.classList.remove('is-new'); });
+  input.addEventListener('focus', show);
+  input.addEventListener('keydown', (e) => {
+    const rows = [...sugg.children];
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      if (sugg.hidden) { show(); return; }
+      if (!rows.length) return;
+      act = (act + (e.key === 'ArrowDown' ? 1 : rows.length - 1)) % rows.length;
+      rows.forEach((r, i) => r.classList.toggle('act', i === act));
+      rows[act].scrollIntoView({ block: 'nearest' });
+    } else if (e.key === 'Enter' && !sugg.hidden && rows[act]) { e.preventDefault(); rows[act].click(); }
+    else if (e.key === 'Escape' && !sugg.hidden) { e.preventDefault(); hide(); }
+  });
+  input.addEventListener('blur', () => setTimeout(() => {
+    if (document.activeElement === input) return;   // back in the field already
+    hide();
+    const typed = input.value.trim(), hit = same(typed);
+    if (hit && hit.v !== input.value) set(hit.v); else state();   // "final  fantasy" → "Final Fantasy"
+  }, 150));
+  state();
+  return el('div', { class: 'sg' }, input, sugg, note);
+}
+
 // ── 3D preview (the editors' 3D Preview field): the viewer script loads on first use, like on the public pages (site.js) ──
 function cubeIcon() {
   const s = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
@@ -1464,7 +1584,7 @@ async function preview3d(src, name, light = null) {
     pop.textContent = '';
     if (b.dataset.tipLinks) {   // Links column of the lists: the link names, grouped by who gets them
       const names = JSON.parse(b.dataset.tipLinks);
-      for (const [k, head] of [['patrons', 'Patrons'], ['public', 'Public'], ['addons', 'Add-ons']]) {
+      for (const [k, head] of [['patrons', 'Patrons'], ['public', 'Public'], ['off', 'Hidden'], ['addons', 'Add-ons']]) {
         if (!names[k]?.length) continue;
         pop.append(el('div', { class: 'tp-head tp-' + k }, head), el('ul', { class: 'tp-links' }, names[k].map((n) => typeof n === 'string' ? el('li', {}, n)
           : el('li', { class: 'tp-dead' }, n.n, el('span', {}, ' · dead link')))));   // Link Check found it dead
@@ -1493,7 +1613,6 @@ async function preview3d(src, name, light = null) {
 function initEditor(data) {
   const m = data.item;
   const isOutfit = data.kind === 'outfits';
-  const what = isOutfit ? 'accessory' : 'model';
   const fields = {};
   let dirty = false;
   // uploads go to media/<model>/ or media/outfit-<outfit>/
@@ -1502,7 +1621,7 @@ function initEditor(data) {
   // Field builders. Each returns { node, get }. Help texts (o.hint) sit behind a "?" next to the label (tip(), shown on hover / tap)
   const text = (label, value, o = {}) => {
     const input = el('input', { class: 'input', type: o.type || 'text', value: value ?? '', placeholder: o.placeholder, list: o.list, maxlength: o.max });
-    return { node: el('label', { class: 'field ' + (o.cls || '') }, lbl(label, o.hint), input), get: () => input.value.trim(), input };
+    return { node: el('label', { class: 'field ' + (o.cls || '') }, lbl(label, o.hint), o.suggest ? suggestField(input, o.suggest.values || [], o.suggest) : input), get: () => input.value.trim(), input };
   };
   const area = (label, value, o = {}) => {
     const ta = autoGrow(el('textarea', { class: 'input', rows: o.rows || 3, placeholder: o.placeholder, maxlength: o.max }));
@@ -1748,24 +1867,149 @@ function initEditor(data) {
     url.addEventListener('input', () => { const same = url.value.trim() === first; row.classList.toggle('is-dead', same); ico.style.visibility = same ? '' : 'hidden'; });
   };
 
+  // "S4…" (only while a Bucket Address is set in Settings → MEGA S4): the bucket's folders and files from admin/s4-files.php,
+  // one folder at a time, with a filter. One file (a link row's S4… button): a click picks it. multiple (the list's "+ Add from S4…"):
+  // tick boxes that stay ticked across folders, "Select all" for the files shown, and the files already in the list greyed out (have);
+  // done gets the chosen files [{key, size}] and, with multiple, who the new links are for
+  const pickS4 = ({ start = '', multiple = false, have = new Set(), done }) => {
+    const sizeTxt = (b) => (b >= 1073741824 ? (b / 1073741824).toFixed(1) + ' GB' : b >= 1048576 ? (b / 1048576).toFixed(1) + ' MB' : Math.max(1, Math.ceil(b / 1024)) + ' KB');
+    const crumbs = el('div', { class: 's4-crumbs' });
+    const filter = el('input', { class: 'input', type: 'search', placeholder: 'Filter this folder', autocomplete: 'off', spellcheck: 'false', 'aria-label': 'Filter' });
+    const list = el('div', { class: 's4-list' + (multiple ? ' is-multi' : '') });
+    const note = el('p', { class: 'muted small s4-note' });
+    const close = () => { dlg.close(); dlg.remove(); };
+    const picked = new Map();   // key → file, in the order ticked (the new links come in that order)
+    const all = el('input', { type: 'checkbox', 'aria-label': 'Select all files shown' });
+    const allRow = el('label', { class: 's4-all', hidden: true }, all, el('span', {}, 'Select All Files Shown'));
+    const count = el('span', { class: 's4-count muted small' });
+    const clear = el('button', { type: 'button', class: 'linklike s4-clear', onclick: () => { picked.clear(); sync(); } }, 'Clear');
+    const access = el('select', { class: 'input', 'aria-label': 'New links are for' }, el('option', { value: 'patrons' }, 'Patrons Only'), el('option', { value: 'public' }, 'Public'));
+    const go = el('button', { type: 'button', class: 'btn btn-primary', disabled: true, onclick: () => { close(); done([...picked.values()], access.value); } });
+    let rows = [], seq = 0;   // seq: only the folder asked for last is drawn
+    const boxes = () => rows.filter((r) => r.querySelector('input:not(:disabled)') && !r.hidden).map((r) => r.querySelector('input'));
+    // the tick boxes, "Select all", the count and the button follow `picked`
+    const sync = () => {
+      if (!multiple) return;
+      rows.forEach((r) => { const b = r.querySelector('input'); if (b && !b.disabled) b.checked = picked.has(r.dataset.key); });
+      const shown = boxes();
+      allRow.hidden = !shown.length;
+      all.checked = shown.length > 0 && shown.every((b) => b.checked);
+      all.indeterminate = !all.checked && shown.some((b) => b.checked);
+      const n = picked.size;
+      count.textContent = n ? `${n} ${n === 1 ? 'file' : 'files'} selected` : 'Tick the files to add.';
+      clear.hidden = !n;
+      go.disabled = !n;
+      go.textContent = n ? `Add ${n} ${n === 1 ? 'Link' : 'Links'}` : 'Add Links';
+    };
+    const show = () => {
+      const words = foldWords(filter.value);
+      let n = 0;
+      rows.forEach((r) => { const ok = words.every((w) => r.dataset.name.includes(w)); r.hidden = !ok; if (ok) n++; });
+      note.textContent = rows.length && !n ? 'Nothing matches the filter.' : note.dataset.base || '';
+      sync();
+    };
+    all.addEventListener('change', () => { const on = all.checked; boxes().forEach((b) => { const r = b.closest('.s4-row'); if (on) picked.set(r.dataset.key, r.s4file); else picked.delete(r.dataset.key); }); sync(); });
+    const fileRow = (f, prefix) => {
+      const name = f.key.slice(prefix.length);
+      const facts = [el('span', { class: 'muted small' }, sizeTxt(f.size)), el('span', { class: 'muted small' }, f.date)];
+      if (!multiple) return el('button', { type: 'button', class: 's4-row', 'data-name': fold(name), onclick: () => { close(); done([f]); } },
+        el('span', { class: 's4-ico', 'aria-hidden': 'true' }, '📄'), el('span', { class: 's4-name' }, name), ...facts);
+      const had = have.has(f.key);
+      const box = el('input', { type: 'checkbox', disabled: had, checked: had });
+      box.addEventListener('change', () => { if (box.checked) picked.set(f.key, f); else picked.delete(f.key); sync(); });
+      const r = el('label', { class: 's4-row' + (had ? ' had' : ''), 'data-name': fold(name), 'data-key': f.key, title: had ? 'Already in the download links' : null },
+        box, el('span', { class: 's4-name' }, name, had ? el('span', { class: 's4-had' }, 'Already Added') : null), ...facts);
+      r.s4file = f;
+      return r;
+    };
+    const open = async (prefix) => {
+      const mine = ++seq;
+      list.replaceChildren(el('p', { class: 'muted small' }, 'Loading…'));
+      rows = [];
+      filter.value = '';
+      note.dataset.base = '';
+      note.textContent = '';
+      sync();
+      let d;
+      try {
+        const r = await fetch('/admin/s4-files.php?prefix=' + encodeURIComponent(prefix), { credentials: 'same-origin', cache: 'no-store' });
+        d = await r.json();
+        if (!d.ok) throw new Error(d.error || 'S4 didn’t answer.');
+      } catch (err) { if (mine === seq) list.replaceChildren(el('p', { class: 'res-err small' }, err.message)); return; }
+      if (mine !== seq || !dlg.isConnected) return;
+      const parts = prefix.split('/').filter(Boolean);
+      crumbs.replaceChildren(el('button', { type: 'button', class: 'linklike', onclick: () => open('') }, d.bucket),
+        ...parts.flatMap((p, i) => [el('span', { class: 'muted' }, ' / '), el('button', { type: 'button', class: 'linklike', onclick: () => open(parts.slice(0, i + 1).join('/') + '/') }, p)]));
+      rows = [
+        ...d.folders.map((f) => el('button', { type: 'button', class: 's4-row is-folder', 'data-name': fold(f.slice(prefix.length)), onclick: () => open(f) },
+          el('span', { class: 's4-ico', 'aria-hidden': 'true' }, '📁'), el('span', { class: 's4-name' }, f.slice(prefix.length, -1)), el('span'), el('span'))),
+        ...d.files.map((f) => fileRow(f, prefix)),
+      ];
+      list.replaceChildren(...(rows.length ? rows : [el('p', { class: 'muted small' }, 'This folder is empty.')]));
+      note.dataset.base = d.more ? 'Only the first files are shown: use a folder or the filter.' : '';
+      show();
+      filter.focus();
+    };
+    filter.addEventListener('input', show);
+    const title = multiple ? 'Add from S4' : 'Choose from S4';
+    const cancel = el('button', { type: 'button', class: 'btn btn-ghost', onclick: close }, 'Cancel');
+    const body = el('div', { class: 'lc-dlg-body' },
+      el('h2', null, title), crumbs, filter, multiple ? allRow : null, list, note,
+      multiple
+        ? el('div', { class: 'form-actions s4-foot' }, el('div', { class: 'act-left s4-picked' }, count, clear), el('label', { class: 's4-for' }, el('span', { class: 'muted small' }, 'For'), access), cancel, go)
+        : el('div', { class: 'form-actions' }, cancel));
+    const dlg = el('dialog', { class: 'lc-dlg s4-dlg', 'aria-label': title }, body);
+    dlg.addEventListener('cancel', (e) => { e.preventDefault(); close(); });
+    dlg.addEventListener('click', (e) => { if (e.target === dlg && !picked.size) close(); });   // a click beside it never loses ticked files
+    document.body.append(dlg);
+    dlg.showModal();
+    sync();
+    open(start);
+  };
+  // the folder of an "s4:" address ('' = the bucket's top), where the S4 window starts
+  const s4Folder = (v) => { const m = String(v || '').trim().match(/^s4:\/*(.*\/)?[^/]*$/i); return m && m[1] ? m[1] : ''; };
+  // a new link's label from its file: the name without folder and extension, "_" as spaces ("Alice_Textures_4K.zip" → "Alice Textures 4K")
+  const s4Label = (key) => { const f = key.split('/').pop(); return (f.replace(/\.[a-z0-9]{1,5}$/i, '').replace(/_+/g, ' ').trim() || f).slice(0, 60); };
+
   // Download links: label + address + who can use it
   const links = (items) => {
     const wrap = el('div', { class: 'links' });
     const addRow = (l = {}) => {
       const label = el('input', { class: 'input', type: 'text', value: l.label || '', placeholder: 'Label, e.g. Mega', maxlength: 60 });
-      const url = el('input', { class: 'input', type: 'url', value: l.url || '', placeholder: 'https://…', maxlength: 1000 });
+      const url = el('input', { class: 'input', type: 'url', value: l.url || '', placeholder: data.s4 ? 'https://… or s4:file name' : 'https://…', maxlength: 1000 });
       const access = el('select', { class: 'input' }, el('option', { value: 'patrons', selected: (l.access || 'patrons') === 'patrons' }, 'Patrons Only'), el('option', { value: 'public', selected: l.access === 'public' }, 'Public'));
+      // on / off: an off link stays here but isn't on the site (and its /get/ address refuses), so it can come back later
+      const on = el('input', { type: 'checkbox', class: 'switch link-on', checked: !l.off });
+      const sync = () => { const t = on.checked ? 'Shown on the site' : 'Hidden from the site'; on.title = t; on.setAttribute('aria-label', t); row.classList.toggle('is-off', !on.checked); };
+      on.addEventListener('change', () => { sync(); form.dispatchEvent(new Event('input')); });
       const row = el('div', { class: 'link-row' }, dragHandle(() => row), label, url, access,
-        el('div', { class: 'row-btns' }, iconBtn('✕', 'Remove', () => { row.remove(); form.dispatchEvent(new Event('input')); }, 'del')));
+        el('div', { class: 'row-btns' }, on, data.s4 ? el('button', { type: 'button', class: 'btn btn-ghost btn-sm s4-btn', title: 'Choose a file from your S4 bucket', onclick: () => pickS4({ start: s4Folder(url.value), done: ([f]) => {
+          url.value = 's4:' + f.key;
+          url.dispatchEvent(new Event('input', { bubbles: true }));
+        } }) }, 'S4…') : null,
+          iconBtn('✕', 'Remove', () => { row.remove(); form.dispatchEvent(new Event('input')); }, 'del')));
+      sync();
       markDead(row, url);
       wrap.append(row);
       return row;
     };
     (items || []).forEach(addRow);
     const add = el('button', { type: 'button', class: 'btn btn-ghost btn-sm add', onclick: () => { addRow({ label: wrap.children.length ? '' : 'Mega' }).querySelector('input').focus(); form.dispatchEvent(new Event('input')); } }, '+ Add Download Link');
+    // several S4 files at once: one new link each, labelled after its file; rows left completely empty make way for them
+    const urlOf = (r) => r.querySelectorAll('input.input')[1];
+    const addS4 = data.s4 ? el('button', { type: 'button', class: 'btn btn-ghost btn-sm add', onclick: () => {
+      const rows = [...wrap.children];
+      const have = new Set(rows.map((r) => urlOf(r).value.trim()).filter((v) => /^s4:/i.test(v)).map((v) => v.replace(/^s4:\/*/i, '')));
+      const last = rows.map((r) => urlOf(r).value).reverse().find((v) => /^s4:/i.test(v.trim()));
+      pickS4({ multiple: true, have, start: s4Folder(last), done: (files, who) => {
+        rows.forEach((r) => { if (![...r.querySelectorAll('input.input')].some((i) => i.value.trim())) r.remove(); });
+        files.forEach((f) => addRow({ label: s4Label(f.key), url: 's4:' + f.key, access: who }));
+        form.dispatchEvent(new Event('input'));
+      } });
+    } }, '+ Add from S4…') : null;
     return {
-      node: el('div', { class: 'field' }, lbl('Download Links'), wrap, add),
-      get: () => [...wrap.children].map((r) => { const [lb, u, a] = r.querySelectorAll('input, select'); return { label: lb.value.trim(), url: u.value.trim(), access: a.value }; }).filter((l) => l.url || l.label),
+      node: el('div', { class: 'field' }, lbl('Download Links'), wrap, addS4 ? el('div', { class: 'row-btns links-add' }, add, addS4) : add),
+      get: () => [...wrap.children].map((r) => { const [lb, u, a] = r.querySelectorAll('input.input, select'); return { label: lb.value.trim(), url: u.value.trim(), access: a.value, ...(r.querySelector('.link-on').checked ? {} : { off: true }) }; }).filter((l) => l.url || l.label),
     };
   };
 
@@ -1985,8 +2229,6 @@ function initEditor(data) {
   };
 
   // ── Build the form ──
-  form.append(el('datalist', { id: 'franchises' }, data.franchises.map((f) => el('option', { value: f }))));
-  if (isOutfit) form.append(el('datalist', { id: 'acc-types' }, (data.types || []).map((t) => el('option', { value: t }))));
   form.append(el('datalist', { id: 'highlights' }, ['New Textures!', 'First release for patrons.', 'Last Blender 4.5 compatible version'].map((f) => el('option', { value: f }))));
 
   const base = isOutfit ? '/accessories/' : '/models/';
@@ -1996,14 +2238,15 @@ function initEditor(data) {
     let touched = false;
     fields.slug.input.addEventListener('input', () => (touched = true));
     fields.name.input.addEventListener('input', () => {
-      if (!touched) fields.slug.input.value = fields.name.get().toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^a-z0-9]+/g, '-').replace(/^-+/, '').slice(0, 64).replace(/-+$/, '');   // the address fits its 64 characters: what is shown is what is saved
+      if (!touched) fields.slug.input.value = slugify(fields.name.get());   // the address fits its 64 characters: what is shown is what is saved
     });
   }
   const slugNode = fields.slug?.node ?? el('div', { class: 'field' }, el('span', { class: 'lbl' }, 'Page Address'), el('code', { class: 'slug' }, `${base}${m.slug}/`));
 
   if (isOutfit) {
     // type: free text with suggestions (like a model's franchise); empty = Outfit. Catalog filter and the line above the name
-    fields.type = text('Type', m.type || 'Outfit', { list: 'acc-types', placeholder: 'e.g. Hair', max: 40, hint: 'Outfit, Hair, Necklace… Pick one in the list or type a new one: the Accessories page gets a filter per type.' });
+    fields.type = text('Type', m.type || 'Outfit', { placeholder: 'e.g. Hair', max: 40, hint: 'Outfit, Hair, Necklace… Pick one in the list or type a new one: the Accessories page gets a filter per type.',
+      suggest: { values: data.types, noun: 'type', unit: ['accessory', 'accessories'] } });
     form.append(section('Basics', null, el('div', { class: 'grid-acc' }, fields.name.node, fields.type.node, slugNode)));
     visibilitySection();
     // the rest follows the accessory page: pictures, "Optimized for", description, download box, changelog
@@ -2021,8 +2264,8 @@ function initEditor(data) {
     form.append(section('Downloads', null, fields.links.node), accessSection());
     changelogFields();
   } else {
-    fields.franchise = text('Franchise', m.franchise, { max: 80, list: 'franchises', placeholder: 'e.g. Final Fantasy' });
-    fields.game = text('Game (Optional)', m.game, { max: 120, placeholder: 'e.g. Rise of the Tomb Raider' });
+    fields.franchise = text('Franchise', m.franchise, { max: 80, placeholder: 'e.g. Final Fantasy', suggest: { values: data.franchises, noun: 'franchise', unit: ['model', 'models'] } });
+    fields.game = text('Game (Optional)', m.game, { max: 120, placeholder: 'e.g. Rise of the Tomb Raider', suggest: { values: data.games, noun: 'game', unit: ['model', 'models'], group: () => fields.franchise.get() } });
     fields.generation = text('Generation', m.generation ?? '', { max: 10, placeholder: 'e.g. 4', cls: 'small-field' });
     fields.majorVersion = text('Major Version', m.majorVersion ?? '', { type: 'number', placeholder: 'e.g. 2', cls: 'small-field', hint: 'Models with the same name and a major version are shown as versions of each other (the older ones say a newer version exists). Empty = not part of a series.' });
     form.append(section('Basics', null,
@@ -2457,10 +2700,9 @@ document.querySelectorAll('[data-batch]').forEach((box) => {
   // Hidden rows are unticked (a batch never touches rows you can't see) and reordering pauses (dragging needs the full list).
   const search = box.querySelector('[data-batch-search]');
   const empty = box.querySelector('[data-batch-empty]');
-  const fold = (t) => t.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
   const filter = () => {
     const q = search.value.trim();
-    const words = fold(q).split(/\s+/).filter(Boolean);
+    const words = foldWords(q);
     let shown = 0;
     table.querySelectorAll('tbody tr[data-slug]').forEach((tr) => {
       const hay = fold(tr.dataset.search || tr.textContent);
@@ -2608,13 +2850,14 @@ function numStepper(input) {
   });
   wrap.append(input, box);
 }
-document.querySelectorAll('input[type=number]').forEach(numStepper);
-// the editors build their fields later
+// The editors build their fields later: watchAdded(selector, fn) also runs fn on every match added to the page afterwards (one watcher for all)
+const watched = [];
+const watchAdded = (sel, fn) => { document.querySelectorAll(sel).forEach(fn); watched.push([sel, fn]); };
 new MutationObserver((list) => list.forEach((m) => m.addedNodes.forEach((n) => {
   if (n.nodeType !== 1) return;
-  if (n.matches('input[type=number]')) numStepper(n);
-  else n.querySelectorAll('input[type=number]').forEach(numStepper);
+  for (const [sel, fn] of watched) { if (n.matches(sel)) fn(n); else n.querySelectorAll(sel).forEach(fn); }
 }))).observe(document.body, { childList: true, subtree: true });
+watchAdded('input[type=number]', numStepper);
 
 // ── Tabs in rendered texts (format help, docs preview): as on the site (site.js), without remembering the choice ──
 function mdTabs(g) {
@@ -2629,12 +2872,7 @@ function mdTabs(g) {
   g.classList.add('is-tabs');
   show(tabs[0]?.dataset.tab);
 }
-document.querySelectorAll('[data-md-tabs]').forEach(mdTabs);
-new MutationObserver((list) => list.forEach((m) => m.addedNodes.forEach((n) => {
-  if (n.nodeType !== 1) return;
-  if (n.matches('[data-md-tabs]')) mdTabs(n);
-  else n.querySelectorAll('[data-md-tabs]').forEach(mdTabs);
-}))).observe(document.body, { childList: true, subtree: true });
+watchAdded('[data-md-tabs]', mdTabs);
 
 // ── Settings → Site identity: the preview follows the fields before saving (name, coloured part, tagline, colour, logo) ──
 (() => {
@@ -2724,7 +2962,6 @@ document.querySelector('[data-pt-use]')?.addEventListener('click', (e) => {
   const count = document.querySelector('[data-tot-count]');
   const kinds = [...document.querySelectorAll('[data-tot-kind]')];
   const sums = [...document.querySelectorAll('[data-tot-sums] [data-sum]')];
-  const fold = (t) => t.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
   rows.forEach((r, i) => { r.hay = fold(r.dataset.search || r.textContent); r.pos = i; });
   const u0 = new URL(location.href).searchParams;
   let kind = u0.get('tkind') || '';
@@ -2741,7 +2978,7 @@ document.querySelector('[data-pt-use]')?.addEventListener('click', (e) => {
   };
   const filter = () => {
     const q = search ? search.value.trim() : '';
-    const words = fold(q).split(/\s+/).filter(Boolean);
+    const words = foldWords(q);
     const tot = { total: 0, patrons: 0, public: 0, likes: 0 };
     let shown = 0;
     rows.forEach((r) => {
@@ -2798,7 +3035,6 @@ document.querySelector('[data-pt-use]')?.addEventListener('click', (e) => {
   const search = document.querySelector('[data-lc-search]');
   const chips = [...document.querySelectorAll('[data-lc-chip]')];
   const tiles = [...document.querySelectorAll('[data-lc-tile]')];
-  const fold = (t) => t.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
   const rows = () => [...tbody.querySelectorAll('tr[data-lc-row]')];
   let show = chips.find((c) => c.getAttribute('aria-pressed') === 'true')?.dataset.lcChip || '';
   let running = false;
@@ -3048,7 +3284,6 @@ document.querySelectorAll('[data-log-rows]').forEach((form) => {
   const root = document.querySelector('[data-gadmin]');
   if (!root) return;
   let G = JSON.parse(document.getElementById('gallery-data').textContent);
-  const fold = (t) => String(t || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
   const VIS_ICONS = {
     public: '<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/>',
     blurred: '<path d="m3 3 18 18M10.6 6.1A10 10 0 0 1 12 6c5 0 9 6 9 6a17 17 0 0 1-2.6 3.2M6.6 6.6C4.3 8.1 3 12 3 12s4 6 9 6c1.6 0 3-.4 4.3-1.1"/>',
@@ -3173,7 +3408,7 @@ document.querySelectorAll('[data-log-rows]').forEach((form) => {
     return panel.node;
   }
   function shownStills() {
-    const words = fold(filt.q).split(/\s+/).filter(Boolean);
+    const words = foldWords(filt.q);
     return G.stills.filter((s) => {
       if (filt.only === 'draft' && s.visibility !== 'draft') return false;
       if (filt.only === 'none' && s.who.length) return false;
@@ -3389,7 +3624,7 @@ document.querySelectorAll('[data-log-rows]').forEach((form) => {
       f.inert = true;   // no typing while it saves: the panel is drawn again from the saved picture
       dirty = false;
       try {
-        await save({ action: 'save', id: s.id, still: { src, caption: caption.value, chars: st.chars, date: date.value, visibility: vis.querySelector('input:checked').value, link: { url: url.value.trim(), access: access.value, size: size.value } } }, 'Saved ✓');
+        await save({ action: 'save', id: s.id, still: { src: src !== s.src ? src : '', caption: caption.value, chars: st.chars, date: date.value, visibility: vis.querySelector('input:checked').value, link: { url: url.value.trim(), access: access.value, size: size.value } } }, 'Saved ✓');   // src only after a crop here: an address the Images page replaced meanwhile stays
       } catch (err) { dirty = true; f.inert = false; toast(err.message, 'err'); btn.disabled = false; }
     });
     return el('div', {}, el('h2', { class: 'g-panel-title' }, 'Edit Picture'), f);
@@ -3433,13 +3668,12 @@ document.querySelectorAll('[data-log-rows]').forEach((form) => {
     btn.title = btn.title.replace('Ctrl+K', '⌘K');
     btn.setAttribute('aria-label', btn.getAttribute('aria-label').replace('Ctrl+K', '⌘K'));
   }
-  const fold = (t) => String(t || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
   let items = null;
   let loading = null;
   let shown = [];
   let cur = 0;
   let timer = 0;
-  const line = (text) => { const li = document.createElement('li'); li.className = 'hs-none'; li.textContent = text; return li; };
+  const line = (text) => el('li', { class: 'hs-none' }, text);
   const mark = () => {
     list.querySelectorAll('[role=option]').forEach((li, i) => {
       li.setAttribute('aria-selected', String(i === cur));
@@ -3449,7 +3683,7 @@ document.querySelectorAll('[data-log-rows]').forEach((form) => {
     else q.removeAttribute('aria-activedescendant');
   };
   const draw = () => {
-    const words = fold(q.value).split(/\s+/).filter(Boolean);
+    const words = foldWords(q.value);
     shown = [];
     // nothing typed: no list (like the public search), the results come with the first letter
     if (!words.length) { list.replaceChildren(); mark(); return; }
@@ -3468,22 +3702,10 @@ document.querySelectorAll('[data-log-rows]').forEach((form) => {
     cur = 0;
     // one row = the public search's: picture (else the first letter), title, then the kind (mustard) · the line under it
     list.replaceChildren(...(shown.length ? shown.map((it, i) => {
-      const li = document.createElement('li');
-      li.id = 'jump-' + i;
-      li.setAttribute('role', 'option');
-      const a = document.createElement('a');
-      a.href = it.u;
-      a.tabIndex = -1;
-      let pic;
-      if (it.p) { pic = document.createElement('img'); pic.src = it.p; pic.alt = ''; pic.loading = 'lazy'; }
-      else { pic = document.createElement('span'); pic.setAttribute('aria-hidden', 'true'); pic.textContent = it.t.replace(/^[#+\s\d]+/, '').slice(0, 1).toUpperCase() || '#'; }
-      pic.className = 'hs-pic';
-      const t = document.createElement('span'); t.className = 'hs-t'; t.textContent = it.t;
-      const s = document.createElement('span'); s.className = 'hs-s';
-      const k = document.createElement('span'); k.className = 'hs-k'; k.textContent = it.k;
-      s.append(k, it.s ? ' · ' + it.s : '');
-      a.append(pic, t, s);
-      li.append(a);
+      const pic = it.p ? el('img', { class: 'hs-pic', loading: 'lazy', alt: '', src: it.p })
+        : el('span', { class: 'hs-pic', 'aria-hidden': 'true' }, it.t.replace(/^[#+\s\d]+/, '').slice(0, 1).toUpperCase() || '#');
+      const li = el('li', { id: 'jump-' + i, role: 'option' }, el('a', { href: it.u, tabindex: '-1' }, pic,
+        el('span', { class: 'hs-t' }, it.t), el('span', { class: 'hs-s' }, el('span', { class: 'hs-k' }, it.k), it.s ? ' · ' + it.s : '')));
       li.addEventListener('mousemove', () => { if (cur !== i) { cur = i; mark(); } });
       return li;
     }) : [line('Nothing found.')]));

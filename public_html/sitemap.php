@@ -11,9 +11,9 @@ $urls = [];
 foreach (array_merge(['/', '/accessories/', '/whats-new/'], m3d_mustardui_on() ? ['/mustardui/'] : [], m3d_has_docs() ? ['/docs/'] : [], m3d_has_faq() ? ['/faq/'] : [], m3d_bugs_on() ? ['/bugs/'] : [], ['/contacts/', '/privacy/']) as $path) $urls[$path] = null;
 foreach (['models' => '/models/', 'outfits' => '/accessories/'] as $kind => $base) {
     foreach (m3d_items($kind) as $it) {
-        if (!m3d_is_open($it)) continue;
+        if (!in_array(m3d_visibility($it), ['public', 'blurred', 'blurred-patrons'], true) || m3d_release_hidden($it)) continue;   // "Coming Soon" pages too, like teasers
         $ts = m3d_changelog_ts(m3d_current_version($it)['date']);
-        $urls[$base . $it['slug'] . '/'] = $ts !== null && $ts <= time() ? (new DateTimeImmutable('@' . $ts))->setTimezone(new DateTimeZone('Europe/Berlin'))->format('Y-m-d') : null;
+        $urls[$base . $it['slug'] . '/'] = $ts !== null && $ts <= time() ? m3d_berlin($ts, 'Y-m-d') : null;
     }
 }
 // the gallery, once a visitor can see one of its pictures

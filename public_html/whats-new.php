@@ -71,13 +71,12 @@ layout_start("What's New", 'New models, accessories and versions on ' . site_nam
       $open = m3d_can_view($kind, $it);   // a locked password item: name and version only
       // the whole entry is one link: links inside the changes become plain text (a link inside a link breaks the page)
       $changes = $open ? array_values(array_filter(array_map(fn($c) => trim((string) $c), (array) ($en['changes'] ?? [])), fn($c) => $c !== '')) : [];
-      $versions = $kind === 'models' ? m3d_model_versions($it) : [];
       $what = $kind === 'outfits' ? m3d_accessory_type($it) : trim('Model · ' . ($it['franchise'] ?? ''), ' ·'); ?>
       <a class="wn-item" href="<?= e(m3d_item_url($kind, (string) $it['slug'])) ?>#changelog">
-        <span class="wn-pic<?= $hidden ? ' is-blurred' : '' ?>"><?= $src !== '' ? '<img src="' . e($src) . '" alt="" loading="lazy" decoding="async" />' : '<span class="ph-initials">' . e(mb_substr((string) $it['name'], 0, 1)) . '</span>' ?></span>
+        <span class="wn-pic<?= $hidden ? ' is-blurred' : '' ?>"><?= card_img($src, (string) $it['name']) ?></span>
         <span class="wn-body">
           <span class="wn-top"><span class="recent-tag <?= $x['new'] ? 'is-new' : 'is-upd' ?>"><?= $x['new'] ? 'New' : 'Updated' ?></span><span><?= e($what) ?> · <?= e($at($x['ts'], 'j M')) ?></span></span>
-          <span class="wn-name"><b><?= e($it['name']) ?><?= $versions ? ' v' . (int) $it['majorVersion'] : '' ?></b> <span class="wn-ver"><?= e(m3d_version_label($en)) ?></span><?= $open ? highlight_badge($en['highlight'] ?? null) : '' ?></span>
+          <span class="wn-name"><b><?= e(m3d_model_name($it)) ?></b> <span class="wn-ver"><?= e(m3d_version_label($en)) ?></span><?= $open ? highlight_badge($en['highlight'] ?? null) : '' ?></span>
           <?php if ($changes): ?><ul class="wn-changes"><?php foreach (array_slice($changes, 0, 3) as $c): ?><li><?= preg_replace('#</?a\b[^>]*>#i', '', md_inline($c)) ?></li><?php endforeach ?></ul><?php endif ?>
           <?php if (count($changes) > 3): ?><span class="wn-more">+<?= count($changes) - 3 ?> more <?= count($changes) - 3 === 1 ? 'change' : 'changes' ?></span><?php endif ?>
         </span>

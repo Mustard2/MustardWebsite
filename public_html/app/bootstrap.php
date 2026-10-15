@@ -9,7 +9,8 @@ if (!is_file(M3D_PRIVATE . '/config.php') && !(is_file(M3D_PRIVATE . '/config.ex
     exit('Setup incomplete: copy config.example.php to config.php in the private folder.');
 }
 $M3D = require M3D_PRIVATE . '/config.php';
-$M3D = array_merge($M3D, m3d_patreon_saved());   // Admin → Settings → Patreon overrides the keys of config.php
+// The Patreon keys come only from private/patreon.php (first-use setup, Admin → Settings → Patreon): any left in an old config.php don't count
+$M3D = array_merge($M3D, ['client_id' => '', 'client_secret' => '', 'redirect_uri' => '', 'campaign_id' => ''], m3d_patreon_saved());
 $GLOBALS['M3D'] = $M3D;   // also reachable from functions
 
 // PHP warnings never go into pages (they show server paths): the host's error log and Site problems get them instead
@@ -67,27 +68,26 @@ function m3d_support_email(): string
     return m3d_cfg_real($c) ? $c : '';
 }
 
-/** Patreon keys that Admin → Settings → Patreon may set (saved in private/patreon.php, else config.php). */
-const M3D_PATREON_KEYS = ['client_id', 'client_secret', 'redirect_uri', 'campaign_id'];
-
 /**
- * The Patreon keys saved in Admin → Settings → Patreon: private/patreon.php (a PHP file, so its secret is never
- * readable over the web, outside data/ so it is never in backups or the change history, like config.php). Empty = not saved.
+ * The Patreon keys of Admin → Settings → Patreon: private/patreon.php (a PHP file, so its secret is never readable over the web,
+ * outside data/ so it is never in backups or the change history, like config.php). client_id, client_secret, redirect_uri, campaign_id,
+ * and creator_token / creator_refresh: the creator's access and refresh tokens of the same client, renewed by m3d_creator_get().
+ * Runs before the rest of this file is read (bootstrap's first lines), so the key list is written out here and in m3d_patreon_save().
  */
 function m3d_patreon_saved(): array
 {
     $f = M3D_PRIVATE . '/patreon.php';
     $d = is_file($f) ? (include $f) : [];
-    return is_array($d) ? array_filter(array_intersect_key($d, array_flip(['client_id', 'client_secret', 'redirect_uri', 'campaign_id'])), fn($v) => is_string($v) && $v !== '') : [];
+    return is_array($d) ? array_filter(array_intersect_key($d, array_flip(['client_id', 'client_secret', 'redirect_uri', 'campaign_id', 'creator_token', 'creator_refresh'])), fn($v) => is_string($v) && $v !== '') : [];
 }
 
-/** Writes private/patreon.php (only the non-empty keys); an empty list deletes it, so config.php counts again. */
+/** Writes private/patreon.php (only the non-empty keys); an empty list deletes it. */
 function m3d_patreon_save(array $keys): bool
 {
     $f = M3D_PRIVATE . '/patreon.php';
-    $keys = array_filter(array_intersect_key($keys, array_flip(M3D_PATREON_KEYS)), fn($v) => is_string($v) && $v !== '');
+    $keys = array_filter(array_intersect_key($keys, array_flip(['client_id', 'client_secret', 'redirect_uri', 'campaign_id', 'creator_token', 'creator_refresh'])), fn($v) => is_string($v) && $v !== '');
     if (!$keys) return !is_file($f) || @unlink($f);
-    $php = "<?php\n// Patreon keys saved in Admin → Settings → Patreon (they override config.php). Delete this file to use config.php again.\nreturn " . var_export($keys, true) . ";\n";
+    $php = "<?php\n// Patreon keys of Admin → Settings → Patreon.\nreturn " . var_export($keys, true) . ";\n";
     $tmp = $f . '.tmp-' . bin2hex(random_bytes(4));
     if (@file_put_contents($tmp, $php, LOCK_EX) === false) return false;
     @chmod($tmp, 0600);
@@ -104,12 +104,12 @@ const M3D_STATUSES = [
     'in-development'   => ['In Development', 'grey'],
 ];
 
-/** A model's status key; the removed 'released-patreon' (it was the same as 'preview') reads as 'preview' until the model is saved again. */
+/** A model's status key. */
 function m3d_status(array $m): string
 {
     $s = (string) ($m['status'] ?? '');
     if (m3d_release_phase($m) === 'free' && $s !== 'in-development') return 'released';   // past its public date: free for everyone
-    return $s === 'released-patreon' ? 'preview' : $s;
+    return $s;
 }
 
 function m3d_is_https(): bool
@@ -127,7 +127,7 @@ function m3d_session_lifetime(): int
     return $days > 0 ? min(365, $days) * 86400 : max(3600, (int) ($GLOBALS['M3D']['session_lifetime'] ?? 30 * 86400));
 }
 
-function m3d_start_session(array $cfg): void
+function m3d_start_session(): void
 {
     if (session_status() === PHP_SESSION_ACTIVE) return;
     $dir = M3D_PRIVATE . '/sessions';
@@ -195,14 +195,16 @@ function m3d_session_pause(callable $fn): mixed
     try {
         return $fn();
     } finally {
-        if (!headers_sent()) m3d_start_session($GLOBALS['M3D']);
+        if (!headers_sent()) m3d_start_session();
     }
 }
 
 /** The session cookie only exists for people who log in (privacy policy, § 25 TDDDG): visitors get no cookie at all. */
 if (isset($_COOKIE['m3d_session'])) {
-    m3d_start_session($M3D);
-    if ($_SESSION && empty($_SESSION['started'])) $_SESSION['started'] = time();   // logins from before this was stored
+    m3d_start_session();
+    // a session that isn't a login yet (on its way to Patreon from auth/login.php, the first-use setup, a form's CSRF token)
+    // has no `started`: it counts from now, or the callback would find it ended and the login would be lost
+    if ($_SESSION && empty($_SESSION['started'])) $_SESSION['started'] = time();
     if (!$_SESSION || time() - (int) $_SESSION['started'] > m3d_session_lifetime()) {
         // expired or ended session: forget the cookie (and the file) instead of keeping an empty one
         $p = session_get_cookie_params();
@@ -241,13 +243,13 @@ function m3d_safe_return(mixed $path, string $fallback = '/'): string   // mixed
     return preg_match('#^/[A-Za-z0-9/_\-.%?=&\#+,~:@!;\[\]()*$|]*$#', $path) ? $path : $fallback;   // + , [ ] ( ) …: ordinary in queries (/search/?q=a+b)
 }
 
-function m3d_http(string $method, string $url, array $headers = [], ?array $form = null): array
+function m3d_http(string $method, string $url, array $headers = [], ?array $form = null, int $timeout = 15): array
 {
     $ch = curl_init($url);
     $h = array_merge(['Accept: application/json', 'User-Agent: CatalogSite/1.0'], $headers);
     curl_setopt_array($ch, [
         CURLOPT_RETURNTRANSFER => true,
-        CURLOPT_TIMEOUT        => 15,
+        CURLOPT_TIMEOUT        => $timeout,
         CURLOPT_CUSTOMREQUEST  => $method,
         CURLOPT_HTTPHEADER     => $h,
     ]);
@@ -276,6 +278,102 @@ function m3d_identity_url(bool $ownCampaign = false): string
 }
 
 /**
+ * GET a Patreon API address with the creator's token (Settings → Patreon). An expired token is refreshed once with
+ * the refresh token and the client keys, and the new pair saved (Patreon's refresh tokens work once: a lock keeps two logins from
+ * spending the same one). ['status' => 0, 'error' => 'no creator token'] when none is saved.
+ */
+function m3d_creator_get(string $url, int $timeout = 10): array
+{
+    $tok = (string) (m3d_patreon_saved()['creator_token'] ?? '');
+    if ($tok === '') return ['status' => 0, 'json' => null, 'error' => 'no creator token'];
+    $r = m3d_http('GET', $url, ['Authorization: Bearer ' . $tok], null, $timeout);
+    if ($r['status'] !== 401) return $r;
+    $fresh = m3d_creator_refresh($tok);
+    return $fresh === null ? $r : m3d_http('GET', $url, ['Authorization: Bearer ' . $fresh], null, $timeout);
+}
+
+/** A new creator token for the expired $old (or the one another request already got), saved in patreon.php; null when Patreon refuses. */
+function m3d_creator_refresh(string $old): ?string
+{
+    $lock = @fopen(M3D_PRIVATE . '/data/.creator-token.lock', 'c');
+    if ($lock) flock($lock, LOCK_EX);
+    try {
+        $keys = m3d_patreon_saved();
+        if (($keys['creator_token'] ?? '') !== $old && ($keys['creator_token'] ?? '') !== '') return $keys['creator_token'];   // refreshed meanwhile
+        $cfg = $GLOBALS['M3D'];
+        $r = m3d_http('POST', M3D_PATREON . '/api/oauth2/token', [], [
+            'grant_type' => 'refresh_token', 'refresh_token' => (string) ($keys['creator_refresh'] ?? ''),
+            'client_id' => (string) ($cfg['client_id'] ?? ''), 'client_secret' => (string) ($cfg['client_secret'] ?? ''),
+        ]);
+        $new = (string) ($r['json']['access_token'] ?? '');
+        if ($r['status'] !== 200 || $new === '') {
+            m3d_problem('Patreon', 'The creator token expired and could not be renewed: HTTP ' . $r['status'] . ' ' . ($r['json']['error'] ?? $r['error']) . '. Paste the creator’s tokens again in Settings → Patreon.');
+            return null;
+        }
+        m3d_patreon_save(array_merge($keys, ['creator_token' => $new, 'creator_refresh' => (string) ($r['json']['refresh_token'] ?? ($keys['creator_refresh'] ?? ''))]));
+        return $new;
+    } finally {
+        if ($lock) { flock($lock, LOCK_UN); fclose($lock); }
+    }
+}
+
+/** The id of the identity's membership of our campaign ('' = none). */
+function m3d_identity_member_id(array $identity, array $cfg): string
+{
+    $inc = [];
+    foreach ($identity['included'] ?? [] as $r) $inc[($r['type'] ?? '') . ':' . ($r['id'] ?? '')] = $r;
+    foreach ($identity['data']['relationships']['memberships']['data'] ?? [] as $ref) {
+        $m = $inc['member:' . ($ref['id'] ?? '')] ?? null;
+        if ($m && (string) ($m['relationships']['campaign']['data']['id'] ?? '') === (string) $cfg['campaign_id']) return (string) $m['id'];
+    }
+    return '';
+}
+
+/**
+ * A member's pledge events (Patreon resources of type pledge-event), read with the creator's token: Patreon leaves the history out
+ * of a patron's own login. null when there is no creator token or Patreon refuses (logged in Site problems).
+ */
+function m3d_member_pledge_events(string $memberId): ?array
+{
+    if ($memberId === '' || empty(m3d_patreon_saved()['creator_token'])) return null;
+    $r = m3d_creator_get(M3D_PATREON . '/api/oauth2/v2/members/' . rawurlencode($memberId) . '?' . http_build_query([
+        'include' => 'pledge_history', 'fields[pledge-event]' => 'type,date,amount_cents',
+    ]));
+    if ($r['status'] !== 200 || !$r['json']) {
+        m3d_problem('Login', rtrim('Pledge history not available (creator token): HTTP ' . $r['status'] . ' ' . $r['error']));
+        return null;
+    }
+    return array_values(array_filter($r['json']['included'] ?? [], fn($x) => ($x['type'] ?? '') === 'pledge-event'));
+}
+
+/**
+ * When a patron stopped paying and later pledged again, the date of that new pledge (ISO), else null. Patreon's
+ * pledge_relationship_start doesn't always move when someone comes back (a patron who paid in 2024 and pledged again in 2026 kept
+ * the 2024 date), so the history is read too: a removed pledge ("pledge_delete") or a move to a free membership (a pledge event of
+ * 0) ends a run of paying, and the next paid pledge event starts a new one. Monthly charges ("subscription") are ignored, so months
+ * without a charge (the creator paused billing, a declined payment) never restart the count.
+ */
+function m3d_pledge_restart(array $events): ?string
+{
+    $ev = [];
+    foreach ($events as $e) {
+        $a = $e['attributes'] ?? [];
+        $t = (string) ($a['type'] ?? '');
+        $ts = is_string($a['date'] ?? null) ? strtotime($a['date']) : false;
+        if ($ts === false || $t === '' || $t === 'subscription') continue;
+        $ev[] = [$ts, $t, isset($a['amount_cents']) ? (int) $a['amount_cents'] : null, (string) $a['date']];
+    }
+    usort($ev, fn($x, $y) => $x[0] <=> $y[0]);
+    $ended = false;
+    $restart = null;
+    foreach ($ev as [, $t, $cents, $date]) {
+        if ($t === 'pledge_delete' || ($cents !== null && $cents <= 0)) $ended = true;
+        elseif ($ended) { $restart = $date; $ended = false; }   // pledge_start / pledge_upgrade / pledge_downgrade with a paid amount
+    }
+    return $restart;
+}
+
+/**
  * Decides whether a Patreon identity response may download.
  * Rule: active patron of OUR campaign holding at least one PAID tier.
  *  - custom contributions without a tier → no tiers → 'no-tier'
@@ -285,9 +383,9 @@ function m3d_identity_url(bool $ownCampaign = false): string
  * details used by per-model requirements and the My account page: 'status', 'since' (ISO, start of the current membership),
  * 'total_cents' (everything paid to the campaign), 'entitled_cents', 'cadence' (months between charges),
  * 'last_charge_date', 'last_charge_status', 'currency', 'tier_list' [[title, amount_cents]], 'member' (bool)].
- * These stay in the session only.
+ * These stay in the session only. $events: the member's pledge events (m3d_member_pledge_events()), for 'since'.
  */
-function m3d_evaluate_identity(array $identity, array $cfg): array
+function m3d_evaluate_identity(array $identity, array $cfg, ?array $events = null): array
 {
     $user = $identity['data'] ?? [];
     $id = (string) ($user['id'] ?? '');
@@ -322,10 +420,14 @@ function m3d_evaluate_identity(array $identity, array $cfg): array
             if ($tier && $cents > 0) $paidTiers[] = $title;
         }
         $out['tiers'] = $paidTiers;
+        // the start of the current run of paying: Patreon's date, or a later new pledge found in the history (m3d_pledge_restart())
+        $since = $a['pledge_relationship_start'] ?? null;
+        $restart = m3d_pledge_restart($events ?? []);   // the history read with the creator's token (m3d_member_pledge_events())
+        if ($restart !== null && (!is_string($since) || strtotime($restart) > (int) strtotime($since))) $since = $restart;
         $out = array_merge($out, [
             'member' => true,
             'status' => $status,
-            'since' => $a['pledge_relationship_start'] ?? null,
+            'since' => $since,
             'total_cents' => (int) ($a['campaign_lifetime_support_cents'] ?? 0),
             'entitled_cents' => (int) ($a['currently_entitled_amount_cents'] ?? 0),
             'cadence' => isset($a['pledge_cadence']) ? (int) $a['pledge_cadence'] : null,
@@ -388,6 +490,23 @@ function m3d_months_since(?string $iso): ?int
     if (!$iso || !($d = date_create_immutable($iso))) return null;
     $diff = $d->diff(new DateTimeImmutable('now', new DateTimeZone('UTC')));
     return $diff->invert ? 0 : $diff->y * 12 + $diff->m;
+}
+
+/** Lower case without accents ("Pokémon" → "pokemon"), for the searches, like searchFold() in site.js; the short list below only without
+ *  the intl extension. */
+function m3d_fold(string $s): string
+{
+    $s = mb_strtolower($s);
+    if (class_exists('Normalizer')) return (string) preg_replace('/\p{Mn}+/u', '', (string) Normalizer::normalize($s, Normalizer::FORM_D));
+    return strtr($s, ['à' => 'a', 'á' => 'a', 'â' => 'a', 'ä' => 'a', 'é' => 'e', 'è' => 'e', 'ê' => 'e', 'ë' => 'e', 'í' => 'i', 'ï' => 'i', 'ó' => 'o', 'ö' => 'o', 'ô' => 'o', 'ú' => 'u', 'ü' => 'u', 'ñ' => 'n', 'ç' => 'c',
+        'ì' => 'i', 'î' => 'i', 'ò' => 'o', 'ù' => 'u', 'û' => 'u', 'ã' => 'a', 'õ' => 'o', 'å' => 'a', 'ø' => 'o']);
+}
+
+/** A file size for people: "840 KB", "12.4 MB", "1.2 GB" (0 = "0 KB"). */
+function m3d_size(int $b): string
+{
+    if ($b <= 0) return '0 KB';
+    return $b >= 1073741824 ? sprintf('%.1f GB', $b / 1073741824) : ($b >= 1048576 ? sprintf('%.1f MB', $b / 1048576) : sprintf('%d KB', max(1, (int) ceil($b / 1024))));
 }
 
 function m3d_plural(int $n, string $word, ?string $many = null): string
@@ -512,8 +631,6 @@ function m3d_is_open(array $item): bool
 //   from patronsFrom until publicFrom ('early'): a normal patron item, with "Free for everyone from …"
 //   from publicFrom ('free'): every patron link works like a public one (no login, requirements or limits)
 // Worked out at each request, so nothing has to run on the dates themselves, except the Discord posts (m3d_release_run()).
-const RELEASE_BEFORE = ['hidden' => 'Hidden', 'soon' => 'Shown as “Coming Soon”'];
-
 /** ['patrons' => ?int, 'public' => ?int (timestamps), 'before' => hidden|soon] */
 function m3d_release(array $item): array
 {
@@ -544,10 +661,23 @@ function m3d_link_access(array $item, array $link): string
     return ($link['access'] ?? 'patrons') === 'public' || m3d_release_phase($item) === 'free' ? 'public' : 'patrons';
 }
 
+/** A moment in German time, in the date() format $fmt: $t = a timestamp, or a date text ("2026-10-14T09:00:00Z"; '' or unreadable = ''). */
+function m3d_berlin(int|string $t, string $fmt): string
+{
+    $d = is_int($t) || ctype_digit($t) ? new DateTimeImmutable('@' . $t) : ($t === '' ? false : date_create_immutable($t));
+    return $d ? $d->setTimezone(new DateTimeZone('Europe/Berlin'))->format($fmt) : '';
+}
+
+/** Today's date in German time: "2026-10-14". */
+function m3d_today(): string
+{
+    return m3d_berlin(time(), 'Y-m-d');
+}
+
 /** "Tue 20 Oct, 18:00 CEST" (Berlin time); $time false = "Tue 20 Oct". */
 function m3d_release_when(int $ts, bool $time = true): string
 {
-    return (new DateTimeImmutable('@' . $ts))->setTimezone(new DateTimeZone('Europe/Berlin'))->format($time ? 'D j M, H:i T' : 'D j M');
+    return m3d_berlin($ts, $time ? 'D j M, H:i T' : 'D j M');
 }
 
 // The Discord posts of the release dates: settings.json → release {done: [event codes], next: timestamp of the earliest one not done}.
@@ -596,55 +726,71 @@ function m3d_release_after_save(string $kind, array $old, array $new): void
     }
 }
 
-/** Called on every public page: when a release date has passed, posts its Discord message after the page is sent. */
-function m3d_release_tick(): void
+/** Runs $job after the page has been sent (the visitor never waits for it), with the session closed so other pages aren't held up. */
+function m3d_after_response(callable $job): void
 {
-    $next = m3d_settings()['release']['next'] ?? null;
-    if (!is_int($next) || $next > time()) return;
-    register_shutdown_function(function () {
+    register_shutdown_function(function () use ($job) {
         if (function_exists('fastcgi_finish_request')) fastcgi_finish_request();
         elseif (function_exists('litespeed_finish_request')) litespeed_finish_request();
         m3d_session_release();
-        m3d_release_run();
+        $job();
     });
 }
 
-/** Posts the release dates that have passed (once, under a lock). */
-function m3d_release_run(): void
+/** Runs $job holding the lock file data/<name>; nothing when another request holds it (it is already doing the job). */
+function m3d_with_lock(string $name, callable $job): void
 {
-    $lock = @fopen(M3D_PRIVATE . '/data/.release-lock', 'c');
-    if (!$lock || !flock($lock, LOCK_EX | LOCK_NB)) return;   // another request is on it
+    $lock = @fopen(M3D_PRIVATE . '/data/' . $name, 'c');
+    if (!$lock) return;
     try {
-        $done = (array) (m3d_settings(true)['release']['done'] ?? []);
-        $due = [];
-        foreach (m3d_release_events() as $code => [$kind, $slug, $w, $ts]) {
-            if ($ts > time() || in_array($code, $done, true)) continue;
-            $done[] = $code;
-            if ($w === 'v' && $ts < time() - 3 * 86400) continue;   // a version day long gone (first run after this was added): nothing to post
-            $due[] = [$kind, $slug, $w];
-        }
-        // marked as done before posting: when the settings can't be written (disk full), nothing is posted, rather than the
-        // same post on every page view
-        if (!m3d_release_store($done)) { m3d_problem('Release dates', 'The release state could not be saved: nothing was posted.'); return; }
-        foreach ($due as [$kind, $slug, $w]) {
-            $item = m3d_item($kind, $slug);
-            if (!$item || !function_exists('m3d_discord_on') || !m3d_discord_on() || !m3d_is_open($item)) continue;
-            if ($kind === 'models' && m3d_status($item) === 'in-development') continue;   // not downloadable: nothing to announce yet
-            if ($w !== 'e') m3d_discord_after_save($kind, [['visibility' => 'draft'] + $item], [$item]);   // as if just published (posts only a version not sent yet)
-            elseif (m3d_release_phase($item) === 'free') m3d_discord_free($kind, $item);
-        }
-    } catch (Throwable $ex) {
-        m3d_problem('Release dates', $ex->getMessage());
+        if (flock($lock, LOCK_EX | LOCK_NB)) $job();
     } finally {
         flock($lock, LOCK_UN);
         fclose($lock);
     }
 }
 
+/** Called on every public page: when a release date has passed, posts its Discord message after the page is sent. */
+function m3d_release_tick(): void
+{
+    $next = m3d_settings()['release']['next'] ?? null;
+    if (!is_int($next) || $next > time()) return;
+    m3d_after_response(fn() => m3d_release_run());
+}
+
+/** Posts the release dates that have passed (once, under a lock). */
+function m3d_release_run(): void
+{
+    m3d_with_lock('.release-lock', function () {   // another request on it: nothing to do
+        try {
+            $done = (array) (m3d_settings(true)['release']['done'] ?? []);
+            $due = [];
+            foreach (m3d_release_events() as $code => [$kind, $slug, $w, $ts]) {
+                if ($ts > time() || in_array($code, $done, true)) continue;
+                $done[] = $code;
+                if ($w === 'v' && $ts < time() - 3 * 86400) continue;   // a version day long gone (first run after this was added): nothing to post
+                $due[] = [$kind, $slug, $w];
+            }
+            // marked as done before posting: when the settings can't be written (disk full), nothing is posted, rather than the
+            // same post on every page view
+            if (!m3d_release_store($done)) { m3d_problem('Release dates', 'The release state could not be saved: nothing was posted.'); return; }
+            foreach ($due as [$kind, $slug, $w]) {
+                $item = m3d_item($kind, $slug);
+                if (!$item || !m3d_discord_on() || !m3d_is_open($item)) continue;
+                if ($kind === 'models' && m3d_status($item) === 'in-development') continue;   // not downloadable: nothing to announce yet
+                if ($w !== 'e') m3d_discord_after_save($kind, [['visibility' => 'draft'] + $item], [$item]);   // as if just published (posts only a version not sent yet)
+                elseif (m3d_release_phase($item) === 'free') m3d_discord_free($kind, $item);
+            }
+        } catch (Throwable $ex) {
+            m3d_problem('Release dates', $ex->getMessage());
+        }
+    });
+}
+
 /** "12 Oct" (Berlin time), for the small card pills. */
 function m3d_release_day(int $ts): string
 {
-    return (new DateTimeImmutable('@' . $ts))->setTimezone(new DateTimeZone('Europe/Berlin'))->format('j M');
+    return m3d_berlin($ts, 'j M');
 }
 
 /** "in 2 days", "in 5 hours", "in 12 minutes" */
@@ -750,8 +896,8 @@ function m3d_patron(array $cfg, bool $requireFresh = false): ?array
 }
 
 // ── Preview as a patron (admins only): the bar on top of the site sets a made-up membership ──
-// $_SESSION['preview'] = {tier: ok|no-tier|not-patron|declined, months, total_cents, dl_models, dl_outfits (made-up downloads
-// of other items, a minute ago, so they count in every period), as: Patreon id or ''}. While it is on,
+// $_SESSION['preview'] = {tier: ok|no-tier|not-patron|declined, tier_cents, months, total_cents, dl_models, dl_outfits (made-up downloads
+// of other items, a minute ago, so they count in every period), updates (m3d_preview_updates()), as: Patreon id or '', since}. While it is on,
 // m3d_patron() returns that patron instead of the admin (with the download history and user exception of `as`, if set),
 // so every page, the download box, requirements, limits and My account behave as for them. m3d_is_admin() keeps reading
 // the real login. Downloads in preview stop at a "would start now" page: nothing is downloaded, logged or counted.
@@ -783,7 +929,7 @@ function m3d_preview_patron(array $real, array $pv): array
         'id' => ($pv['as'] ?? '') !== '' ? (string) $pv['as'] : 'preview', 'name' => 'Preview',
         'access' => $tier === 'ok', 'reason' => $tier, 'tiers' => $tier === 'ok' ? [$title] : [],
         'member' => $member, 'status' => $member ? ($tier === 'declined' ? 'declined_patron' : 'active_patron') : null,
-        'since' => $member ? m3d_months_ago($months) : null,
+        'since' => !$member ? null : (is_string($pv['since'] ?? null) && m3d_months_since($pv['since']) === $months ? $pv['since'] : m3d_months_ago($months)),   // a real patron's start (patron-preview.php), else made up
         'total_cents' => max(0, (int) ($pv['total_cents'] ?? 0)), 'entitled_cents' => $tier === 'ok' ? $price : 0, 'cadence' => $tier === 'ok' ? 1 : null,
         'last_charge_date' => null, 'last_charge_status' => $tier === 'declined' ? 'Declined' : null,
         'currency' => $real['currency'] ?? null, 'tier_list' => $tier === 'ok' ? [[$title, $price]] : [],
@@ -794,7 +940,7 @@ function m3d_preview_patron(array $real, array $pv): array
 }
 
 // ── Exceptions (Admin → Access): people with special access, who skip some download rules ──
-// data/exceptions.json: {people: [{id, name, note, tier: bool, extra: bool, added}]}
+// data/exceptions.json: {people: [{id, name, note, tier: bool, extra: bool, limits: bool, added}]}
 //   tier:  downloads (and likes, patron pictures) without a paid tier: free Patreon account, no tier, declined payment
 //   extra: the extra requirements of models/outfits (months as a patron, total support) aren't checked
 //   limits: the download limits (Admin → Access → Download limits) don't apply
@@ -846,16 +992,24 @@ function m3d_is_admin(array $cfg): bool
 /**
  * Log line: date (UTC), Patreon id, name, item ("slug" / "outfit:slug"), link label, version downloaded ("Beta 2", "V4"; older
  * lines have none), and "free" when the item was marked "Exclude from Unlock Limits" then (only on those lines: such a
- * download never counts in the limits, even after the mark is removed).
+ * download never counts in the limits, even after the mark is removed), or "update" when it unlocked a newer version
+ * ("Updates Use an Unlock"): counted in the limits like a first download, even after the switch is turned off.
  */
-function m3d_log_download(array $cfg, array $patron, string $model, string $label = '', string $version = '', bool $free = false): void
+function m3d_log_download(array $cfg, array $patron, string $model, string $label = '', string $version = '', bool $free = false, bool $update = false): void
 {
     if (empty($cfg['log_downloads'])) return;
     $dir = M3D_PRIVATE . '/logs';
     if (!is_dir($dir)) @mkdir($dir, 0700, true);
     // one line per download: line breaks and other control characters (a Patreon name can have them) become spaces
     $row = array_map(fn($v) => trim(preg_replace('/[\x00-\x1F\x7F]+/', ' ', (string) $v)), [gmdate('c'), $patron['id'] ?? '', $patron['name'] ?? '', $model, $label, $version]);
-    if ($free) $row[] = 'free';
+    $row[] = $free ? 'free' : ($update ? 'update' : '');
+    // the membership as Patreon gave it at this download (columns 8–11, m3d_log_membership()): months as a patron, since (day), tier and
+    // total support in cents; empty when unknown (owners). Admin → Downloads shows it, and "Preview as This Patron" starts from it.
+    $since = is_string($patron['since'] ?? null) && ($d = date_create_immutable($patron['since'])) ? $d->format('Y-m-d') : '';
+    $tier = m3d_patron_tier($patron);
+    $mem = [$since !== '' ? (string) m3d_months_since($patron['since']) : '', $since, $tier ? (string) $tier[1] : '', array_key_exists('total_cents', $patron) && !empty($patron['member']) ? (string) (int) $patron['total_cents'] : ''];
+    if (implode('', $mem) !== '') array_push($row, ...$mem);
+    elseif ($row[6] === '') array_pop($row);   // old short form: nothing after the version
     m3d_log_locked(function () use ($row) {   // waits while the log is being rewritten (prune, rows removed)
         $fh = @fopen(m3d_log_file(), 'ab');
         if (!$fh) return;
@@ -868,17 +1022,73 @@ function m3d_log_download(array $cfg, array $patron, string $model, string $labe
 // ── Download wait and limits (Admin → Access → Downloads; settings.json → downloads) ──
 //   wait:  seconds of the "Your download starts in…" page before every download (0 = off). Enforced by the server with a
 //          signed, time-stamped link (m3d_dl_token): no cookie, no session needed, and the real link is never in the page.
-//   rules: [{id, on, max, what: models|outfits|all, per: day|week|month, from, to}]: at most `max` DIFFERENT items per
-//          rolling period for patrons whose months as a patron are >= from (if set) and < to (if set). Counted from the
+//   rules: [{id, on, max, what: models|outfits|all, per: day|week|month, from, to, tier}]: at most `max` DIFFERENT items per
+//          rolling period for patrons whose months as a patron are >= from (if set) and < to (if set), and whose tier
+//          (m3d_patron_tier(): their most expensive paid tier) costs exactly `tier` cents (if set; '' = any tier). A patron
+//          with a rule for their own tier gets only those rules: the "Any Tier" ones don't apply to them (m3d_rules_for()). Counted from the
 //          download log (patron links only): an item counts once, when first downloaded; downloading it again is always
 //          free (as long as the log remembers it: log_retention_days).
+//   cap:   daily download cap (0 = off): a patron who downloaded this many times within 24 hours (any patron link, downloading
+//          again too) can't download for 24 hours after the last of them (m3d_dl_capped()); keeps file hosting traffic in check.
+//   updates: true = a newer version of an item already unlocked is unlocked again (Admin → Access → "Updates Use an Unlock"; off
+//          by default): its download asks like a new item and is logged with "update" (7th column), which counts it like a first download.
 const DL_PERIODS = ['day' => [86400, '24 hours'], 'week' => [604800, '7 days'], 'month' => [2592000, '30 days']];   // rolling: "per 7 days", never "this week"
 const DL_WHAT = ['models' => ['model', 'models'], 'outfits' => ['accessory', 'accessories'], 'all' => ['download', 'downloads']];
+
+/** The kinds a limit rule counts ('all' = both). */
+function m3d_rule_kinds(array $r): array
+{
+    $w = (string) ($r['what'] ?? 'models');
+    return $w === 'all' ? ['models', 'outfits'] : [$w];
+}
+
+/** A limit rule's rolling period: [seconds, "7 days"]. */
+function m3d_rule_period(array $r): array
+{
+    return DL_PERIODS[$r['per'] ?? 'week'] ?? DL_PERIODS['week'];
+}
+
+/** The word before "unlock" in the texts: "model ", "accessory ", or '' for a rule that counts both. */
+function m3d_rule_noun(array $r): string
+{
+    $w = (string) ($r['what'] ?? 'models');
+    return $w === 'all' ? '' : (DL_WHAT[$w][0] ?? 'model') . ' ';
+}
+
+/** Of m3d_check_limits() rows: the tightest (fewest unlocks left), or null. */
+function m3d_tightest_row(array $rows): ?array
+{
+    $t = null;
+    foreach ($rows as $x) if (!$t || $x['max'] - $x['used'] < $t['max'] - $t['used']) $t = $x;
+    return $t;
+}
+
+/** Of m3d_check_limits() rows: the full one that frees up last, which says when the next unlock comes (every full rule must free up). */
+function m3d_blocking_row(array $rows): ?array
+{
+    $full = array_values(array_filter($rows, fn($x) => $x['used'] >= $x['max']));
+    usort($full, fn($a, $b) => ($b['next'] ?? 0) <=> ($a['next'] ?? 0));
+    return $full[0] ?? null;
+}
 
 function m3d_dl_settings(): array
 {
     $d = m3d_settings()['downloads'] ?? [];
-    return ['wait' => max(0, min(60, (int) ($d['wait'] ?? 10))), 'rules' => array_values(array_filter((array) ($d['rules'] ?? []), 'is_array'))];
+    return ['wait' => max(0, min(60, (int) ($d['wait'] ?? 10))), 'rules' => array_values(array_filter((array) ($d['rules'] ?? []), 'is_array')),
+            'updates' => !empty($d['updates']), 'cap' => max(0, min(999, (int) ($d['cap'] ?? 0)))];
+}
+
+/** Daily download cap (downloads.cap): when this patron is blocked, the time downloads open again (24 hours after the download that
+ *  reached the cap); null = they can download. Counts every logged download (the log has patron links only); admins are never capped. */
+function m3d_dl_capped(?array $patron): ?int
+{
+    $cap = m3d_dl_settings()['cap'];
+    if (!$cap || !$patron || ($patron['reason'] ?? '') === 'owner') return null;
+    $times = array_map(fn($r) => (int) $r[0], m3d_patron_history($patron));
+    if (!$times) return null;
+    $last = max($times);   // once blocked there are no new downloads, so the last one is the one that reached the cap
+    if ($last <= time() - 86400) return null;
+    return count(array_filter($times, fn($t) => $t > $last - 86400)) >= $cap ? $last + 86400 : null;
 }
 
 /** "<time>-<signature>" for one download link, made when the waiting page is shown. */
@@ -947,7 +1157,8 @@ function m3d_rule_text(array $r, bool $short = false): string
 {
     $what = isset(DL_WHAT[$r['what'] ?? '']) ? $r['what'] : 'models';
     $max = max(1, (int) ($r['max'] ?? 1));
-    $per = DL_PERIODS[$r['per'] ?? 'week'][1] ?? DL_PERIODS['week'][1];
+    $per = m3d_rule_period($r)[1];
+    $tier = (int) ($r['tier'] ?? 0) > 0 ? m3d_tier_label((int) $r['tier']) : '';   // "Fan tier (€5)"
     if ($short) {
         $from = ((int) ($r['from'] ?? 0)) ?: null;   // 0 = everyone, like empty
         $to = isset($r['to']) && $r['to'] !== '' ? (int) $r['to'] : null;
@@ -955,32 +1166,55 @@ function m3d_rule_text(array $r, bool $short = false): string
             $from !== null && $to !== null => "{$from}–" . m3d_plural($to, 'month'),
             $to !== null                   => 'under ' . m3d_plural($to, 'month'),
             $from !== null                 => "$from+ months",
-            default                        => 'everyone',
+            default                        => $tier !== '' ? '' : 'everyone',
         };
         $nb = fn(string $t) => str_replace(' ', "\u{a0}", $t);   // "3+ months", "30 days" never split over two lines
-        return $max . "\u{a0}" . ($what === 'all' ? ($max === 1 ? 'unlock' : 'unlocks') : DL_WHAT[$what][$max === 1 ? 0 : 1]) . ' / ' . $nb($per) . ' · ' . $nb($who);
+        $who = $tier !== '' ? $tier . ($who !== '' ? ' · ' . $nb($who) : '') : $nb($who);   // a long tier name may wrap
+        return $max . "\u{a0}" . ($what === 'all' ? ($max === 1 ? 'unlock' : 'unlocks') : DL_WHAT[$what][$max === 1 ? 0 : 1]) . ' / ' . $nb($per) . ' · ' . $who;
     }
     $text = $max . ' ' . ($what === 'all' ? '' : DL_WHAT[$what][0] . ' ') . ($max === 1 ? 'unlock' : 'unlocks') . ' per ' . $per;
     $from = ((int) ($r['from'] ?? 0)) ?: null;
     $to = isset($r['to']) && $r['to'] !== '' ? (int) $r['to'] : null;
-    if ($from !== null && $to !== null) $text .= " for patrons with at least $from and less than " . m3d_plural($to, 'month');
-    elseif ($to !== null) $text .= ' for patrons with less than ' . m3d_plural($to, 'month');
-    elseif ($from !== null) $text .= ' for patrons with ' . m3d_plural($from, 'month') . ' or more';
-    else $text .= ' for every patron';
+    $who = $tier !== '' ? "$tier patrons" : 'patrons';
+    if ($from !== null && $to !== null) $text .= " for $who with at least $from and less than " . m3d_plural($to, 'month');
+    elseif ($to !== null) $text .= " for $who with less than " . m3d_plural($to, 'month');
+    elseif ($from !== null) $text .= " for $who with " . m3d_plural($from, 'month') . ' or more';
+    else $text .= $tier !== '' ? " for every $tier patron" : ' for every patron';
     return $text;
 }
 
-function m3d_rule_applies(array $r, int $months, string $kind): bool
+/** $r is on and matches a patron with $months as a patron and a tier of $tierCents (null = no paid tier known); whatever it counts. */
+function m3d_rule_matches(array $r, int $months, ?int $tierCents): bool
 {
     if (empty($r['on'])) return false;
-    if (($r['what'] ?? 'models') !== 'all' && ($r['what'] ?? 'models') !== $kind) return false;
     if (isset($r['from']) && $r['from'] !== '' && $months < (int) $r['from']) return false;
     if (isset($r['to']) && $r['to'] !== '' && $months >= (int) $r['to']) return false;
+    if ((int) ($r['tier'] ?? 0) > 0 && (int) $r['tier'] !== $tierCents) return false;
     return true;
 }
 
-/** A patron's downloads in the log, oldest first: [[timestamp, kind, slug, version, link label, free], …] (patron links only: the log has
- *  nothing else; version '' on old lines; free = the item was "Exclude from Unlock Limits" then, 7th column, m3d_log_download()). */
+/**
+ * The unlock limit rules of a patron: the ones on, matching their months and their tier. A tier's rules replace the "Any Tier" ones
+ * for its patrons (Admin → Access → Unlock Limits), kind by kind: an "Any Tier" rule is left out when a rule for their own tier counts
+ * what it counts (models, accessories; "all" counts both), so a tier rule for models leaves the "Any Tier" accessory rules in place.
+ */
+function m3d_rules_for(?array $patron): array
+{
+    return m3d_rules_pick(m3d_dl_settings()['rules'], (int) (m3d_months_since($patron['since'] ?? null) ?? 0), m3d_patron_tier($patron)[1] ?? null);
+}
+
+/** m3d_rules_for() for any months and tier (null = no paid tier known): the welcome page's table asks it for each tier and stretch of months. */
+function m3d_rules_pick(array $all, int $months, ?int $tier): array
+{
+    $rules = array_values(array_filter($all, fn($r) => is_array($r) && m3d_rule_matches($r, $months, $tier)));
+    $covered = [];   // the kinds the patron's own tier rules count
+    foreach ($rules as $r) if ((int) ($r['tier'] ?? 0) > 0) foreach (m3d_rule_kinds($r) as $k) $covered[$k] = true;
+    return array_values(array_filter($rules, fn($r) => (int) ($r['tier'] ?? 0) > 0 || !array_intersect(m3d_rule_kinds($r), array_keys($covered))));
+}
+
+/** A patron's downloads in the log, oldest first: [[timestamp, kind, slug, version, link label, free, update, membership], …] (patron
+ *  links only: the log has nothing else; version '' on old lines; free = the item was "Exclude from Unlock Limits" then, update = a newer
+ *  version unlocked again ("Updates Use an Unlock"): the 7th column, m3d_log_download(); membership = m3d_log_membership()). */
 function m3d_patron_log(string $patronId): array
 {
     // read once per page: the limits, the header counter, the unlocked checks and the updates all ask for it
@@ -991,28 +1225,48 @@ function m3d_patron_log(string $patronId): array
     if (!$fh || $patronId === '') return $out;
     // plain lines first, parsed only when the patron's id is in them: much faster than parsing the whole log as CSV
     while (($line = fgets($fh)) !== false) {
-        while (substr_count($line, '"') % 2 && ($more = fgets($fh)) !== false) $line .= $more;   // a quoted field with a line break
         if (!str_contains($line, $patronId)) continue;
-        $r = str_getcsv(rtrim($line, "\r\n"), ',', '"', '');
+        $r = m3d_log_cols($line);
         if (($r[1] ?? '') !== $patronId || !isset($r[3]) || ($t = strtotime((string) $r[0])) === false) continue;
-        [$k, $s] = str_starts_with($r[3], 'outfit:') ? ['outfits', substr($r[3], 7)] : ['models', $r[3]];
-        $out[] = [$t, $k, $s, (string) ($r[5] ?? ''), (string) ($r[4] ?? ''), ($r[6] ?? '') === 'free'];
+        [$k, $s] = m3d_log_item_parts($r[3]);
+        $out[] = [$t, $k, $s, (string) ($r[5] ?? ''), (string) ($r[4] ?? ''), ($r[6] ?? '') === 'free', ($r[6] ?? '') === 'update', m3d_log_membership($r)];
     }
     fclose($fh);
     return $cache[$patronId] = $out;
+}
+
+/** The membership saved with a patron's newest download that has one (m3d_log_membership()) + 'at' (timestamp of that download), or null. */
+function m3d_patron_saved_membership(string $patronId): ?array
+{
+    $last = null;
+    foreach (m3d_patron_log($patronId) as $r) if (!empty($r[7]) && ($last === null || $r[0] >= $last['at'])) $last = $r[7] + ['at' => $r[0]];
+    return $last;
 }
 
 /**
  * A patron's downloads: the log, plus in the preview the made-up ones: preview_dl (other items, a minute ago) and
  * preview_updates (the N listed items updated most recently, m3d_preview_updates(), "downloaded" long before their latest
  * version, so they show an update, count as unlocked and stay out of every limit period; their version: m3d_preview_got()).
+ * The made-up ones only while the previewed membership can download: a preview as a non-member shows a visitor with no downloads.
  */
 function m3d_patron_history(?array $patron): array
 {
     $log = m3d_patron_log((string) ($patron['id'] ?? ''));
+    if (empty($patron['access'])) return $log;
     foreach ($patron['preview_dl'] ?? [] as $k => $count) for ($i = 0; $i < $count; $i++) $log[] = [time() - 60 - $i, $k, "~preview-$i"];
     foreach (m3d_preview_updates((int) ($patron['preview_updates'] ?? 0)) as [$rel, $k, $it]) $log[] = [$rel - 400 * 86400, $k, (string) $it['slug'], m3d_preview_got($it)];
     return $log;
+}
+
+/** The latest download of each item in a history (m3d_patron_history()): "kind:slug" => [time, version]. */
+function m3d_last_downloads(array $history): array
+{
+    $last = [];
+    foreach ($history as $row) {
+        [$t, $k, $s] = $row;
+        if ($t >= ($last["$k:$s"][0] ?? 0)) $last["$k:$s"] = [$t, (string) ($row[3] ?? '')];   // the preview's made-up downloads have no version
+    }
+    return $last;
 }
 
 /** Preview: the site's real latest updates: the $n listed items with two dated versions or more, newest latest version first: [[ts, kind, item], …]. */
@@ -1050,38 +1304,53 @@ function m3d_free_items(): array
 
 /**
  * Checks the download limits for a patron before downloading $kind/$slug. Returns ['ok' => bool, 'exempt' => bool,
- * 'free' => bool (item marked "Exclude from Unlock Limits"), 'owned' => bool (downloaded before: free),
+ * 'free' => bool (item marked "Exclude from Unlock Limits"), 'owned' => bool (downloaded before: free), 'update' => bool (downloaded
+ * before, but "Updates Use an Unlock" is on and a newer version came out since: not owned, the download unlocks it again),
  * 'rows' => [['rule' => …, 'text' => …, 'used' => n, 'max' => n, 'ok' => bool, 'next' => timestamp|null]]] with the
  * rules that apply to this patron (all kinds when $kind is null, e.g. for My account).
  */
 function m3d_check_limits(?array $patron, ?string $kind = null, ?string $slug = null): array
 {
     $exempt = $patron === null || ($patron['reason'] ?? '') === 'owner' || !empty($patron['exception']['limits']);
-    $months = (int) (m3d_months_since($patron['since'] ?? null) ?? 0);
-    // for My account ($kind null) every rule matching the patron's months, whatever it counts
-    $rules = array_values(array_filter(m3d_dl_settings()['rules'], fn($r) => m3d_rule_applies($r, $months, $kind ?? (($r['what'] ?? 'models') === 'all' ? 'models' : (string) $r['what']))));
-    if (!$rules) return ['ok' => true, 'exempt' => $exempt, 'free' => false, 'owned' => false, 'rows' => []];
+    // the rules of this patron's months and tier; those counting $kind (for My account, $kind null, all of them)
+    $rules = array_values(array_filter(m3d_rules_for($patron), fn($r) => $kind === null || in_array($kind, m3d_rule_kinds($r), true)));
+    if (!$rules) return ['ok' => true, 'exempt' => $exempt, 'free' => false, 'owned' => false, 'update' => false, 'rows' => []];
     $log = m3d_patron_history($patron);   // the log, plus the preview's made-up downloads
     // first download ever of each item: an item counts once, in the period of its first download, and never again
     $firstEver = [];
     $wasFree = [];   // first downloaded while "Not counted" (log column 7): never counts, even once the mark is removed
     $freeItems = m3d_free_items();   // never counted, never limited
+    $last = m3d_last_downloads($log);   // the latest download of each item (updates)
     foreach ($log as $row) {
         [$t, $k, $s] = $row;
-        if (isset($freeItems["$k:$s"]) || $t >= ($firstEver["$k:$s"] ?? PHP_INT_MAX)) continue;
+        if (isset($freeItems["$k:$s"])) continue;
+        // a newer version unlocked again ("Updates Use an Unlock", logged "update"): counts like one more item, once per version
+        // (two tabs finishing the same countdown at once log it twice)
+        if (!empty($row[6])) {
+            $key = "$k:$s@" . (string) ($row[3] ?? '');
+            if ($t < ($firstEver[$key] ?? PHP_INT_MAX)) { $firstEver[$key] = $t; $wasFree[$key] = false; }
+            continue;
+        }
+        if ($t >= ($firstEver["$k:$s"] ?? PHP_INT_MAX)) continue;
         $firstEver["$k:$s"] = $t;
         $wasFree["$k:$s"] = !empty($row[5]);
     }
     $free = $kind !== null && isset($freeItems["$kind:$slug"]);
-    $owned = $kind !== null && isset($firstEver["$kind:$slug"]);   // downloaded before: free, whatever the rules say
+    $owned = $kind !== null && !$free && isset($last["$kind:$slug"]);   // downloaded before: free, whatever the rules say
+    // …unless "Updates Use an Unlock" is on and a newer version came out since their last download (the "↑ Update" tag's rule)
+    $update = false;
+    if ($owned && ($it = m3d_item($kind, (string) $slug)) && m3d_update_needs_unlock($kind, $it, $last["$kind:$slug"][1], $last["$kind:$slug"][0])) {
+        $owned = false;
+        $update = true;
+    }
     $rows = [];
     $now = time();
     foreach ($rules as $r) {
-        [$secs] = DL_PERIODS[$r['per'] ?? 'week'] ?? DL_PERIODS['week'];
+        [$secs] = m3d_rule_period($r);
         $first = [];   // first downloads of different items inside the period
         foreach ($firstEver as $key => $t) {
             if ($t <= $now - $secs || $wasFree[$key]) continue;
-            if (($r['what'] ?? 'models') !== 'all' && !str_starts_with($key, $r['what'] . ':')) continue;
+            if (!in_array(explode(':', $key, 2)[0], m3d_rule_kinds($r), true)) continue;
             $first[] = $t;
         }
         $max = max(1, (int) ($r['max'] ?? 1));
@@ -1091,7 +1360,20 @@ function m3d_check_limits(?array $patron, ?string $kind = null, ?string $slug = 
         $next = count($first) >= $max ? $first[count($first) - $max] + $secs : null;
         $rows[] = ['rule' => $r, 'text' => m3d_rule_text($r), 'used' => count($first), 'max' => $max, 'ok' => $ok, 'next' => $next];
     }
-    return ['ok' => !in_array(false, array_column($rows, 'ok'), true), 'exempt' => $exempt, 'free' => $free, 'owned' => $owned, 'rows' => $rows];
+    return ['ok' => !in_array(false, array_column($rows, 'ok'), true), 'exempt' => $exempt, 'free' => $free, 'owned' => $owned, 'update' => $update, 'rows' => $rows];
+}
+
+/**
+ * "Updates Use an Unlock" (Admin → Access) is on and a newer version of $item came out since the patron's last download of it
+ * (version $got at $t): downloading it unlocks it again. The "↑ Update" tag's rule (m3d_updates_for()): public and blurred items
+ * only (a password item's new version stays free, as it shows no tag), not "In development" models (nothing to download); and not
+ * past the public date (every link is free for everyone then, auth/get.php). m3d_check_limits() and the catalogs' check marks
+ * (m3d_status_data()) both ask this.
+ */
+function m3d_update_needs_unlock(string $kind, array $item, string $got, int $t): bool
+{
+    return m3d_dl_settings()['updates'] && m3d_is_open($item) && m3d_release_phase($item) !== 'free'
+        && !($kind === 'models' && m3d_status($item) === 'in-development') && m3d_newer_versions($item, $got, $t);
 }
 
 /**
@@ -1107,7 +1389,7 @@ function m3d_downloads_left(?array $patron): ?array
     foreach ($c['rows'] as $r) {
         $n = max(0, $r['max'] - $r['used']);
         foreach (['models', 'outfits'] as $k) {
-            if (!in_array($r['rule']['what'] ?? 'models', [$k, 'all'], true)) continue;
+            if (!in_array($k, m3d_rule_kinds($r['rule']), true)) continue;
             $left[$k] = min($left[$k] ?? PHP_INT_MAX, $n);
             if ($n === 0 && $r['next']) $left['next'][$k] = max($left['next'][$k] ?? 0, $r['next']);   // all full rules must free up
         }
@@ -1185,12 +1467,11 @@ function m3d_released_label(array $item): string
     return m3d_version_label(m3d_current_version($item));
 }
 
-/** Latest version of a model or outfit = the top changelog entry (newest first). Old entries without a changelog
- *  may still have the former "version"/"versionDate" fields. Returns ['version' => '', 'date' => ''] when unknown. */
+/** Latest version of a model or outfit = the top changelog entry (newest first). Returns ['version' => '', 'date' => ''] when there is none. */
 function m3d_latest_version(array $item): array
 {
     if ($en = m3d_versions($item)[0] ?? null) return ['version' => trim((string) $en['version']), 'date' => trim((string) ($en['date'] ?? '')), 'stage' => m3d_stage($en)];
-    return ['version' => (string) ($item['version'] ?? ''), 'date' => (string) ($item['versionDate'] ?? ''), 'stage' => 'standard'];
+    return ['version' => '', 'date' => '', 'stage' => 'standard'];
 }
 
 /**
@@ -1228,18 +1509,14 @@ function m3d_version_label(array $v): string
  * Updates for a patron: the models/outfits they downloaded where a newer version came out after their last download:
  * the version they got is found below the top of the changelog, or (old log lines without a version, a version renamed
  * since) the latest version is dated after the day of that download. ['models' => [slug => version], 'outfits' => [slug => version]] (public and blurred items, not drafts or password ones; the version
- * starts with Alpha / Beta when the release has that stage).
+ * starts with Alpha / Beta when the release has that stage). None without download access (not a paying patron any more, or a
+ * preview as a non-member): an update they can't download isn't news for them.
  */
 function m3d_updates_for(?array $patron): array
 {
     $out = ['models' => [], 'outfits' => []];
-    if (!$patron) return $out;
-    $last = [];   // "kind:slug" => [time, version] of the latest download
-    foreach (m3d_patron_history($patron) as $row) {
-        [$t, $k, $s] = $row;
-        if ($t >= ($last["$k:$s"][0] ?? 0)) $last["$k:$s"] = [$t, (string) ($row[3] ?? '')];
-    }
-    foreach ($last as $key => [$t, $got]) {
+    if (!$patron || empty($patron['access'])) return $out;
+    foreach (m3d_last_downloads(m3d_patron_history($patron)) as $key => [$t, $got]) {
         [$k, $s] = explode(':', $key, 2);
         $it = m3d_item($k, $s);
         if (!$it || !m3d_is_open($it)) continue;   // removed, or draft / password now: no update shown
@@ -1305,7 +1582,7 @@ function m3d_stats_from_log(): array
         while (($r = fgetcsv($fh, 0, ',', '"', '')) !== false) {
             if (count($r) < 4 || $r[3] === '') continue;
             $s['since'] = min($s['since'], (string) $r[0]);
-            [$kind, $slug] = str_starts_with($r[3], 'outfit:') ? ['outfits', substr($r[3], 7)] : ['models', $r[3]];
+            [$kind, $slug] = m3d_log_item_parts($r[3]);
             $s['downloads'][$kind][$slug]['patrons'] = ($s['downloads'][$kind][$slug]['patrons'] ?? 0) + 1;
         }
         fclose($fh);
@@ -1417,40 +1694,44 @@ function m3d_rename_counts(string $kind, string $old, string $new): void
         return [$d, null];
     });
     // the log too: what patrons unlocked, their My Models and updates are read from it by the item's address
-    $pre = $kind === 'outfits' ? 'outfit:' : '';
-    m3d_log_rename_items([$pre . $old => $pre . $new]);
+    m3d_log_rename_items([m3d_log_item($kind, $old) => m3d_log_item($kind, $new)]);
 }
 
 /**
  * Renames items in the download log's item column (4th): $map = [old log item => new log item] ("slug", "outfit:slug").
- * Locked, through a temp file like m3d_log_rewrite(), so a download logged meanwhile waits. Returns how many lines changed.
+ * Through m3d_log_rewrite(), so a download logged meanwhile waits. Returns how many lines changed.
  */
 function m3d_log_rename_items(array $map): int
 {
-    if (!$map || !is_file(m3d_log_file())) return 0;
-    return m3d_log_locked(function () use ($map) {
-        $file = m3d_log_file();
-        if (!($in = @fopen($file, 'rb'))) return 0;
-        $tmp = $file . '.tmp-' . bin2hex(random_bytes(3));
-        if (!($out = @fopen($tmp, 'wb'))) { fclose($in); return 0; }
-        $n = 0;
-        $ok = true;
-        while ($ok && ($line = fgets($in)) !== false) {
-            while (substr_count($line, '"') % 2 && ($more = fgets($in)) !== false) $line .= $more;   // a quoted field with a line break
-            $r = str_getcsv(rtrim($line, "\r\n"), ',', '"', '');
-            if (isset($r[3], $map[$r[3]])) { $r[3] = $map[$r[3]]; $ok = fputcsv($out, $r, ',', '"', '') !== false; $n++; }
-            else $ok = fwrite($out, $line) === strlen($line);
-        }
-        $ok = fclose($out) && $ok;
-        fclose($in);
-        if (!$ok) { @unlink($tmp); m3d_problem('Download log', 'Items could not be renamed in the log (disk full?)'); return 0; }   // a short copy never replaces the log
-        if ($n) rename($tmp, $file); else @unlink($tmp);
-        return $n;
+    if (!$map) return 0;
+    return m3d_log_rewrite(function ($line) use ($map) {
+        $r = m3d_log_cols($line);
+        if (!isset($r[3], $map[$r[3]])) return false;
+        $r[3] = $map[$r[3]];
+        return $r;
     });
 }
 
-/** The download log: logs/downloads.csv (date, patreon id, name, item, link label, version, and "free" on some lines: m3d_log_download()). */
+/** The download log: logs/downloads.csv (date, patreon id, name, item, link label, version, "free" / "update" / empty, then the membership at that download: m3d_log_download(), m3d_log_membership()). */
 function m3d_log_file(): string { return M3D_PRIVATE . '/logs/downloads.csv'; }
+
+/** The log's item column (4th) for a model or accessory: "slug" or "outfit:slug". */
+function m3d_log_item(string $kind, string $slug): string
+{
+    return ($kind === 'outfits' ? 'outfit:' : '') . $slug;
+}
+
+/** The other way: [kind, slug] of a log item. */
+function m3d_log_item_parts(string $item): array
+{
+    return str_starts_with($item, 'outfit:') ? ['outfits', substr($item, 7)] : ['models', $item];
+}
+
+/** A log line's columns. */
+function m3d_log_cols(string $line): array
+{
+    return str_getcsv(rtrim($line, "\r\n"), ',', '"', '');
+}
 
 /**
  * Runs $fn while holding the download log's lock (logs/.downloads.lock, a file of its own: the log itself is replaced by
@@ -1467,12 +1748,12 @@ function m3d_log_locked(callable $fn): mixed
 }
 
 /**
- * Rewrites the download log without the lines $drop($line) returns true for (locked, through a temp file, so a download
- * logged meanwhile waits and is never lost). Returns how many lines went.
+ * Rewrites the download log (locked, through a temp file, so a download logged meanwhile waits and is never lost): $change($line)
+ * returns true to drop the line, an array of columns to write instead, anything else to keep it. Returns how many lines went or changed.
  */
-function m3d_log_rewrite(callable $drop): int
+function m3d_log_rewrite(callable $change): int
 {
-    return m3d_log_locked(function () use ($drop) {
+    return m3d_log_locked(function () use ($change) {
         $file = m3d_log_file();
         if (!is_file($file) || !($in = fopen($file, 'rb'))) return 0;
         $tmp = $file . '.tmp-' . bin2hex(random_bytes(3));
@@ -1480,9 +1761,11 @@ function m3d_log_rewrite(callable $drop): int
         $n = 0;
         $ok = true;
         while (($line = fgets($in)) !== false) {
-            while (substr_count($line, '"') % 2 && ($more = fgets($in)) !== false) $line .= $more;   // a quoted field with a line break (old lines)
-            if ($drop($line)) { $n++; continue; }
-            if (fwrite($out, $line) !== strlen($line)) { $ok = false; break; }
+            $c = $change($line);
+            if ($c === true) { $n++; continue; }
+            if (is_array($c)) { $n++; $ok = fputcsv($out, $c, ',', '"', '') !== false; }
+            else $ok = fwrite($out, $line) === strlen($line);
+            if (!$ok) break;
         }
         $ok = fclose($out) && $ok;
         fclose($in);
@@ -1513,10 +1796,21 @@ function m3d_log_clear(): int
 function m3d_log_remove_patron(string $patronId): int
 {
     if ($patronId === '') return 0;
-    return m3d_log_rewrite(fn($line) => (str_getcsv(rtrim($line, "\r\n"), ',', '"', '')[1] ?? null) === $patronId);
+    return m3d_log_rewrite(fn($line) => (m3d_log_cols($line)[1] ?? null) === $patronId);
 }
 
-/** A short code for one log line (its first six fields; the "free" mark is left out), so a page can name the lines to remove. Identical lines share it. */
+/**
+ * The membership saved with a log line (columns 8–11, written by m3d_log_download()): ['months' => ?int (at that download), 'since' => 'Y-m-d' | '',
+ * 'tier_cents' => ?int, 'total_cents' => ?int], or null for lines from before it, owners and other lines without it.
+ */
+function m3d_log_membership(array $r): ?array
+{
+    $n = fn($v) => is_string($v) && ctype_digit($v) ? (int) $v : null;
+    $m = ['months' => $n($r[7] ?? null), 'since' => preg_match('/^\d{4}-\d{2}-\d{2}$/', (string) ($r[8] ?? '')) ? (string) $r[8] : '', 'tier_cents' => $n($r[9] ?? null), 'total_cents' => $n($r[10] ?? null)];
+    return $m['months'] === null && $m['since'] === '' && $m['tier_cents'] === null && $m['total_cents'] === null ? null : $m;
+}
+
+/** A short code for one log line (its first six fields; the "free" / "update" mark is left out), so a page can name the lines to remove. Identical lines share it. */
 function m3d_log_row_key(array $r): string
 {
     return substr(hash('sha256', implode("\x1f", array_slice(array_pad($r, 6, ''), 0, 6))), 0, 16);
@@ -1528,7 +1822,7 @@ function m3d_log_remove_rows(array $keys): int
     $want = array_count_values(array_filter($keys, fn($k) => is_string($k) && preg_match('/^[0-9a-f]{16}$/', $k)));
     if (!$want) return 0;
     return m3d_log_rewrite(function ($line) use (&$want) {
-        $k = m3d_log_row_key(str_getcsv(rtrim($line, "\r\n"), ',', '"', ''));
+        $k = m3d_log_row_key(m3d_log_cols($line));
         if (($want[$k] ?? 0) < 1) return false;
         $want[$k]--;
         return true;
@@ -1536,10 +1830,10 @@ function m3d_log_remove_rows(array $keys): int
 }
 
 /** Deletes download log lines older than log_retention_days (runs at most once a day). */
-function m3d_prune_log(array $cfg, bool $force = false): void
+function m3d_prune_log(array $cfg): void
 {
     $mark = M3D_PRIVATE . '/logs/.pruned';
-    if (!is_file(m3d_log_file()) || (!$force && is_file($mark) && filemtime($mark) > time() - 86400)) return;
+    if (!is_file(m3d_log_file()) || (is_file($mark) && filemtime($mark) > time() - 86400)) return;
     $limit = gmdate('c', time() - max(1, (int) ($cfg['log_retention_days'] ?? 365)) * 86400);
     m3d_log_rewrite(fn($line) => strcmp(substr($line, 0, 25), $limit) < 0);
     @touch($mark);
@@ -1694,12 +1988,11 @@ function m3d_save_items(string $kind, array $items): bool
     $old = m3d_items($kind, true);   // before the save: Discord announcements post the versions this save makes visible
     $ok = m3d_write_json($kind, ['version' => 1, 'updated' => gmdate('c'), $kind => array_values($items)]);
     m3d_items($kind, true);   // later reads in this request see the save
-    if ($ok && function_exists('m3d_discord_after_save')) m3d_discord_after_save($kind, $old, $items);
+    if ($ok) m3d_discord_after_save($kind, $old, $items);
     if ($ok) m3d_release_after_save($kind, $old, $items);   // release dates: what the first visit after each date posts
     return $ok;
 }
 
-function m3d_save_models(array $models): bool { return m3d_save_items('models', $models); }
 
 /** FAQ: data/faq.json (Admin → FAQ); empty until written there. */
 function m3d_faq(bool $fresh = false): array
@@ -1799,15 +2092,22 @@ function m3d_settings(bool $fresh = false): array
     return $set = m3d_read_json('settings') ?? [];
 }
 
-/** Changes some settings (a null value removes that key; old `redirects` / `adopted` entries are dropped). */
+/** Changes some settings (a null value removes that key). */
 function m3d_save_settings(array $changes): bool
 {
     $all = array_merge(m3d_settings(true), $changes);
     foreach ($changes as $k => $v) if ($v === null) unset($all[$k]);
-    unset($all['version'], $all['updated'], $all['redirects'], $all['adopted']);   // the last two: old entries, no longer used
+    unset($all['version'], $all['updated']);
     $ok = m3d_write_json('settings', ['version' => 1, 'updated' => gmdate('c')] + $all);
     m3d_settings(true);
     return $ok;
+}
+
+/** Saves some keys of one settings.json section (settings.json → $key), keeping its other keys (read fresh). */
+function m3d_save_setting_keys(string $key, array $changes): bool
+{
+    $cur = m3d_settings(true)[$key] ?? [];
+    return m3d_save_settings([$key => array_merge(is_array($cur) ? $cur : [], $changes)]);
 }
 
 /** Maintenance mode (Admin → Settings): null when off, else ['message' => string, 'since' => ISO date]. Admins pass. */
@@ -1828,7 +2128,7 @@ function m3d_notice(): ?array
     $n = m3d_settings()['notice'] ?? null;
     if (!is_array($n) || empty($n['on']) || trim((string) ($n['text'] ?? '')) === '') return null;
     $until = (string) ($n['until'] ?? '');
-    if ($until !== '' && date_create_immutable('now', new DateTimeZone('Europe/Berlin'))->format('Y-m-d') > $until) return null;
+    if ($until !== '' && m3d_today() > $until) return null;
     return $n;
 }
 
@@ -1857,7 +2157,7 @@ function social_url(string $type): string
 function m3d_csrf(): string
 {
     if (!empty($_SESSION['csrf'])) return $_SESSION['csrf'];   // also after m3d_session_release()
-    if (session_status() !== PHP_SESSION_ACTIVE) m3d_start_session($GLOBALS['M3D']);
+    if (session_status() !== PHP_SESSION_ACTIVE) m3d_start_session();
     return $_SESSION['csrf'] ??= bin2hex(random_bytes(16));
 }
 

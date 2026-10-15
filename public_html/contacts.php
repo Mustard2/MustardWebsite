@@ -52,10 +52,17 @@ layout_start('Contacts', 'How to get in touch with ' . site_name() . '.', 'page-
       <?php endforeach ?>
     </div>
 
+    <?php if (m3d_bugs_on()): ?>
+    <section class="contact-mail">
+      <h2>Website Problems</h2>
+      <p>Technical problems with this website, such as logging in with Patreon or a download link that doesn’t work: <a href="/bugs/">report them in Bug Reports</a>.</p>
+    </section>
+    <?php endif ?>
+
     <?php if ($support !== ''): ?>
     <section class="contact-mail">
-      <h2>Website Support</h2>
-      <p>Problems with this website only, such as logging in with Patreon or a download link that doesn’t work: <a href="mailto:<?= e($support) ?>"><?= e($support) ?></a></p>
+      <h2>Legal Matters</h2>
+      <p>Legal matters about the content of this website only, such as copyright or privacy requests: <a href="mailto:<?= e($support) ?>"><?= e($support) ?></a></p>
       <p class="muted small">Messages about other topics sent to this address won’t be answered: please use the channels above instead.</p>
     </section>
     <?php endif ?>

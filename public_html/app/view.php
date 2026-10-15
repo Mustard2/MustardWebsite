@@ -221,11 +221,7 @@ function maintenance_gate(): void
   <footer class="site-footer">
     <div class="wrap footer-inner">
       <a class="brand" href="/"><?= brand() ?></a>
-      <nav class="footer-links" aria-label="Legal">
-        <a href="<?= e(SITE['privacy']) ?>">Privacy Policy</a>
-        <a href="<?= e(SITE['contacts']) ?>">Contacts</a>
-      </nav>
-    </div>
+<?= legal_links() ?>    </div>
   </footer>
   <script src="<?= e(asset('site.js')) ?>" defer></script>
 </body>
@@ -298,13 +294,8 @@ function layout_start(string $title = '', string $description = '', string $body
     <div class="wrap header-inner">
       <a class="brand" href="/" aria-label="<?= e(site_name()) ?> home"><?= brand() ?></a>
       <nav class="nav" aria-label="Main">
-        <a href="/#catalog">Characters</a>
-        <a href="/accessories/"<?= str_starts_with($path, '/accessories/') ? ' aria-current="page"' : '' ?>>Accessories</a>
-<?php if (m3d_has_gallery()): ?>        <a href="/gallery/"<?= str_starts_with($path, '/gallery/') ? ' aria-current="page"' : '' ?>>Gallery</a>
-<?php endif ?><?php if (m3d_mustardui_on()): ?>        <a href="<?= e(SITE['mustarduiPage']) ?>"<?= str_starts_with($path, '/mustardui') ? ' aria-current="page"' : '' ?>>MustardUI</a>
-<?php endif ?><?php if (m3d_has_docs()): ?>        <a href="<?= e(SITE['docs']) ?>"<?= str_starts_with($path, '/docs/') ? ' aria-current="page"' : '' ?>>Docs</a>
-<?php endif ?><?php if (m3d_has_faq()): ?>        <a href="<?= e(SITE['faqs']) ?>"<?= str_starts_with($path, '/faq') ? ' aria-current="page"' : '' ?>>FAQ</a>
-<?php endif ?><?php if (m3d_bugs_on()):
+<?php foreach (site_menu() as [$label, $href, $cur]): ?>        <a href="<?= e($href) ?>"<?= $cur !== '' && str_starts_with($path, $cur) ? ' aria-current="page"' : '' ?>><?= e($label) ?></a>
+<?php endforeach ?><?php if (m3d_bugs_on()):
     // the number: news on the reports a patron follows, or (the creator) reports with something not seen yet
     $bugMe = m3d_patron($GLOBALS['M3D']);
     $bugMine = m3d_is_admin($GLOBALS['M3D']) && empty($bugMe['preview']);
@@ -363,20 +354,11 @@ function layout_end(): void
         <?= social_buttons() ?>
       </div>
       <nav class="footer-links" aria-label="Explore">
-        <a href="/#catalog">Characters</a>
-        <a href="/accessories/">Accessories</a>
-<?php if (m3d_has_gallery()): ?>        <a href="/gallery/">Gallery</a>
-<?php endif ?><?php if (m3d_mustardui_on()): ?>        <a href="<?= e(SITE['mustarduiPage']) ?>">MustardUI</a>
-<?php endif ?><?php if (m3d_has_docs()): ?>        <a href="<?= e(SITE['docs']) ?>">Docs</a>
-<?php endif ?><?php if (m3d_has_faq()): ?>        <a href="<?= e(SITE['faqs']) ?>">FAQ</a>
-<?php endif ?><?php if (m3d_bugs_on()): ?>        <a href="/bugs/">Bug Reports</a>
+<?php foreach (site_menu() as [$label, $href]): ?>        <a href="<?= e($href) ?>"><?= e($label) ?></a>
+<?php endforeach ?><?php if (m3d_bugs_on()): ?>        <a href="/bugs/">Bug Reports</a>
 <?php endif ?>
       </nav>
-      <nav class="footer-links" aria-label="Legal">
-        <a href="<?= e(SITE['privacy']) ?>">Privacy Policy</a>
-        <a href="<?= e(SITE['contacts']) ?>">Contacts</a>
-      </nav>
-    </div>
+<?= legal_links() ?>    </div>
   </footer>
   <dialog class="lightbox" data-lightbox aria-label="Image viewer">
     <figure>
@@ -389,14 +371,34 @@ function layout_end(): void
     <button class="lb-zoom" data-lightbox-zoom aria-label="Zoom in" title="Zoom (or click the picture; double-tap or pinch on phones)"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m15.5 15.5 5 5M8 10.5h5"/><path class="lb-zoom-plus" d="M10.5 8v5"/></svg></button>
     <button class="lb-close" data-lightbox-close aria-label="Close">✕</button>
   </dialog>
-  <script src="<?= e(asset('site.js')) ?>" defer></script>
+<?= flash_stack() ?>  <script src="<?= e(asset('site.js')) ?>" defer></script>
 </body>
 </html>
 <?php
 }
 
+/** The menu's links, in the header and the footer: [label, address, the start of the paths it is current on ('' = none)]; Bugs is added by each. */
+function site_menu(): array
+{
+    $m = [['Characters', '/#catalog', ''], ['Accessories', '/accessories/', '/accessories/']];
+    if (m3d_has_gallery()) $m[] = ['Gallery', '/gallery/', '/gallery/'];
+    if (m3d_mustardui_on()) $m[] = ['MustardUI', SITE['mustarduiPage'], '/mustardui'];
+    if (m3d_has_docs()) $m[] = ['Docs', SITE['docs'], '/docs/'];
+    if (m3d_has_faq()) $m[] = ['FAQ', SITE['faqs'], '/faq'];
+    return $m;
+}
+
+/** The footer's Privacy Policy and Contacts links (every page, the maintenance page too). */
+function legal_links(): string
+{
+    return '      <nav class="footer-links" aria-label="Legal">' . "\n"
+        . '        <a href="' . e(SITE['privacy']) . '">Privacy Policy</a>' . "\n"
+        . '        <a href="' . e(SITE['contacts']) . '">Contacts</a>' . "\n"
+        . "      </nav>\n";
+}
+
 /**
- * Search in the header: the magnifier opens a search bar that grows over the whole header (✕ on the right closes it) and
+ * Search in the header: the magnifier opens a search bar that grows over the menu (✕ on the right closes it) and
  * searches models, accessories, docs and FAQ as you type (site.js [data-hsearch], list from /search/?index=1); without
  * JavaScript the magnifier opens the /search/ page.
  */
@@ -426,13 +428,19 @@ function m3d_status_data(?array $p): array
     if (!empty($p['access']) && ($l = m3d_downloads_left($p)) !== null) {
         $next = array_filter($l['next']);
         $left = ['models' => $l['models'], 'outfits' => $l['outfits'],
-                 'next' => $next ? (new DateTimeImmutable('@' . min($next)))->setTimezone(new DateTimeZone('Europe/Berlin'))->format('D j M, H:i T') : null];
+                 'next' => $next ? m3d_berlin(min($next), 'D j M, H:i T') : null];
         // only items this visitor may know of (in the catalogs, or a page they can open): never a draft's or hidden password item's
         // address in the page; slugs always as strings ("2077" would be a number in the JSON)
         $seen = fn(string $k, string $slug) => ($it = m3d_item($k, $slug)) && (m3d_listed($it) || m3d_can_view($k, $it));
-        // what this patron already downloaded = unlocked, free to download again (catalog check marks)
+        // what this patron already downloaded = unlocked, free to download again (catalog check marks); with "Updates Use an
+        // Unlock" an item with a newer version isn't free any more: no check, only its "↑ Update" tag
         $left['owned'] = ['models' => [], 'outfits' => []];
-        foreach (m3d_patron_history($p) as [, $k, $slug]) if (!isset($left['owned'][$k][$slug]) && $seen($k, (string) $slug)) $left['owned'][$k][$slug] = true;
+        foreach (m3d_last_downloads(m3d_patron_history($p)) as $key => [$t, $got]) {
+            [$k, $slug] = explode(':', $key, 2);
+            // (only for a kind some rule counts: an accessory's new version is free while the rules count only models)
+            if (!$seen($k, $slug) || ($l[$k] !== null && m3d_update_needs_unlock($k, m3d_item($k, $slug), $got, $t))) continue;
+            $left['owned'][$k][$slug] = true;
+        }
         $left['owned'] = array_map(fn($l) => array_map('strval', array_keys($l)), $left['owned']);
         // and the ones that never count (editor: "Exclude from Unlock Limits"): always free too
         $left['free'] = ['models' => [], 'outfits' => []];
@@ -463,7 +471,7 @@ function liked_row(string $kind, array $items): string
         '', ' data-liked-row data-liked="' . e(json_encode($slugs)) . '"');
 }
 
-/** The visitor's side of the likes: {can, reason, csrf?} (like buttons in the page, auth/like.php). */
+/** The visitor's side of the likes: {can, reason, csrf?} (the like state printed in the page). */
 function m3d_like_viewer(?array $p): array
 {
     $can = $p !== null && !empty($p['access']);
@@ -601,7 +609,7 @@ function model_card(array $m): string
         . '<div class="card-body"><p class="franchise">' . e($m['franchise'] ?? '') . '</p>'
         . '<h3>' . e($m['name']) . '</h3>'
         . '<span class="card-meta"><span class="badge tone-' . e($s['tone']) . '">' . e($s['label']) . '</span>'
-        . ($likes ? '<span class="likes-pill" title="' . $likes . ' ' . ($likes === 1 ? 'like' : 'likes') . ' from patrons">' . HEART_ICON . $likes . '</span>' : '')
+        . likes_pill($likes)
         . '</span></div></a>';
 }
 
@@ -706,7 +714,7 @@ function item_gate(string $kind, array $item): void
 {
     $v = m3d_visibility($item);
     if (m3d_release_hidden($item) && !m3d_is_admin($GLOBALS['M3D'])) not_found();   // before its patrons date, hidden like a draft
-    if (!m3d_is_open($item)) header('X-Robots-Tag: noindex');   // password and draft pages; teasers (blurred) may be listed, like in the sitemap
+    if (!in_array($v, ['public', 'blurred', 'blurred-patrons'], true) || m3d_release_hidden($item)) header('X-Robots-Tag: noindex');   // password and draft pages; teasers (blurred) and "Coming Soon" pages may be listed, like in the sitemap
     if (!m3d_can_view($kind, $item) && $v !== 'password') not_found();
     if (m3d_can_view($kind, $item)) return;
     $wrong = false;
@@ -751,16 +759,16 @@ function preview_bar(string $return): string
     $amt = fn(int $c) => $c % 100 ? number_format($c / 100, 2, '.', '') : (string) intdiv($c, 100);
     return '<form class="preview-bar" method="post" action="/admin/patron-preview.php">'
         . '<input type="hidden" name="csrf" value="' . e(m3d_csrf()) . '" /><input type="hidden" name="return" value="' . e(m3d_safe_return($return, '/')) . '" />'
-        . '<b class="pv-title">Preview as a Patron</b>'
+        . '<b class="pv-title">Preview</b>'
         . '<label><span>Membership</span><select name="tier">' . $opts . '</select></label>'
-        . '<label title="The price of the paid tier you preview with, for models with a minimum tier (Access in the editor)."><span>Tier Price (' . e(m3d_currency()) . ')</span><input type="number" name="price" min="0.01" step="0.01" value="' . e($amt($price)) . '" /></label>'
-        . '<label><span>Months as a Patron</span><input type="number" name="months" min="0" max="999" value="' . (int) ($pv['months'] ?? 0) . '" /></label>'
-        . '<label><span>Total Support (' . e(m3d_currency()) . ')</span><input type="number" name="total" min="0" step="0.01" value="' . e($amt($total)) . '" /></label>'
-        . '<label title="Counted as downloaded a minute ago (other models than the one you look at), so they count in every limit period."><span>Models Downloaded</span><input type="number" name="dl_models" min="0" max="99" value="' . (int) ($pv['dl_models'] ?? 0) . '" /></label>'
-        . '<label title="Counted as downloaded a minute ago, so they count in every limit period."><span>Accessories Downloaded</span><input type="number" name="dl_outfits" min="0" max="99" value="' . (int) ($pv['dl_outfits'] ?? 0) . '" /></label>'
-        . '<label title="This many of your latest updated models/accessories count as downloaded before their latest version: the account button gets the dot and My Models shows them as updates."><span>Simulated Updates</span><input type="number" name="updates" min="0" max="20" value="' . (int) ($pv['updates'] ?? 0) . '" /></label>'
-        . '<label title="Optional: a real Patreon user ID (a long number, see Admin → Downloads). Adds that patron’s real downloads (limits, Unlocked) and their special access (Admin → Access)."><span>Copy from Patron ID</span><input name="as" inputmode="numeric" pattern="\\d{1,20}" placeholder="optional" value="' . e($pv['as'] ?? '') . '" /></label>'
-        . '<span class="pv-btns"><button class="btn btn-primary btn-sm" name="do" value="apply">Apply</button><button class="btn btn-ghost btn-sm" name="do" value="stop">Stop Preview</button></span>'
+        . '<label title="The price of the paid tier you preview with, for models with a minimum tier (Access in the editor)."><span>Tier (' . e(m3d_currency()) . ')</span><input type="number" name="price" min="0.01" step="any" value="' . e($amt($price)) . '" /></label>'
+        . '<label title="Months as a patron."><span>Months</span><input type="number" name="months" min="0" max="999" value="' . (int) ($pv['months'] ?? 0) . '" /></label>'
+        . '<label title="Total support given over all the months."><span>Total (' . e(m3d_currency()) . ')</span><input type="number" name="total" min="0" step="any" value="' . e($amt($total)) . '" /></label>'
+        . '<label title="Models downloaded: counted as downloaded a minute ago (other models than the one you look at), so they count in every limit period."><span>Models</span><input type="number" name="dl_models" min="0" max="99" value="' . (int) ($pv['dl_models'] ?? 0) . '" /></label>'
+        . '<label title="Accessories downloaded: counted as downloaded a minute ago, so they count in every limit period."><span>Accessories</span><input type="number" name="dl_outfits" min="0" max="99" value="' . (int) ($pv['dl_outfits'] ?? 0) . '" /></label>'
+        . '<label title="This many of your latest updated models/accessories count as downloaded before their latest version: the account button gets the dot and My Models shows them as updates."><span>Updates</span><input type="number" name="updates" min="0" max="20" value="' . (int) ($pv['updates'] ?? 0) . '" /></label>'
+        . '<label title="Optional: a real Patreon user ID (a long number, see Admin → Downloads). Adds that patron’s real downloads (limits, Unlocked) and their special access (Admin → Access)."><span>Patreon ID</span><input name="as" inputmode="numeric" pattern="\\d{1,20}" placeholder="optional" value="' . e($pv['as'] ?? '') . '" /></label>'
+        . '<span class="pv-btns"><button class="btn btn-primary btn-sm" name="do" value="apply">Apply</button><button class="btn btn-ghost btn-sm" name="do" value="stop">Stop</button></span>'
         . '</form>';
 }
 
@@ -805,8 +813,9 @@ function outfits_intro(): string
 /** "Your download starts in…" page (auth/get.php). $go = the same /get/ address with the signed ?t=: never the real link.
  *  $confirm (limit rows): only the "Unlock this model?" question (one line, `dl_unlock_line()`), whose Yes ($go, c = m3d_dl_confirm_code()) comes back
  *  to the server for the countdown.
- *  $back: the page to go back to when it isn't the item's own (gallery pictures: /gallery/). */
-function download_wait_page(string $kind, array $item, string $label, int $seconds, string $go, ?array $confirm = null, ?string $back = null): never
+ *  $back: the page to go back to when it isn't the item's own (gallery pictures: /gallery/).
+ *  $update: the question is for a newer version of an item already unlocked ("Updates Use an Unlock"): "Unlock this update?". */
+function download_wait_page(string $kind, array $item, string $label, int $seconds, string $go, ?array $confirm = null, ?string $back = null, bool $update = false): never
 {
     $page = $back ?? m3d_item_url($kind, $item['slug']);
     $what = $kind === 'outfits' ? 'accessory' : 'model';
@@ -819,7 +828,7 @@ function download_wait_page(string $kind, array $item, string $label, int $secon
 <?= $back === null ? dl_wait_facts($item) : '' ?>
     <?php if ($confirm): ?>
       <div data-dl-ask>
-        <p class="lead"><?= e(dl_unlock_line($confirm)) ?> Unlock this <?= $what ?>?</p>
+        <p class="lead"><?= e(dl_unlock_line($confirm)) ?> Unlock this <?= $update ? 'update' : $what ?>?</p>
         <div class="cta">
           <a class="btn btn-primary" href="<?= e($go) ?>">Yes, Unlock</a>
           <a class="btn btn-ghost" href="<?= e($page) ?>">Not Now</a>
@@ -849,7 +858,7 @@ function dl_wait_facts(array $item): string
     $v = m3d_current_version($item);
     if (($label = m3d_version_label($v)) !== '') {
         $ts = m3d_changelog_ts((string) ($v['date'] ?? ''));
-        $parts[] = 'Version <b>' . e($label) . '</b>' . ($ts ? ' · ' . e((new DateTimeImmutable('@' . $ts))->setTimezone(new DateTimeZone('Europe/Berlin'))->format('j M Y')) : '');
+        $parts[] = 'Version <b>' . e($label) . '</b>' . ($ts ? ' · ' . e(m3d_berlin($ts, 'j M Y')) : '');
     }
     if (($bl = trim((string) ($item['blender'] ?? ''))) !== '') $parts[] = 'Blender <b>' . e($bl) . '</b>';
     $addons = [];
@@ -866,20 +875,53 @@ function dl_wait_facts(array $item): string
  *  left), "This uses 1 of your 3 model unlocks left." / "This uses your last model unlock." */
 function dl_unlock_line(array $rows): string
 {
-    $tight = null;
-    foreach ($rows as $r) {
-        $r['left'] = max(0, $r['max'] - $r['used']);
-        if ($tight === null || $r['left'] < $tight['left']) $tight = $r;
-    }
-    $what = $tight['rule']['what'] ?? 'models';
-    $noun = ($what === 'all' ? '' : (DL_WHAT[$what][0] ?? 'model') . ' ');
-    return $tight['left'] <= 1
-        ? "This uses your last {$noun}unlock."
-        : "This uses 1 of your {$tight['left']} {$noun}unlocks left.";
+    $tight = m3d_tightest_row($rows);
+    $left = max(0, $tight['max'] - $tight['used']);
+    $noun = m3d_rule_noun($tight['rule']);
+    return $left <= 1 ? "This uses your last {$noun}unlock." : "This uses 1 of your $left {$noun}unlocks left.";
 }
 
 /** One download at a time (auth/get.php, auth/get-still.php): another download of this visitor is still counting down ($busy =
  *  m3d_dl_busy()), so this one is refused; the visitor goes back and tries again once it has started. */
+/** A /get/ address with nothing to download: a plain answer (404 unknown or switched off, 503 not ready yet). */
+function dl_unavailable(int $code, string $msg): never
+{
+    http_response_code($code);
+    exit($msg);
+}
+
+/**
+ * The waiting page of a /get/ address (auth/get.php, auth/get-still.php): shown until the signed link in ?t= is old enough (a new
+ * one when missing, wrong or expired); returns once the download may start. $confirm (limit rows): the download will use one of the
+ * patron's unlocks, so the page first asks "Unlock this model?"; its Yes comes back here with c (m3d_dl_confirm_code()), and the
+ * countdown starts then. One download at a time: while another download of this visitor counts down, a new one is refused
+ * (download_busy_page()). $back: where the pages' back button goes (null = the item's page).
+ */
+function dl_wait_gate(string $kind, string $slug, int $n, array $item, string $label, string $here, ?array $confirm = null, bool $update = false, ?string $back = null): void
+{
+    $wait = m3d_dl_settings()['wait'];
+    $code = m3d_dl_code($kind, $slug, $n);
+    // the version out now is part of it: an old Yes link (browser history) doesn't skip the question for a newer version
+    $cCode = $confirm !== null ? m3d_dl_confirm_code($code . '@' . m3d_released_label($item)) : null;
+    $confirmed = $confirm === null || hash_equals($cCode, m3d_get_text('c'));
+    $token = m3d_get_text('t');
+    $left = 0;
+    if ($wait > 0) {
+        $left = $confirmed ? m3d_dl_token_wait($token, $kind, $slug, $n, $wait) : null;
+        if ($left === null) {   // a new wait (or the question before it)
+            if ($busy = m3d_dl_busy($code)) download_busy_page($kind, $item, $busy, $back);
+            $token = m3d_dl_token($kind, $slug, $n);
+            $left = $wait;
+        }
+    }
+    // a finished countdown kept from earlier doesn't jump the queue either
+    if ($left === 0 && $confirmed && $wait > 0 && ($busy = m3d_dl_busy($code))) download_busy_page($kind, $item, $busy, $back);
+    if ($left === 0 && $confirmed) { m3d_dl_free($code); return; }
+    if ($confirmed) m3d_dl_hold($code, (string) $item['name'], $left);
+    $go = $here . '?' . http_build_query(array_filter(['c' => $cCode, 't' => $wait > 0 && $confirmed ? $token : null]));
+    download_wait_page($kind, $item, $label, $left, $go, $confirmed ? null : $confirm, $back, $update);
+}
+
 function download_busy_page(string $kind, array $item, array $busy, ?string $back = null): never
 {
     $page = $back ?? m3d_item_url($kind, $item['slug']);
@@ -923,6 +965,24 @@ function start_box_html(string $kind): string
         . (trim($b['note']) !== '' ? '<p class="small muted md">' . md_inline($b['note']) . '</p>' : '') . '</div>';
 }
 
+/** A message after an action ("Saved.", "Not saved: …"), never in the page: it floats at the bottom with a ✕ (ok / info fade out by
+ *  themselves, errors stay until closed; site.js / admin.js). $html is already escaped. Printed by layout_end() and admin_end(). */
+function site_flash(string $html, string $kind = 'ok'): void
+{
+    $GLOBALS['m3d_flash'][] = [in_array($kind, ['ok', 'info', 'err'], true) ? $kind : 'info', $html];
+}
+
+/** The floating messages of site_flash(), in the stack toast() (admin.js) adds to too. */
+function flash_stack(): string
+{
+    $h = '';
+    foreach ($GLOBALS['m3d_flash'] ?? [] as [$kind, $html]) {
+        $h .= '<div class="toast ' . $kind . '" role="' . ($kind === 'err' ? 'alert' : 'status') . '"><span class="toast-msg">' . $html . '</span>'
+            . '<button type="button" class="toast-x" aria-label="Close" title="Close">✕</button></div>';
+    }
+    return '  <div class="toasts" data-toasts>' . $h . "</div>\n";
+}
+
 /** Note for the admin on pages that visitors see differently (or not at all). */
 function visibility_banner(string $kind, array $item): string
 {
@@ -930,7 +990,8 @@ function visibility_banner(string $kind, array $item): string
     if (!m3d_is_admin($GLOBALS['M3D'])) return '';
     $what = $kind === 'outfits' ? 'accessory' : 'model';
     if ($v === 'public') {   // just published from this banner
-        return isset($_GET['published']) ? '<p class="vis-banner vis-done">' . CHECK_ICON . '<span>Published: everyone can see this ' . $what . ' now.</span></p>' : '';
+        if (isset($_GET['published'])) site_flash('✓ Published: everyone can see this ' . $what . ' now.');
+        return '';
     }
     $text = match ($v) {
         'draft'    => 'Draft: only admins can see this ' . $what . '.',
@@ -1049,6 +1110,7 @@ function downloads_box(string $kind, array $item, bool $comingSoon = false): str
     $phase = m3d_release_phase($item);       // release dates: 'soon' (no download yet), 'early' (patrons only until a date), 'free' (every link public)
     $admin = m3d_is_admin($GLOBALS['M3D']) && !m3d_preview();
     foreach ($links as $i => $l) {
+        if (!empty($l['off'])) continue;   // switched off in the editor (the numbers of the others stay)
         $label = trim((string) ($l['label'] ?? '')) ?: 'Download';
         if (m3d_link_access($item, $l) === 'public') {
             // through /get/ too, so free downloads are counted (it redirects straight away, no login)
@@ -1058,11 +1120,11 @@ function downloads_box(string $kind, array $item, bool $comingSoon = false): str
             $patron .= '<a class="btn btn-primary dl" href="' . e($base . $i . '/') . '" rel="nofollow"' . ($guest ? ' title="Log in with Patreon to download"' : '') . '>'
                 . ($guest ? '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4" stroke-linecap="round"/></svg>'
                     : '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><path d="M12 3v12m0 0-5-5m5 5 5-5M4 21h16" stroke-linecap="round" stroke-linejoin="round"/></svg>')
-                . e($label) . '</a>';
+                . '<span class="dl-name">' . e($label) . '</span></a>';
         }
     }
     $what = $kind === 'outfits' ? 'accessory' : 'model';
-    $h = '<div class="box"><h2>Download</h2>';
+    $h = '<div class="box dl-box" id="download"><h2>Download</h2>';
     if ($comingSoon) {
         $h .= '<p class="muted">This ' . $what . ' is still in development. Follow the progress on Patreon.</p>';
     } elseif ($patron) {
@@ -1186,16 +1248,18 @@ function dl_verdict(string $kind, array $item, array $p): ?array
     $c = m3d_check_limits($p, $kind, (string) $item['slug']);
     $limited = $c['rows'] && !$c['exempt'];
     // the limits are rolling: they count the last 24 hours / 7 days / 30 days, not today / this week / this month
-    $period = fn(array $row) => 'the last ' . (DL_PERIODS[$row['rule']['per'] ?? 'week'][1] ?? DL_PERIODS['week'][1]);
-    $unit = fn(array $row) => ($row['rule']['what'] ?? 'models') === 'all' ? '' : (DL_WHAT[$row['rule']['what'] ?? 'models'][0] ?? 'model') . ' ';
+    $period = fn(array $row) => 'the last ' . m3d_rule_period($row['rule'])[1];
+    $unit = fn(array $row) => m3d_rule_noun($row['rule']);
     if ($limited && !$c['ok']) {
-        // the rule that frees up last decides when the next unlock comes (every full rule must free up)
-        $full = array_values(array_filter($c['rows'], fn($x) => $x['used'] >= $x['max']));
-        usort($full, fn($a, $b) => ($b['next'] ?? 0) <=> ($a['next'] ?? 0));
-        $o = $full[0];
-        $when = $o['next'] ? (new DateTimeImmutable('@' . $o['next']))->setTimezone(new DateTimeZone('Europe/Berlin'))->format('D j M \\a\\t H:i T') : '';
-        $miss[] = ['title' => 'You used all your ' . $unit($o) . 'unlocks of ' . $period($o) . '.', 'text' => $when !== '' ? "Your next one is on $when." : '',
+        $o = m3d_blocking_row($c['rows']);
+        $when = $o['next'] ? m3d_berlin($o['next'], 'D j M \\a\\t H:i T') : '';
+        $miss[] = ['title' => 'You used all your ' . $unit($o) . 'unlocks of ' . $period($o) . '.',
+                   'text' => trim(($c['update'] ? 'A new version uses an unlock too. ' : '') . ($when !== '' ? "Your next one is on $when." : '')),
                    'item' => 'one more ' . $unit($o) . 'unlock' . ($when !== '' ? " (next one on $when)" : '')];
+    }
+    if (($until = m3d_dl_capped($p)) !== null) {   // daily download cap (Admin → Access)
+        $when = m3d_berlin($until, 'D j M \\a\\t H:i T');
+        $miss[] = ['title' => 'You reached the daily download limit.', 'text' => "You can download again on $when.", 'item' => "a new day of downloads (from $when)"];
     }
     $up = ['upgrade' => !$req['tier_ok']];
     if (count($miss) === 1) return ['ok' => false, 'list' => []] + $up + $miss[0];
@@ -1203,10 +1267,9 @@ function dl_verdict(string $kind, array $item, array $p): ?array
     if ($limited && $c['free']) return ['ok' => true, 'title' => 'You can download this.', 'text' => 'It doesn’t use any of your unlocks.', 'list' => []];
     if ($limited && $c['owned']) return ['ok' => true, 'title' => 'You can download this again.', 'text' => 'You already unlocked it, so it’s free.', 'list' => []];
     if ($limited) {
-        $t = null;   // the tightest rule: the one that runs out first
-        foreach ($c['rows'] as $x) if (!$t || $x['max'] - $x['used'] < $t['max'] - $t['used']) $t = $x;
+        $t = m3d_tightest_row($c['rows']);   // the one that runs out first
         $left = $t['max'] - $t['used'];
-        return ['ok' => true, 'title' => 'You can download this.', 'list' => [], 'text' => $left === 1
+        return ['ok' => true, 'title' => $c['update'] ? 'You can download the new version.' : 'You can download this.', 'list' => [], 'text' => $left === 1
             ? 'It uses your last ' . $unit($t) . 'unlock for now (the limit counts ' . $period($t) . ').'
             : 'It uses 1 of your ' . $left . ' ' . $unit($t) . 'unlocks left (the limit counts ' . $period($t) . ').'];
     }
@@ -1337,7 +1400,7 @@ function outfit_card(array $o): string
     $pill = '<span class="cover-tags"><span class="type-tag" title="' . e($type) . '">' . accessory_icon($type) . '</span>' . visibility_pill('outfits', $o) . '</span>'
         . (!$hidden && $count > 1 ? '<span class="count-pill">' . $count . ' images</span>' : '');
     $likes = m3d_like_count((string) $o['slug'], 'outfits');
-    $likesPill = $likes ? '<span class="likes-pill" title="' . $likes . ' ' . ($likes === 1 ? 'like' : 'likes') . ' from patrons">' . HEART_ICON . $likes . '</span>' : '';
+    $likesPill = likes_pill($likes);
     return '<a class="ocard" href="' . e($url) . '" data-ocard data-slug="' . e($o['slug']) . '" data-name="' . e(mb_strtolower($o['name'])) . '" data-order="' . e($o['order'] ?? 999) . '" data-likes="' . $likes . '" data-updated="' . m3d_updated_ts($o) . '" data-downloads="' . m3d_downloads('outfits', (string) $o['slug'])['total'] . '" data-type="' . e(mb_strtolower(m3d_accessory_type($o))) . '" data-models="' . e(implode(' ', array_filter($o['models'] ?? [], fn($sl) => ($mm = m3d_model($sl)) && m3d_listed($mm)))) . '">'
         . '<span class="ocard-img' . ($hidden ? ' is-blurred' : '') . '">' . $img . $pill . '</span>'
         . '<span class="ocard-body"><span class="franchise">' . e($type) . '</span><h3>' . e($o['name']) . '</h3>' . $ver . $fits . ($likesPill ? '<span class="card-meta">' . $likesPill . '</span>' : '') . '</span></a>';
@@ -1353,17 +1416,21 @@ function recent_items(int $max = 4, int $days = 90): array
     $from = time() - $days * 86400;
     foreach (['models', 'outfits'] as $kind) {
         foreach (m3d_listed_items($kind) as $it) {
-            if (m3d_release_phase($it) === 'soon') continue;   // "Coming soon": not out yet
-            // a version dated in the future isn't out yet: the one before it counts (like What's new)
-            $rel = m3d_versions($it) ? m3d_released_versions($it) : [];
-            $lv = $rel ? m3d_latest_version(['changelog' => [$rel[0]]]) : (m3d_versions($it) ? null : m3d_latest_version($it));
-            $ts = $lv ? m3d_changelog_ts($lv['date']) : null;
-            if ($ts === null || $ts < $from || $ts > time()) continue;
-            $out[] = ['kind' => $kind, 'item' => $it, 'ts' => $ts, 'version' => $lv['version'], 'stage' => $lv['stage'], 'date' => $lv['date'], 'new' => count($rel) <= 1];
+            // the newest version out (one dated in the future isn't yet; a "Coming soon" item has none, like What's new)
+            $ts = m3d_updated_ts($it);
+            if (!$ts || $ts < $from || $ts > time()) continue;
+            $lv = m3d_current_version($it);
+            $out[] = ['kind' => $kind, 'item' => $it, 'ts' => $ts, 'version' => $lv['version'], 'stage' => $lv['stage'], 'date' => $lv['date'], 'new' => count(m3d_released_versions($it)) <= 1];
         }
     }
     usort($out, fn($a, $b) => $b['ts'] <=> $a['ts']);
     return array_slice($out, 0, $max);
+}
+
+/** The small picture of a compact card (card_pic()'s address), or the name's first letter when there is none. */
+function card_img(string $src, string $name): string
+{
+    return $src !== '' ? '<img src="' . e($src) . '" alt="" loading="lazy" decoding="async" />' : '<span class="ph-initials">' . e(mb_substr($name, 0, 1)) . '</span>';
 }
 
 /** Small row card for recent_items(): picture, New / Updated, name, version and date. */
@@ -1372,14 +1439,11 @@ function recent_card(array $r): string
     $it = $r['item'];
     $isOutfit = $r['kind'] === 'outfits';
     [$src, $hidden] = card_pic($r['kind'], $it);
-    $img = $src !== ''
-        ? '<img src="' . e($src) . '" alt="" loading="lazy" decoding="async" />'
-        : '<span class="ph-initials">' . e(mb_substr((string) $it['name'], 0, 1)) . '</span>';
-    $versions = $isOutfit ? [] : m3d_model_versions($it);
+    $img = card_img($src, (string) $it['name']);
     return '<a class="recent" href="' . e(m3d_item_url($r['kind'], $it['slug'])) . '">'
         . '<span class="recent-img' . ($hidden ? ' is-blurred' : '') . '">' . $img . '</span>'
         . '<span class="recent-body"><span class="recent-tag ' . ($r['new'] ? 'is-new' : 'is-upd') . '">' . ($r['new'] ? 'New' : 'Updated') . '</span>'
-        . '<b class="recent-name">' . e($it['name']) . ($versions ? ' v' . (int) $it['majorVersion'] : '') . '</b>'
+        . '<b class="recent-name">' . e(m3d_model_name($it)) . '</b>'
         . '<span class="recent-meta">' . ($isOutfit ? e(m3d_accessory_type($it)) . ' · ' : '') . (($sb = stage_badge($r['stage'], true)) !== '' ? $sb . ' ' : '') . e($r['version']) . ($r['date'] !== '' ? ' · ' . e($r['date']) : '') . '</span>'
         . '</span></a>';
 }
@@ -1417,9 +1481,7 @@ function model_strip(array $models): string
     $tiles = '';
     foreach ($models as $m) {
         [$src, $hidden] = card_pic('models', $m);
-        $img = $src !== ''
-            ? '<img src="' . e($src) . '" alt="" loading="lazy" decoding="async" />'
-            : '<span class="ph-initials">' . e(mb_substr((string) $m['name'], 0, 1)) . '</span>';
+        $img = card_img($src, (string) $m['name']);
         $gen = array_filter([($m['generation'] ?? '') !== '' ? 'Gen ' . e($m['generation']) : '', m3d_model_versions($m) ? 'v' . (int) $m['majorVersion'] : '']);
         $title = trim($m['name'] . ' · ' . ($m['franchise'] ?? ''), ' ·');
         $tiles .= '<a class="fit-tile" href="/models/' . e($m['slug']) . '/" title="' . e($title) . '">'
@@ -1434,12 +1496,13 @@ function model_strip(array $models): string
         . '</div>';
 }
 
-/**
- * Simple, safe text formatting used by the FAQ (and editable in the admin):
- *   blank line = new paragraph · "- " lines = list · "### " = small heading · ![alt](url) alone on a line = image
- *   [text](url) = link · **bold** · *italic* · `code` · a single line break stays a line break
- * Everything is escaped first, so no HTML can be injected.
- */
+/** The likes on a catalog card: heart + count, nothing at 0. */
+function likes_pill(int $likes): string
+{
+    return $likes ? '<span class="likes-pill" title="' . e(m3d_plural($likes, 'like')) . ' from patrons">' . HEART_ICON . $likes . '</span>' : '';
+}
+
+/** The like heart (like_button(), the gallery tiles and viewer). */
 const HEART_ICON = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 20.7 4.6 13.5a4.9 4.9 0 0 1 0-7 5 5 0 0 1 7 0l.4.4.4-.4a5 5 0 0 1 7 0 4.9 4.9 0 0 1 0 7z"/></svg>';
 
 /** Heart button for a model or outfit page: count rendered here, liked state and clicks handled by site.js (auth/like.php). */
@@ -1515,7 +1578,7 @@ function md_id(string $text): string
     return trim(preg_replace('/[^a-z0-9]+/', '-', $t), '-') ?: 'section';
 }
 
-const MD_IMG = '/^!\[([^\]]*)\]\(((?:https?:\/\/|\/(?!\/))[^\s)]+)\)$/';   // "//other-site/…" isn't a picture of this site: never loaded
+const MD_IMG = '/^!\[([^\]]*)\]\(((?:https?:\/\/|\/(?![\/\\\\]))[^\s)]+)\)$/';   // "//other-site/…" (or "/\other-site/…") isn't a picture of this site: never loaded
 
 /** One list (bullets or numbered) from its lines. Indented lines continue the item above; indented "- " lines make a sub-list. */
 function md_list(array $lines): string
@@ -1611,7 +1674,7 @@ function md_callout(string $inner, array $opts = []): string
             $inner = ltrim(substr(ltrim($inner), strlen($m[0])), "\n");
         }
     } elseif (preg_match('/^\*\*(warning|caution|important|tip|note)\b/i', ltrim($inner), $m)) {
-        $type = strtolower($m[1]);   // older texts: "> **Warning:** …"
+        $type = strtolower($m[1]);   // "> **Warning:** …": typed by hand, and how the SmutBase import writes a quoted warning
     }
     $head = $title !== null
         ? '<p class="callout-title"><svg viewBox="0 0 24 24" aria-hidden="true">' . CALLOUTS[$type][1] . '</svg>' . md_inline($title) . '</p>'

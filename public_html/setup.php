@@ -10,11 +10,10 @@ require __DIR__ . '/admin/_admin.php';   // the core, plus tip() and no-store / 
 $needed = m3d_setup_needed();
 if (!$needed && (!m3d_is_admin($M3D) || !empty(m3d_settings()['setup_done']))) m3d_redirect(m3d_is_admin($M3D) ? '/admin/' : '/');
 
-m3d_start_session($M3D);
+m3d_start_session();
 $codeFile = M3D_PRIVATE . '/setup-code.txt';
 $error = null;
-$cfg = require M3D_PRIVATE . '/config.php';
-$keys = array_merge($cfg, m3d_patreon_saved());
+$keys = m3d_patreon_saved();
 $real = fn(string $k) => m3d_cfg_real($keys[$k] ?? '');
 $callback = abs_url('/auth/callback.php');
 
@@ -158,7 +157,7 @@ header('Content-Type: text/html; charset=utf-8');
           <label class="field"><span class="lbl">Full Name</span><input class="input" name="legal_name" value="<?= e($legal['name']) ?>" maxlength="120" /></label>
           <label class="field"><span class="lbl">Privacy Email<?= tip('Shown on the privacy page.') ?></span><input class="input" type="email" name="legal_email" value="<?= e($legal['email']) ?>" maxlength="120" /></label>
           <label class="field id-wide"><span class="lbl">Postal Address</span><textarea class="input" name="legal_address" rows="3" maxlength="300"><?= e($legal['address']) ?></textarea></label>
-          <label class="field id-wide"><span class="lbl">Support Email<?= tip('Optional. Shown on the Contacts page for website problems (login, broken links).') ?></span><input class="input" type="email" name="support_email" value="<?= e(m3d_support_email()) ?>" maxlength="120" /></label>
+          <label class="field id-wide"><span class="lbl">Support Email<?= tip('Optional. Shown on the Contacts page for legal matters about the website’s content (copyright, privacy).') ?></span><input class="input" type="email" name="support_email" value="<?= e(m3d_support_email()) ?>" maxlength="120" /></label>
         </div>
         <div class="row-btns"><button class="btn btn-primary">Finish and Open the Admin</button><a class="btn btn-ghost" href="/setup/?skip=1">Skip for Now</a></div>
       </form>

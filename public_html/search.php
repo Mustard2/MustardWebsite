@@ -43,25 +43,17 @@ function search_index(): array
     return $out;
 }
 
-/** Lower case without accents ("Pokémon" → "pokemon"), like fold() in site.js. */
-function search_fold(string $s): string
-{
-    $s = mb_strtolower($s);
-    if (class_exists('Normalizer')) $s = (string) preg_replace('/\p{Mn}+/u', '', (string) Normalizer::normalize($s, Normalizer::FORM_D));
-    return $s;
-}
-
 /** The entries every word of $q is found in, best first: title starting with the search, a title word starting with its first word, another word
  *  starting with it (franchise, type…), the title containing it, the rest. */
 function search_run(array $index, string $q): array
 {
-    $words = array_values(array_filter(preg_split('/\s+/', search_fold(trim($q))) ?: []));
+    $words = array_values(array_filter(preg_split('/\s+/', m3d_fold(trim($q))) ?: []));
     if (!$words) return [];
     $full = implode(' ', $words);
     $hits = [];
     foreach ($index as $i => $en) {
-        $title = search_fold($en['t']);
-        $hay = $title . ' ' . search_fold($en['s'] . ' ' . $en['k'] . ' ' . $en['x']);
+        $title = m3d_fold($en['t']);
+        $hay = $title . ' ' . m3d_fold($en['s'] . ' ' . $en['k'] . ' ' . $en['x']);
         foreach ($words as $w) if (!str_contains($hay, $w)) continue 2;
         $start = '/(^|\W)' . preg_quote($words[0], '/') . '/u';
         $rank = str_starts_with($title, $full) ? 0 : (preg_match($start, $title) ? 1 : (preg_match($start, $hay) ? 2 : (str_contains($title, $words[0]) ? 3 : 4)));

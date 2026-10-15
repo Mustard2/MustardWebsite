@@ -11,8 +11,8 @@ require_once dirname(__DIR__) . '/app/version.php';
 
 const ALLOWED_EXT = ['php', 'js', 'css', 'svg', 'png', 'jpg', 'jpeg', 'webp', 'gif', 'ico', 'txt', 'md', 'json', 'woff2'];
 const MEDIA_EXT = ['webp', 'png', 'jpg', 'jpeg', 'gif', 'glb'];   // glb: 3D previews (app/model3d.php)
-/** Data files restored only with their own tick box: the counters (stats, likes) and the bug reports; every other one is the site's content. */
-const DATA_PARTS = ['stats' => 'counters', 'likes' => 'counters', '.likes-key' => 'counters', 'bugs' => 'bugs'];
+/** Data files restored only with their own tick box: the counters (stats, likes, who saw the welcome page) and the bug reports; every other one is the site's content. */
+const DATA_PARTS = ['stats' => 'counters', 'likes' => 'counters', '.likes-key' => 'counters', 'welcomed' => 'counters', 'bugs' => 'bugs'];
 
 /** A restore that failed after it had written something: what was put back before the failure stays (the "before restore" backup undoes it). */
 class RestorePartial extends RuntimeException {}
@@ -225,15 +225,11 @@ function data_files(): array
     return array_values(array_filter($files, fn($f) => !str_contains(basename($f), '.tmp-')));
 }
 
+/** The files a full backup takes from media/ (MEDIA_EXT): address => file path. */
 function media_files(): array
 {
-    $root = M3D_SITE . '/media';
-    if (!is_dir($root)) return [];
     $out = [];
-    $it = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($root, FilesystemIterator::SKIP_DOTS));
-    foreach ($it as $f) {
-        if ($f->isFile() && in_array(strtolower($f->getExtension()), MEDIA_EXT, true)) $out[] = $f->getPathname();
-    }
+    foreach (media_walk() as $url => $f) if (in_array(strtolower($f->getExtension()), MEDIA_EXT, true)) $out[$url] = $f->getPathname();
     return $out;
 }
 
@@ -256,9 +252,9 @@ function backup_full(string $kind = 'manual', bool $withMedia = false, string $n
     if (is_file($log)) { $zip->addFile($log, 'logs/downloads.csv'); $parts[] = 'log'; }
     $media = 0;
     if ($withMedia) {
-        foreach (media_files() as $f) {
-            $zip->addFile($f, 'media/' . str_replace('\\', '/', substr($f, strlen(M3D_SITE . '/media') + 1)));
-            $zip->setCompressionName('media/' . str_replace('\\', '/', substr($f, strlen(M3D_SITE . '/media') + 1)), ZipArchive::CM_STORE); // already compressed
+        foreach (media_files() as $url => $f) {
+            $zip->addFile($f, ltrim($url, '/'));
+            $zip->setCompressionName(ltrim($url, '/'), ZipArchive::CM_STORE); // already compressed
             $media++;
         }
         $parts[] = 'media';
@@ -281,8 +277,9 @@ function bk_newest_full(): int
     $newest = 0;
     foreach (glob(bk_dir() . '/full-*.zip') ?: [] as $f) {
         $t = (int) filemtime($f);
-        if (str_ends_with($f, '-uploaded.zip')) {
-            $made = preg_match('/^full-(\d{8}-\d{6})-uploaded\.zip$/', basename($f), $m) ? DateTimeImmutable::createFromFormat('!Ymd-His', $m[1], new DateTimeZone('UTC')) : false;
+        // (exact name: a manual backup whose note ends in "uploaded" is a manual one)
+        if (preg_match('/^full-(\d{8}-\d{6})-uploaded\.zip$/', basename($f), $m)) {
+            $made = DateTimeImmutable::createFromFormat('!Ymd-His', $m[1], new DateTimeZone('UTC'));
             $t = $made ? min($t, $made->getTimestamp()) : 0;
         }
         $newest = max($newest, $t);
@@ -434,6 +431,15 @@ function restore_data_version(string $file): string
     if (!preg_match('/^([a-z0-9_-]+?)-\d{8}-\d{6}-[0-9a-f]+\.json$/', $file, $m) || !($path = bk_file($file))) throw new RuntimeException('Backup not found.');
     $data = json_decode((string) file_get_contents($path), true);
     if (!is_array($data)) throw new RuntimeException('This backup file is damaged.');
+    if ($m[1] === 'settings') {
+        // like a full Content restore (restore_full()): the state that isn't content stays as it is now, so an old copy can't post
+        // release dates and Discord announcements again, lose the admins, or undo the bug reports' tags and blocked people
+        $now = m3d_settings(true);
+        foreach (['release', 'owners', 'bugs'] as $k) { if (isset($now[$k])) $data[$k] = $now[$k]; else unset($data[$k]); }
+        if (is_array($now['discord'] ?? null)) {
+            $data['discord'] = array_intersect_key($now['discord'], array_flip(['sent', 'retry', 'last', 'stills_sent', 'stills_queue', 'stills_due', 'stills_tries'])) + (is_array($data['discord'] ?? null) ? $data['discord'] : []);
+        }
+    }
     if (!m3d_write_json($m[1], $data)) throw new RuntimeException(m3d_write_error('data'));
     return $m[1];
 }

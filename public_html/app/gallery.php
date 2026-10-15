@@ -2,7 +2,7 @@
 // Gallery: stills / renders shown on /gallery/, searchable by character.
 // data/gallery.json (Admin → Gallery; missing = empty):
 //   stills: [{id, src, caption, date (Y-m-d), chars: [model slug | free name], visibility, link: {url, access, size}}], in the page's order
-//   (dragged in the admin; `ordered` marks a file saved since: an older one is put in date order, newest first, when read)
+//   (dragged in the admin; `ordered` stays in the file so code from before 2026-10-15, restored from a backup, keeps that order)
 // A still follows the models it shows when they are stricter (m3d_still_view()): a draft model or a password model still
 // locked hides it, a blurred model blurs it (blurred-patrons: clear for paying patrons), like the model's own pictures.
 declare(strict_types=1);
@@ -17,13 +17,6 @@ function m3d_gallery(bool $fresh = false): array
     if ($g !== null && !$fresh) return $g;
     $d = m3d_read_json('gallery') ?? [];
     $stills = array_values(array_filter((array) ($d['stills'] ?? []), fn($s) => is_array($s) && !empty($s['id']) && !empty($s['src'])));
-    // the list's order is the page's order (Admin → Gallery: drag the cards); a file from before that was ordered by date, newest first
-    if (empty($d['ordered'])) {
-        $i = 0;
-        $keyed = array_map(function ($s) use (&$i) { return [$s, $i++]; }, $stills);
-        usort($keyed, fn($a, $b) => strcmp((string) ($b[0]['date'] ?? ''), (string) ($a[0]['date'] ?? '')) ?: $a[1] <=> $b[1]);
-        $stills = array_column($keyed, 0);
-    }
     return $g = ['stills' => $stills];
 }
 
@@ -55,6 +48,12 @@ function m3d_char_slug(string $name): string
 {
     $s = strtolower(trim((string) preg_replace('/[^A-Za-z0-9]+/', '-', iconv('UTF-8', 'ASCII//TRANSLIT//IGNORE', $name) ?: $name), '-'));
     return substr($s, 0, 64) ?: 'c-' . substr(md5(mb_strtolower(trim($name))), 0, 8);
+}
+
+/** A still's name in lists: its caption, else its characters' names, else $none. */
+function m3d_still_name(array $s, string $none = 'Picture'): string
+{
+    return trim((string) ($s['caption'] ?? '')) ?: (implode(', ', array_column(m3d_still_chars($s), 'name')) ?: $none);
 }
 
 /** The characters of a still: [{key, name, franchise, model (array|null)}]; a model slug that no longer exists counts as a name. */
@@ -264,10 +263,11 @@ function still_tile(array $s, ?int $n, bool $eager = false): string
 }
 
 /** The wall: the tiles in a [data-slides] set, the viewer's list made of the clear ones. */
-function still_wall(array $stills, string $extra = ''): string
+function still_wall(array $stills): string
 {
     $slides = [];
     $tiles = '';
+    $extra = '';
     foreach ($stills as $k => $s) {
         $eager = $k < 4;   // the first row: fetched at once, before the rest
         if (($s['view'] ?? 'clear') === 'blur') { $tiles .= still_tile($s, null, $eager); continue; }

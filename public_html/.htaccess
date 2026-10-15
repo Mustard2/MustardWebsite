@@ -28,6 +28,7 @@ RewriteRule ^docs/([a-z0-9-]+)/$ docs.php?slug=$1 [L,QSA]
 RewriteRule ^faq/?$ faq.php [L,QSA]
 RewriteRule ^search/?$ search.php [L,QSA]
 RewriteRule ^whats-new/?$ whats-new.php [L,QSA]
+RewriteRule ^welcome/?$ welcome.php [L,QSA]
 RewriteRule ^bugs/?$ bugs.php [L,QSA]
 RewriteRule ^bugs/report/?$ bugs.php?report=1 [L,QSA]
 RewriteRule ^bugs/([0-9]+)$ /bugs/$1/ [R=301,L]
@@ -44,7 +45,6 @@ RewriteRule ^gallery/?$ gallery.php [L,QSA]
 RewriteRule ^get/still/([a-f0-9]{8})/?$ auth/get-still.php?id=$1 [L,QSA]
 RewriteRule ^get/outfit/([a-z0-9-]+)/([0-9]+)/?$ auth/get.php?type=outfit&model=$1&n=$2 [L,QSA]
 RewriteRule ^get/([a-z0-9-]+)/([0-9]+)/?$ auth/get.php?model=$1&n=$2 [L,QSA]
-RewriteRule ^get/([a-z0-9-]+)/?$ auth/get.php?model=$1 [L,QSA]
 
 # Unknown pages → friendly 404
 ErrorDocument 404 /404.php

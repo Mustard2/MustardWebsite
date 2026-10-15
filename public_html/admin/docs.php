@@ -30,8 +30,7 @@ admin_start('Docs', 'docs');
       </div>
     </div>
 
-    <?php if ($linksDone): ?><p class="notice"><b class="res-ok">✓</b> <?= e($linksDone) ?></p><?php endif ?>
-    <?php if ($linksError): ?><p class="notice"><b class="res-err">Not saved:</b> <?= e($linksError) ?></p><?php endif ?>
+    <?php admin_result($linksDone, $linksError) ?>
     <details class="sec intro-sec" id="docs-links"<?= $linksDone || $linksError ? ' open' : '' ?>>
       <summary><b>Links Under the Page List</b> <span class="muted small">on the docs pages, below the list of pages</span></summary>
       <form method="post" class="intro-form start-col" data-rows-form>

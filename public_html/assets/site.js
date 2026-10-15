@@ -1,7 +1,7 @@
 // Site behaviour. Each part only runs on pages that have the matching elements.
 
 // Search boxes: accents and case are ignored, and every typed word must be found.
-const searchFold = (t) => String(t).normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+const searchFold = (t) => String(t ?? '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
 const searchWords = (q) => searchFold(q).split(/\s+/).filter(Boolean);
 const searchHasAll = (hay, words) => { const h = searchFold(hay); return words.every((w) => h.includes(w)); };
 
@@ -11,16 +11,9 @@ const searchHasAll = (hay, words) => { const h = searchFold(hay); return words.e
   // data-session: the page was made for someone logged in; nobody else has anything to ask the server for
   if (!box || !('session' in box.dataset)) return;
   try {
-    // unique address every time: even a CDN rule that caches everything can't hand out someone else's answer
-    // the page carries it (data-me, account_box()); asked from the server only when it doesn't
-    let s = null;
-    try { s = JSON.parse(box.dataset.me || 'null'); } catch { /* asked below */ }
-    if (!s) {
-      const r = await fetch(`/auth/status.php?t=${Date.now()}`, { credentials: 'same-origin', cache: 'no-store' });
-      if (!r.ok) return;
-      s = await r.json();
-    }
-    if (!s.loggedIn) return;
+    // the page carries the visitor's status (data-me, account_box()): no request needed
+    const s = JSON.parse(box.dataset.me || 'null');
+    if (!s?.loggedIn) return;
     // admin shortcuts first, so nothing below can stop them from appearing
     if (s.admin) document.querySelectorAll('[data-admin-only]').forEach((n) => (n.hidden = false));
     const ret = encodeURIComponent(location.pathname);
@@ -308,7 +301,8 @@ function catalogFilters(o) {
   });
   const order = new Map(o.items.map((c, i) => [c, i]));   // the page's order breaks ties
   const pages = catalogPager(q('[data-pager]'), o.top || o.root, () => apply(true), o.per);
-  const same = (k) => String(sel[k]) === String(defaults[k]);
+  // a row the page keeps hidden (Unlocked, while no limits apply to this visitor) filters nothing: not in the badge or the address
+  const same = (k) => String(sel[k]) === String(defaults[k]) || picks.some((c) => c.dataset.pick === k && c.closest('.chips')?.hidden);
 
   function apply(keepPage = false) {
     if (!keepPage) pages.reset();
@@ -680,16 +674,11 @@ const likedOk = (root) => {
   lbLike?.addEventListener('click', () => { if (lbId) toggleLike(lbId, lbLike); });
   // not logged in (no data-session in the header): nothing to ask, the counts are already in the page
   if (!('session' in (document.querySelector('[data-account]')?.dataset || {}))) me = { liked: new Set(), can: false, reason: 'login' };
-  else if (wall.dataset.glikes) {   // a logged-in visitor's own likes, in the page (the counts are on the tiles)
-    const d = JSON.parse(wall.dataset.glikes);
-    me = { liked: new Set(d.liked || []), can: !!d.can, reason: d.reason, csrf: d.csrf };
+  else {   // a logged-in visitor's own likes, in the page (the counts are on the tiles)
+    const d = JSON.parse(wall.dataset.glikes || '{}');
+    me = { liked: new Set(d.liked || []), can: !!d.can, reason: d.reason || 'login', csrf: d.csrf };
     Object.keys(counts).forEach(paint);
-  } else fetch(`/auth/like.php?kind=stills&all=1&t=${Date.now()}`, { credentials: 'same-origin', cache: 'no-store' })
-    .then((r) => r.json()).then((d) => {
-      me = { liked: new Set(d.liked || []), can: !!d.can, reason: d.reason, csrf: d.csrf };
-      Object.assign(counts, d.counts || {});
-      Object.keys(counts).forEach(paint);
-    }).catch(() => { me = { liked: new Set(), can: false, reason: 'login' }; });
+  }
 
   const root = document.querySelector('[data-gallery]') || wall.parentNode;
   const place = new Map(tiles.map((t, i) => [t, i]));   // the gallery's order (Admin → Gallery), newest on top
@@ -959,8 +948,6 @@ document.addEventListener('click', async (e) => {
   // not logged in (no data-session in the header): nothing to ask, the count is already in the page
   if (!('session' in (document.querySelector('[data-account]')?.dataset || {}))) show({ count: +countEl.textContent || 0, liked: false, can: false, reason: 'login' });
   else if (btn.dataset.likeState) show(JSON.parse(btn.dataset.likeState));   // a logged-in visitor's own state, in the page
-  else fetch(`/auth/like.php?slug=${encodeURIComponent(slug)}&kind=${kind}&t=${Date.now()}`, { credentials: 'same-origin', cache: 'no-store' })
-    .then((r) => r.json()).then(show).catch(() => {});
   btn.addEventListener('click', async () => {
     if (!state) return;
     if (!state.can) {
@@ -1148,7 +1135,6 @@ document.addEventListener('click', (ev) => {
   const list = root.querySelector('[data-hsearch-list]');
   const closeBtn = root.querySelector('[data-hsearch-close]');
   const MAX = 8;
-  const fold = (s) => s.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
   const esc = (s) => s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   let index = null;
   let loading = null;
@@ -1157,7 +1143,7 @@ document.addEventListener('click', (ev) => {
   let failed = false;
   // a list that couldn't be loaded says so (not "Nothing found") and is asked for again at the next opening
   const load = () => loading || (loading = fetch('/search/?index=1').then((r) => { if (!r.ok) throw new Error(r.status); return r.json(); }).then((d) => {
-    index = (Array.isArray(d) ? d : []).map((en, i) => ({ ...en, i, ft: fold(en.t), hay: fold(`${en.t} ${en.s} ${en.k} ${en.x}`) }));
+    index = (Array.isArray(d) ? d : []).map((en, i) => ({ ...en, i, ft: searchFold(en.t), hay: searchFold(`${en.t} ${en.s} ${en.k} ${en.x}`) }));
     failed = false;
     render();
   }).catch(() => { failed = true; loading = null; render(); }));
@@ -1218,7 +1204,7 @@ document.addEventListener('click', (ev) => {
     if (focus) btn.focus();
   };
   function search(q) {
-    const words = fold(q.trim()).split(/\s+/).filter(Boolean);
+    const words = searchWords(q);
     if (!words.length || !index) return [];
     const full = words.join(' ');
     const start = new RegExp(`(^|\\W)${words[0].replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`);
@@ -1277,7 +1263,6 @@ document.addEventListener('click', (ev) => {
 (() => {
   const sels = document.querySelectorAll('select[data-about-picker]');
   if (!sels.length) return;
-  const fold = (t) => t.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
   const mk = (tag, attrs = {}, ...kids) => {
     const n = document.createElement(tag);
     for (const [k, v] of Object.entries(attrs)) if (v !== null && v !== undefined && v !== false) k === 'text' ? (n.textContent = v) : n.setAttribute(k, v === true ? '' : v);
@@ -1296,7 +1281,7 @@ document.addEventListener('click', (ev) => {
       value: o.value, kind: o.value === '' ? 'none' : o.dataset.kind || 'other', name: o.dataset.name || o.textContent, sub: o.dataset.sub || '',
       gen: o.dataset.gen || '', thumb: o.dataset.thumb || '', count: o.dataset.count || '', label: o.textContent,
     }));
-    for (const i of items) i.text = fold([i.name, i.sub, i.gen ? 'gen ' + i.gen : ''].join(' '));
+    for (const i of items) i.text = searchFold([i.name, i.sub, i.gen ? 'gen ' + i.gen : ''].join(' '));
     const byValue = new Map(items.map((i) => [i.value, i]));
     const empty = byValue.get('');
     const pic = (i) => {
@@ -1340,7 +1325,7 @@ document.addEventListener('click', (ev) => {
       if (rs[n]) { q.setAttribute('aria-activedescendant', rs[n].id); rs[n].scrollIntoView({ block: 'nearest' }); } else q.removeAttribute('aria-activedescendant');
     };
     const render = () => {
-      const words = typed ? fold(q.value).split(/\s+/).filter(Boolean) : [];
+      const words = typed ? searchWords(q.value) : [];
       list.replaceChildren();
       let n = 0;
       for (const [g, title] of GROUPS) {
@@ -1458,16 +1443,15 @@ document.addEventListener('click', (ev) => {
   const box = form.querySelector('[data-bug-similar]');
   const out = form.querySelector('[data-bug-similar-list]');
   if (!title || !box) return;
-  const fold = (s) => s.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
   const SKIP = new Set(['the', 'and', 'with', 'when', 'her', 'his', 'not', 'does', 'doesn', 'for', 'from', 'after', 'into', 'are', 'is', 'in', 'on', 'of', 'to', 'a', 'it']);
   let index = null;
   let loading = false;
   const shut = (b) => (b.k === 'fixed' || b.k === 'closed' ? 1 : 0);
   const show = () => {
-    const words = fold(title.value).split(/[^a-z0-9]+/).filter((w) => w.length > 2 && !SKIP.has(w));
+    const words = searchFold(title.value).split(/[^a-z0-9]+/).filter((w) => w.length > 2 && !SKIP.has(w));
     if (!index || !words.length) { box.hidden = true; return; }
     const scored = index.map((b) => {
-      const t = fold(b.t + ' ' + b.a);
+      const t = searchFold(b.t + ' ' + b.a);
       return [words.filter((w) => t.includes(w)).length, b];
     }).filter(([n]) => n >= Math.min(2, words.length))
       // open reports first: Fixed / Closed ones have no Me Too
@@ -1697,6 +1681,28 @@ document.addEventListener('click', (ev) => {
     f.addEventListener('change', sync);
     f.addEventListener('reset', sync);
     f.addEventListener('m3d-sync', sync);
+  });
+})();
+
+// Floating messages after an action (site_flash() in view.php: "Saved.", "Not saved: …"), the same as the admin's (admin.js toastWire()):
+// the ✕ closes one; ok / info ones fade out by themselves (longer texts stay longer; the pointer or the focus on one keeps it), errors stay.
+(() => {
+  const all = document.querySelectorAll('[data-toasts] .toast');
+  if (!all.length) return;
+  const still = matchMedia('(prefers-reduced-motion: reduce)').matches;
+  all.forEach((t) => {
+    const close = () => {
+      if (t.classList.contains('is-out')) return;
+      t.classList.add('is-out');
+      setTimeout(() => t.remove(), still ? 0 : 250);
+    };
+    t.querySelector('.toast-x').addEventListener('click', close);
+    if (t.classList.contains('err')) return;
+    let timer = setTimeout(close, Math.min(10000, 3000 + t.textContent.length * 45)), held = 0;
+    const hold = () => { held++; clearTimeout(timer); };
+    const free = () => { if (--held <= 0) { held = 0; timer = setTimeout(close, 2000); } };
+    t.addEventListener('pointerenter', hold); t.addEventListener('pointerleave', free);
+    t.addEventListener('focusin', hold); t.addEventListener('focusout', free);
   });
 })();
 

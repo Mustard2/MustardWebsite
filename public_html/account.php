@@ -30,12 +30,13 @@ layout_start('My Account', 'Your Patreon membership on ' . site_name() . '.', 'p
         !empty($p['member'])               => [($p['status'] ?? '') === 'former_patron' ? 'Former Patron' : 'Not a Paying Member', 'grey'],
         default                            => ['Not a Member', 'grey'],
     };
-    $date = fn(?string $iso) => $iso && ($d = date_create_immutable($iso)) ? $d->setTimezone(new DateTimeZone('Europe/Berlin'))->format('j F Y') : '—';
-    $day = fn(?int $t) => $t ? (new DateTimeImmutable('@' . $t))->setTimezone(new DateTimeZone('Europe/Berlin'))->format('j M Y') : '—';   // short, for tables
+    $date = fn(?string $iso) => m3d_berlin((string) $iso, 'j F Y') ?: '—';
+    $day = fn(?int $t) => $t ? m3d_berlin($t, 'j M Y') : '—';   // short, for tables
     $cadence = ['1' => 'every month', '12' => 'every year'][(string) ($p['cadence'] ?? '')] ?? (!empty($p['cadence']) ? 'every ' . m3d_plural((int) $p['cadence'], 'month') : '');
 
     // Download button for a model/outfit and the link label used: /get/<item>/<n>/ for the patron link with that label
-    // today (else the first patron link), so a link replaced in the admin gives the new file. null = removed, or a page this
+    // today (else the first patron link), so a link replaced in the admin gives the new file; an item with several links on
+    // gets its page's download box (#download) instead. null = removed, or a page this
     // visitor can't open (draft, password not entered): those keep only their name. Blurred items are shown in full, their
     // picture blurred unless this visitor may see it (card_pic(), like on the page)
     $target = function (string $kind, string $slug, string $label) use ($p, $owner): ?array {
@@ -44,10 +45,12 @@ layout_start('My Account', 'Your Patreon membership on ' . site_name() . '.', 'p
         $links = array_values(array_filter($it['links'] ?? [], fn($l) => !empty($l['url'])));
         $n = null;
         foreach ($links as $i => $l) {
-            if (($l['access'] ?? 'patrons') !== 'patrons') continue;
+            if (($l['access'] ?? 'patrons') !== 'patrons' || !empty($l['off'])) continue;
             $n ??= $i;
             if (trim((string) ($l['label'] ?? '')) === trim($label)) { $n = $i; break; }
         }
+        // several files (download buttons) on the page: the button opens its download box, where each file has its own button
+        $several = count(array_filter($links, fn($l) => empty($l['off']))) > 1;
         $check = m3d_check_requirements($it, $p);
         // a login from before the membership details: unknown, not refused (the download asks to log in again, like auth/get.php)
         // what blocks it: their value ("2 months"), or for the minimum tier what is needed ("needs the €10 tier or higher")
@@ -58,7 +61,7 @@ layout_start('My Account', 'Your Patreon membership on ' . site_name() . '.', 'p
         $dev = $kind === 'models' && m3d_status($it) === 'in-development' ? 'In Development'
             : (m3d_release_phase($it) === 'soon' ? 'Coming ' . m3d_release_day((int) m3d_release($it)['patrons']) : '');
         return ['item' => $it, 'kind' => $kind, 'ok' => !$why, 'why' => $why, 'dev' => $dev,
-                'href' => $n === null || $dev ? null : ($kind === 'outfits' ? '/get/outfit/' : '/get/') . $it['slug'] . '/' . $n . '/'];
+                'href' => $n === null || $dev ? null : ($several ? m3d_item_url($kind, $it['slug']) . '#download' : ($kind === 'outfits' ? '/get/outfit/' : '/get/') . $it['slug'] . '/' . $n . '/')];
     };
     // the name with a small picture (like the admin lists), and under it a Model / accessory-type chip (the person / hanger icons of the
     // unlock counters in the header, site.js) + the version they downloaded last
@@ -107,6 +110,13 @@ layout_start('My Account', 'Your Patreon membership on ' . site_name() . '.', 'p
     unset($c);
     uasort($claimed, fn($a, $b) => ($b['update'] !== null) <=> ($a['update'] !== null));
     $updCount = count(array_filter(array_column($claimed, 'update'), fn($v) => $v !== null));
+    // "Updates Use an Unlock": a newer version needs an unlock again, so with none left it can't be downloaded now
+    if (m3d_dl_settings()['updates']) foreach ($claimed as &$c) {
+        if (!$c['item'] || !$c['ok'] || !$c['href']) continue;
+        $l = m3d_check_limits($p, $c['kind'], (string) $c['slug']);
+        if ($l['update'] && !$l['ok']) { $c['ok'] = false; $c['why'][] = 'no unlocks left'; }
+    }
+    unset($c);
     foreach ($claimed as &$c) $c['avail'] = $c['item'] && $c['ok'] && $c['href'];   // has a Download button
     unset($c);
     $availCount = count(array_filter(array_column($claimed, 'avail')));
@@ -116,7 +126,7 @@ layout_start('My Account', 'Your Patreon membership on ' . site_name() . '.', 'p
     foreach ($limits['rows'] as $row) $mine[(string) ($row['rule']['id'] ?? '')] = $row;
     // without a paid tier nothing downloads anyway: no card (like the "left" boxes and the header counter)
     $allRules = $owner || !empty($p['access']) ? array_values(array_filter(m3d_dl_settings()['rules'], fn($r) => !empty($r['on']) && isset($mine[(string) ($r['id'] ?? '')]))) : [];
-    $when = fn(int $t) => (new DateTimeImmutable('@' . $t))->setTimezone(new DateTimeZone('Europe/Berlin'))->format('D j M, H:i T');
+    $when = fn(int $t) => m3d_berlin($t, 'D j M, H:i T');
     $code = m3d_like_code((string) $p['id']);
     $liked = array_values(array_filter(m3d_models(), fn($m) => m3d_can_view('models', $m) && in_array($code, m3d_likes('models')[$m['slug']] ?? [], true)));
     $likedOutfits = array_values(array_filter(m3d_outfits(), fn($o) => m3d_can_view('outfits', $o) && in_array($code, m3d_likes('outfits')[$o['slug']] ?? [], true)));
@@ -128,6 +138,7 @@ layout_start('My Account', 'Your Patreon membership on ' . site_name() . '.', 'p
         <p class="acc-meta"><span class="badge tone-<?= e($tone) ?>"><?= e($statusLabel) ?></span><span class="muted small">Patreon User ID: <code><?= e($p['id'] ?? '') ?></code></span></p>
       </div>
       <div class="acc-actions">
+        <?php if (m3d_welcome_on() && !empty($p['access'])): ?><a class="btn btn-ghost btn-sm" href="/welcome/">Welcome Page</a><?php endif ?>
         <a class="btn btn-ghost btn-sm" rel="nofollow" href="/auth/login.php?return=%2Faccount%2F" title="Fetch your latest membership data from Patreon">Refresh from Patreon</a>
         <a class="btn btn-ghost btn-sm" href="/auth/logout.php?return=%2F">Log Out</a>
       </div>
@@ -142,7 +153,7 @@ layout_start('My Account', 'Your Patreon membership on ' . site_name() . '.', 'p
       <?php if ($owner || !empty($p['access'])): $dlLeft = m3d_downloads_left($p);   // downloads left now, per kind (null = no rule: unlimited)
         foreach (['models' => 'Model Unlocks Left', 'outfits' => 'Accessory Unlocks Left'] as $k => $lbl): $n = $dlLeft[$k] ?? null; ?>
         <?php $tag = $n === null ? 'div' : 'a';   // with rules the whole box links to (and highlights) the Unlock limits ?>
-        <<?= $tag ?> class="acc-stat<?= $n === null ? '' : ' acc-link' ?>"<?= $n === null ? '' : ' href="#limits"' ?>><span class="muted small"><?= $lbl ?></span><b class="<?= $n === 0 ? 'warn-text' : 'ok-text' ?>"><?= $n === null ? 'Unlimited' : $n ?></b><?php if ($n === 0 && !empty($dlLeft['next'][$k])): ?><span class="muted small">next: <?= e((new DateTimeImmutable('@' . $dlLeft['next'][$k]))->setTimezone(new DateTimeZone('Europe/Berlin'))->format('D j M, H:i T')) ?></span><?php elseif ($n !== null): ?><span class="muted small acc-link-hint">see the limits →</span><?php endif ?></<?= $tag ?>>
+        <<?= $tag ?> class="acc-stat<?= $n === null ? '' : ' acc-link' ?>"<?= $n === null ? '' : ' href="#limits"' ?>><span class="muted small"><?= $lbl ?></span><b class="<?= $n === 0 ? 'warn-text' : 'ok-text' ?>"><?= $n === null ? 'Unlimited' : $n ?></b><?php if ($n === 0 && !empty($dlLeft['next'][$k])): ?><span class="muted small">next: <?= e(m3d_berlin($dlLeft['next'][$k], 'D j M, H:i T')) ?></span><?php elseif ($n !== null): ?><span class="muted small acc-link-hint">see the limits →</span><?php endif ?></<?= $tag ?>>
       <?php endforeach; endif ?>
     </section>
     <?php // a card right under the downloads row: the "left" boxes scroll to it and light it up (site.js) ?>
@@ -206,7 +217,7 @@ layout_start('My Account', 'Your Patreon membership on ' . site_name() . '.', 'p
                     $newer = m3d_newer_versions($c['item'], $c['got'], (int) $c['lastT']); ?>
                     <tr class="upd-row" hidden><td colspan="4">
                       <p class="upd-since"><?= count($newer) === 1 ? 'What’s new' : count($newer) . ' new versions' ?> since <?= $c['got'] !== '' ? e($c['got']) : 'your download' ?></p>
-                      <ol class="log"><?= changelog_items($newer) ?></ol>
+                      <ol class="log"><?= changelog_items($newer, m3d_pics_hidden($c['kind'], $c['item'])) ?></ol>
                     </td></tr>
                   <?php endif ?>
                 <?php endforeach ?>

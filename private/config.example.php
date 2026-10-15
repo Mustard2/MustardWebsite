@@ -5,15 +5,8 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 return [
-    // From https://www.patreon.com/portal/registration/register-clients
-    'client_id'     => 'PASTE_CLIENT_ID',
-    'client_secret' => 'PASTE_CLIENT_SECRET',
-
-    // Must match EXACTLY one of the "Redirect URIs" registered on the Patreon client
-    'redirect_uri'  => 'https://xyz.xy/auth/callback.php',
-
-    // Your Patreon campaign id (numbers only). See README → "Find your campaign id".
-    'campaign_id'   => '0000000',
+    // The Patreon keys (Client ID, Client Secret, Redirect URI, campaign id) are not set here: the first-use setup (/setup/)
+    // asks for them, and Admin → Settings → Patreon changes them (saved in patreon.php, next to this file).
 
     // Your own Patreon user id(s): always allowed to download, even without a tier.
     // Turn on 'debug' below, log in once, and the callback page shows your id.
