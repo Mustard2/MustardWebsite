@@ -347,14 +347,17 @@ h1, h2, h3 { font-family: var(--display); line-height: 1.05; margin: 0; letter-s
 
 .log { list-style: none; margin: 0; padding: 0 0 0 22px; border-left: 2px solid var(--line); display: grid; gap: 22px; }
 .log > li { position: relative; }
-.log > li::before { content: ''; position: absolute; left: -29px; top: 7px; width: 12px; height: 12px; border-radius: 50%; background: var(--bg); border: 2px solid var(--muted); }
+.log > li::before { content: ''; position: absolute; left: -29px; top: 9px; width: 12px; height: 12px; border-radius: 50%; background: var(--bg); border: 2px solid var(--muted); }
 .log > li.latest::before { border-color: var(--mustard); background: var(--mustard); }
-.log-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.log-head { display: flex; align-items: center; gap: 8px 12px; flex-wrap: wrap; min-height: 30px; }   /* its first row is 30 px high, centred on the timeline dot */
+.log-head > .ver, .log-head > time { line-height: 30px; }
 .ver { font-family: var(--display); font-weight: 700; font-size: 19px; }
 time { color: var(--muted); font-size: 14px; }
-.log ul { margin: 8px 0 0; padding: 0; list-style: none; display: grid; gap: 6px; color: #d8d2c6; }
-.log ul li { display: flex; align-items: baseline; gap: 0; }
-.log ul li > .chg:only-child::before { content: '•'; color: var(--muted); margin-right: 10px; }
+.log ul { --lh: 26px; margin: 10px 0 0; padding: 0; list-style: none; display: grid; grid-template-columns: minmax(var(--tagw, auto), auto) minmax(0, 1fr); gap: 6px 10px; color: #d8d2c6; line-height: var(--lh); }
+.log ul li { grid-column: 1 / -1; display: grid; grid-template-columns: minmax(var(--tagw, auto), auto) minmax(0, 1fr); align-items: start; column-gap: 10px; }   /* fallback: a column per line; --tagw (site.js) = the widest tag of the whole changelog, so every version lines up */
+@supports (grid-template-columns: subgrid) { .log ul li { grid-template-columns: subgrid; } }   /* the tags make one column, every text starts at the same place */
+.log ul li > .chg { grid-column: 2; }
+.log ul li.no-tag::before { content: "•"; justify-self: end; padding-right: 4px; color: var(--muted); }   /* a line without a tag: a dot in the tags' column */
 .log-controls { display: flex; gap: 10px; flex-wrap: wrap; margin: 0 0 22px; }
 .log-btn { display: inline-flex; align-items: center; gap: 8px; font: inherit; font-size: 14px; font-weight: 600; cursor: pointer; padding: 8px 14px; border-radius: 999px; border: 1px solid color-mix(in srgb, var(--mustard) 50%, transparent); background: color-mix(in srgb, var(--mustard) 10%, transparent); color: var(--mustard); }
 .log-btn:hover { background: color-mix(in srgb, var(--mustard) 18%, transparent); }
@@ -383,13 +386,24 @@ time { color: var(--muted); font-size: 14px; }
 .log-intro { margin: -6px 0 22px; }
 .tone-sky { color: #7cc4ff; }
 .log-note { margin: 8px 0 0; color: #d8d2c6; font-size: 15px; }
-.tag { flex: none; display: inline-block; font-size: 11px; font-weight: 700; letter-spacing: .03em; text-transform: uppercase; padding: 1px 7px; border-radius: 6px; margin-right: 8px; vertical-align: 1px; background: rgb(255 255 255 / .07); color: var(--muted); }
+.tag { justify-self: end; display: inline-flex; align-items: center; height: 20px; margin-top: calc((var(--lh, 26px) - 20px) / 2); font-size: 11px; font-weight: 700; line-height: 1; letter-spacing: .03em; text-transform: uppercase; padding: 1px 7px 0; border-radius: 6px; white-space: nowrap; background: rgb(255 255 255 / .07); color: var(--muted); }   /* centred on the text's first line */
 .tag-new { background: rgb(111 207 142 / .15); color: var(--green); }
 .tag-fix { background: rgb(249 104 84 / .15); color: #ff8a78; }
 .tag-enh { background: color-mix(in srgb, var(--mustard) 14%, transparent); color: var(--mustard); }
 .tag-opt { background: rgb(120 170 255 / .15); color: #8fb6ff; }
 .tag-rem { background: rgb(141 136 127 / .2); color: var(--grey); }
 .tag-ui  { background: rgb(183 156 255 / .15); color: var(--violet); }
+.bug-ref { position: relative; color: inherit; font-weight: 700; text-decoration: none; }   /* "#6" in a changelog line: the report, its title on hover (bug_ref_link()) */
+.chg .bug-ref { color: var(--mustard); }
+.bug-ref:hover, .bug-ref:focus-visible { text-decoration: underline; text-underline-offset: 2px; }
+.bug-ref-pop { position: absolute; left: -8px; bottom: calc(100% + 8px); z-index: 30; display: flex; align-items: baseline; gap: 6px; width: max-content; max-width: min(340px, calc(100vw - 32px)); padding: 8px 12px; border: 1px solid var(--line); border-radius: 10px; background: #1c1b19; box-shadow: 0 10px 28px rgb(0 0 0 / .5); color: var(--text); font-size: 13px; font-weight: 600; letter-spacing: 0; text-transform: none; white-space: normal; line-height: 1.35; pointer-events: none; opacity: 0; visibility: hidden; transform: translateY(3px); transition: opacity .12s, transform .12s, visibility .12s; }
+.bug-ref-pop .sdot { flex: none; align-self: center; margin: 0; }
+.bug-chip { display: inline-flex; align-items: center; vertical-align: top; height: 20px; margin: calc((var(--lh, 26px) - 20px) / 2) 6px 0 0; gap: 4px; padding: 0 8px 0 6px; border: 1px solid color-mix(in srgb, var(--mustard) 45%, transparent); border-radius: 999px; background: color-mix(in srgb, var(--mustard) 10%, transparent); color: var(--mustard); font-size: 13px; font-weight: 700; line-height: 1; white-space: nowrap; }   /* "Fix #6:": the report at the start of the text */
+.bug-chip .bi { width: 13px; height: 13px; }
+a.bug-chip:hover, a.bug-chip:focus-visible { background: color-mix(in srgb, var(--mustard) 22%, transparent); text-decoration: none; }
+.bug-chip.is-off { border-color: var(--line); background: none; color: var(--muted); }
+.bug-ref:hover .bug-ref-pop, .bug-ref:focus-visible .bug-ref-pop { opacity: 1; visibility: visible; transform: none; }
+@media (hover: none) { .bug-ref-pop { display: none; } }
 .lightbox figure { margin: 0; }
 .lightbox figcaption { color: #ddd; font-size: 14px; text-align: center; margin-top: 8px; }
 .cover-btn { position: relative; display: block; width: 100%; padding: 0; border: 0; background: none; cursor: zoom-in; border-radius: 22px; overflow: hidden; }
@@ -594,7 +608,7 @@ a.ocard:hover { transform: translateY(-3px); border-color: color-mix(in srgb, va
 .md-img figure { margin: 0; }
 .md ol { margin: 0 0 12px; padding-left: 24px; display: grid; gap: 6px; }
 .md ol > li::marker { font-weight: 600; }
-.md li ul { margin: 6px 0 0; }
+.md li ul, .md li ol { margin: 6px 0 0; }
 .md .li-more { display: block; margin-top: 4px; }
 .md h3 { font-size: 18px; margin: 20px 0 8px; color: var(--text); }
 .md-gallery { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; align-items: start; }
@@ -896,6 +910,9 @@ a.ocard:hover { transform: translateY(-3px); border-color: color-mix(in srgb, va
 .preview-bar label > input, .preview-bar .num-field { width: 0; min-width: 100%; }
 .preview-bar input::placeholder { color: var(--muted); }
 .preview-bar .pv-btns { display: flex; gap: 6px; }
+.preview-bar .pv-who { min-width: 130px; }   /* a name or "Name · ID" */
+.preview-bar input.is-miss { border-color: #ff6b5b; }
+.preview-bar .pv-miss { height: 34px; display: flex; align-items: center; color: #ff8f80; white-space: nowrap; }
 .preview-bar .pv-btns .btn { box-sizing: border-box; height: 34px; padding: 0 16px; }
 .preview-bar .pv-btns .btn-ghost { border-color: #4a3f86; }
 @media (max-width: 640px) {
@@ -1254,6 +1271,8 @@ input[type=number]::-webkit-inner-spin-button, input[type=number]::-webkit-outer
 .ev { display: flex; align-items: center; gap: 10px; font-size: 14px; color: var(--muted); margin: 0; padding-left: 18px; }
 .ev::before { content: ''; width: 9px; height: 9px; border-radius: 50%; background: var(--c, var(--muted)); flex: none; box-shadow: 0 0 0 4px var(--bg); }
 .ev > span { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+a.ev-ref { text-decoration: none; }   /* "Fixed in <Tifa Version 2>": the item's changelog */
+a.ev-ref:hover, a.ev-ref:focus-visible { border-color: currentColor; }
 .reply { background: var(--card); border: 1px solid var(--line); border-radius: 16px; padding: 16px 18px; display: grid; gap: 12px; }
 .reply textarea { width: 100%; min-height: 96px; resize: vertical; background: var(--bg-2); }
 .reply-foot { display: flex; justify-content: flex-end; align-items: center; gap: 12px; flex-wrap: wrap; }
@@ -1292,6 +1311,7 @@ a.env-about:hover { border-color: var(--mustard); }
 .rep-box h3 { color: var(--muted); }
 .ct-sec { display: grid; gap: 8px; margin: 0; }
 .ct-lbl { font-size: 12px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); font-weight: 600; }
+.ct-fixin { margin: 0; font-size: 14px; }
 .ctools .input { padding: 9px 11px; font-size: 14px; }
 .ct-chips { display: flex; flex-wrap: wrap; gap: 6px; }
 .ct-chip { position: relative; display: inline-flex; align-items: center; gap: 6px; padding: 6px 11px; border-radius: 999px; border: 1px solid var(--line); font-size: 13px; color: var(--muted); cursor: pointer; }
@@ -1394,10 +1414,14 @@ a.env-about:hover { border-color: var(--mustard); }
 .bug-box h3 .bi { width: 24px; height: 24px; stroke-width: 1.8; color: var(--muted); }
 .bug-box p { margin: 0; }
 .bug-box-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
-.bug-box-list a { display: flex; gap: 8px; align-items: flex-start; font-size: 14px; text-decoration: none; color: #e2ddd2; }
+/* the lines under the title: their icon sits in the bug icon's 24 px column, so the text lines up with "Found a Bug?" */
+.bug-box-list a, .bug-box-more { display: flex; gap: 10px; align-items: flex-start; font-size: 14px; text-decoration: none; }
+.bug-box-list a { color: #e2ddd2; }
 .bug-box-list a:hover { color: var(--text); }
-.bug-box-list .bi { color: var(--mustard); margin-top: 3px; width: 14px; height: 14px; }
-.bug-box-more { font-size: 14px; color: var(--mustard); text-decoration: none; font-weight: 600; }
+.bug-box-list .bi { color: var(--mustard); margin: 3px 5px 0; width: 14px; height: 14px; }
+.bug-box-more { justify-self: start; color: var(--mustard); font-weight: 600; }
+.bug-box-more .bi { margin: 2px 4px 0; }
+.bug-box-more:hover span { text-decoration: underline; }
 
 /* "What is it about?" picker (site.js, select[data-about-picker]): like the folder picker of the admin's Images page */
 .ap { position: relative; }
@@ -1547,13 +1571,6 @@ a.env-about:hover { border-color: var(--mustard); }
 /* the Liked chip of the catalogs (liked_row()) */
 .chip-liked svg { width: 13px; height: 13px; fill: #f0657a; margin-right: 6px; vertical-align: -1px; }
 .chip-liked[aria-pressed="true"] svg { fill: currentColor; }
-/* changelog: the bug reports fixed in a version (m3d_bug_fixes_for()) */
-.log-fixes { margin-top: 12px; }
-.log-fixes-h { display: inline-flex; align-items: center; gap: 6px; color: var(--green); font-weight: 600; font-size: 14px; }
-.log-fixes-h .bi { width: 16px; height: 16px; }
-.log .log-fixes ul { margin-top: 6px; gap: 4px; }
-.log-fixes a { color: var(--text); text-decoration: none; }
-.log-fixes a:hover { text-decoration: underline; }
 
 /* ── Welcome page (/welcome/, welcome.php; app/welcome.php): the tour after a patron's first login ── */
 .welcome { padding-top: 48px; }
@@ -1631,3 +1648,14 @@ a.env-about:hover { border-color: var(--mustard); }
 }
 /* the download box: My account's Download button of an item with several files opens the page at it (#download) */
 .dl-box { scroll-margin-top: 90px; }
+/* "Ignore this update": the ✕ at the end of a card's update tag (site.js), the button under My account's update, greyed ignored rows */
+.card-upd .card-upd-txt { overflow: hidden; text-overflow: ellipsis; }
+.card-upd:has(.upd-x) { padding-right: 4px; }
+.upd-x { flex: none; display: inline-grid; place-items: center; width: 20px; height: 20px; margin-left: 4px; border-radius: 999px; background: rgb(0 0 0 / .22); font-size: 10px; line-height: 1; cursor: pointer; }
+.upd-x:hover, .upd-x:focus-visible { background: rgb(0 0 0 / .42); outline: none; }
+.toast-act { padding: 0; margin-left: 6px; border: 0; background: none; color: var(--mustard); font: inherit; text-decoration: underline; cursor: pointer; }
+.upd-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 16px; }
+.upd-head .upd-since { margin: 0; }
+.is-upd-ignored .upd-tag { color: var(--muted); background: rgb(255 255 255 / .06); }
+.is-upd-ignored button.upd-tag:hover, .is-upd-ignored button.upd-tag[aria-expanded='true'] { background: rgb(255 255 255 / .1); }
+.is-upd-ignored + .upd-row .upd-since { color: var(--muted); }

@@ -78,7 +78,7 @@ $newest = $check['releases'][0] ?? null;
 $installed = $result['to'] ?? M3D_VERSION;
 $ago = max(0, time() - (int) $check['at']);
 $agoText = $ago < 60 ? 'just now' : ($ago < 3600 ? m3d_plural(intdiv($ago, 60), 'minute') . ' ago' : m3d_plural(intdiv($ago, 3600), 'hour') . ' ago');
-$expires = $check['expires'] !== '' && ($t = strtotime($check['expires'])) ? m3d_berlin($t, 'j M Y') : '';
+$expires = $check['expires'] !== '' && ($t = strtotime($check['expires'])) ? m3d_site_time($t, 'j M Y') : '';
 const UPDATE_SHOWN = 10;   // versions listed in "What changed"
 const CHANNEL_ICONS = [
     'stable' => '<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="m9 12 2 2 4-4"/>',                             // shield with a tick
@@ -124,7 +124,7 @@ $keyText = $keyState === 'ok' ? 'Key works' . ($expires !== '' ? ' · expires ' 
         <p class="muted small up-msg"><?= count($newer) === 1 ? 'New Version Available' : count($newer) . ' New Versions Available' ?></p>
         <ul class="up-list">
           <?php foreach (array_slice($newer, 0, UPDATE_SHOWN) as $r): ?>
-            <li><h3><?= e($r['v']) ?> <small>· <?= e(m3d_berlin($r['at'], 'j M, H:i T')) ?></small></h3>
+            <li><h3><?= e($r['v']) ?> <small>· <?= e(m3d_site_time($r['at'], 'j M, H:i T')) ?></small></h3>
               <?= gh_notes_html($r['notes']) ?></li>
           <?php endforeach ?>
         </ul>

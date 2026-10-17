@@ -1,7 +1,7 @@
 <?php
-// Settings, in tabs (?tab=, SETTINGS_TABS in _admin.php): Site (identity, social links, homepage section, notice, legal), Patreon (keys, currency,
+// Settings, in tabs (?tab=, SETTINGS_TABS in _admin.php): Site (identity, social links, homepage section, notice, time zone), Patreon (keys, currency,
 // how long logins last), Features (optional pages and tools), Maintenance (maintenance mode, tools: caches, sessions, log, backups, unused images,
-// temporary files; system info). Every form posts to the page's own address, so a save comes back on the same tab.
+// temporary files; system info), Privacy (legal & contact, one person's data as a file: _privacy.php). Every form posts to the page's own address, so a save comes back on the same tab.
 require __DIR__ . '/_admin.php';
 require_once dirname(__DIR__) . '/app/version.php';
 admin_require($M3D);
@@ -248,6 +248,19 @@ if (admin_form_post()) {
             if (($lg['email'] !== '' && !filter_var($lg['email'], FILTER_VALIDATE_EMAIL)) || ($sup !== '' && !filter_var($sup, FILTER_VALIDATE_EMAIL))) { $error = 'Check the email addresses.'; break; }
             $save(['legal' => $lg, 'support_email' => $sup], 'Legal details and support email saved.');
             break;
+        case 'pd-delete':   // Privacy → Personal Data → Delete All Their Data (the ID typed again to confirm)
+            require_once __DIR__ . '/_privacy.php';
+            $pdId = trim((string) ($_POST['id'] ?? ''));
+            if (!preg_match('/^[\w-]{1,40}$/', $pdId) || trim((string) ($_POST['typed'] ?? '')) !== $pdId) { $error = 'Type the Patreon user ID exactly to confirm: nothing was deleted.'; break; }
+            [$pdDone, $pdFail] = pd_delete($pdId);
+            if ($pdFail) $error = 'Could not delete: ' . implode(', ', $pdFail) . ($pdDone ? '. Deleted: ' . implode(', ', $pdDone) : '') . '.';
+            else $done = $pdDone ? 'Deleted for Patreon ID ' . $pdId . ': ' . implode(', ', $pdDone) . '.' : 'Nothing was stored for Patreon ID ' . $pdId . '.';
+            break;
+        case 'timezone':
+            $tzId = (string) ($_POST['timezone'] ?? '');
+            if (!in_array($tzId, DateTimeZone::listIdentifiers(), true)) { $error = 'Pick a time zone from the list.'; break; }
+            $save(['timezone' => $tzId === SITE_TZ_DEFAULT ? null : $tzId], 'Time zone saved: ' . str_replace('_', ' ', $tzId) . '.');
+            break;
         case 'discord':
         case 'discord-test':
             $dc = m3d_discord();
@@ -284,6 +297,7 @@ if (admin_form_post()) {
                 'minutes' => (int) ($_POST['s4_life'] ?? 0) * (($_POST['s4_unit'] ?? '') === 'hours' ? 60 : 1),
                 'region' => $cur['region'],
                 'bucket' => m3d_s4_bucket_clean((string) ($_POST['s4_bucket'] ?? '')),
+                'domain' => m3d_s4_domain_clean((string) ($_POST['s4_domain'] ?? '')),
                 'test' => trim((string) ($_POST['s4_test'] ?? '')),
             ];
             // the test file: a file name in the bucket ("model.zip"), a short s4: link or a full address
@@ -294,6 +308,8 @@ if (admin_form_post()) {
             if ($s4['minutes'] < S4_MINUTES_MIN || $s4['minutes'] > S4_MINUTES_MAX) { $error = 'Link lifetime: from ' . S4_MINUTES_MIN . ' minutes to ' . intdiv(S4_MINUTES_MAX, 60) . ' hours (7 days).'; break; }
             if (!preg_match('#^[\x21-\x7e]{16,200}$#', $s4['secret'])) { $error = 'The secret key doesn’t look right: copy it again from MEGA (no spaces).'; break; }
             if (trim((string) ($_POST['s4_bucket'] ?? '')) !== '' && $s4['bucket'] === '') { $error = 'The bucket address isn’t an S4 address. It looks like https://s3.g.megas4.com/your-bucket/'; break; }
+            if (trim((string) ($_POST['s4_domain'] ?? '')) !== '' && $s4['domain'] === '') { $error = 'The download domain should be your own address, like files.example.com.'; break; }
+            if ($s4['domain'] !== '' && $s4['bucket'] === '') { $error = 'The download domain needs the Bucket Address: the Worker passes downloads on to its host.'; break; }
             if ($s4['test'] !== '' && !m3d_s4_parse($s4['test'], $s4['bucket'])) {
                 $error = m3d_s4_short($s4['test']) ? 'Fill in the Bucket Address, or write the test file’s full address.' : 'The test file isn’t an S4 file address. It looks like https://s3.g.megas4.com/your-bucket/file.zip'; break;
             }
@@ -325,6 +341,11 @@ if (admin_form_post()) {
                     }
                     return ['ok' => false, 'err' => m3d_s4_error_text('SignatureDoesNotMatch')];
                 });
+                // the same file through the Download Domain (the Cloudflare Worker), when it is served there
+                if ($s4Test['ok'] && ($s4Test['file'] ?? '') !== '' && $s4['domain'] !== '') {
+                    $v = m3d_session_pause(fn() => m3d_s4_probe((string) $s4Test['file'], $s4['region'], $s4, true));
+                    if ($v['err'] !== 'not via domain') $s4Test['via'] = $v;
+                }
             }
             if (!m3d_s4_save($s4)) { $error = 'Could not write ' . basename(M3D_PRIVATE) . '/s4.php. Check that the ' . basename(M3D_PRIVATE) . ' folder is writable.'; $s4Test = null; break; }
             $done = $_POST['do'] === 's4-test' ? null : ($s4['on'] ? 'S4 downloads on: download links to S4 files get a temporary address.' : 'S4 downloads off: S4 is hidden everywhere else and "s4:" links don’t download; the keys and bucket stay saved here.');
@@ -438,6 +459,19 @@ if (isset($_GET['tools'])) {
         m3d_problem('Settings', 'Counting ' . $part . ': ' . $ex->getMessage());
         admin_json(['ok' => false, 'error' => $ex->getMessage()]);
     }
+}
+
+// Privacy → Personal Data: one person's data as a file (a readable page, or JSON). Read only, nothing is logged.
+if (settings_tab() === 'privacy') require_once __DIR__ . '/_privacy.php';
+if (settings_tab() === 'privacy' && ($exportId = m3d_get_text('export')) !== '' && preg_match('/^[\w-]{1,40}$/', $exportId)) {
+    session_write_close();
+    $pd = pd_collect($exportId);
+    $json = m3d_get_text('as') === 'json';
+    header('Content-Type: ' . ($json ? 'application/json' : 'text/html') . '; charset=utf-8');
+    header('Content-Disposition: attachment; filename="patreon-' . $exportId . '-data-' . m3d_today() . ($json ? '.json' : '.html') . '"');
+    header('Cache-Control: no-store');
+    echo $json ? json_encode(pd_json($pd), JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE) : pd_html($pd);
+    exit;
 }
 
 $checks = [
@@ -617,18 +651,22 @@ admin_start('Settings', 'settings');
       </div>
     </details>
 
-    <?php $lg = m3d_legal(); ?>
-    <section style="margin-top:20px" class="sec" id="legal">
-      <h2 class="small-h">Legal &amp; Contact<?= tip('Site operator shown on the privacy page (required in the EU), and the support email shown on the Contacts page. Empty fields use config.php.') ?></h2>
-      <form method="post">
-        <?= form_keys('legal') ?>
-        <div class="id-grid">
-          <label class="field"><span class="lbl">Full Name</span><input class="input" name="legal_name" value="<?= e($lg['name']) ?>" maxlength="120" /></label>
-          <label class="field"><span class="lbl">Privacy Email<?= tip('Shown on the privacy page.') ?></span><input class="input" type="email" name="legal_email" value="<?= e($lg['email']) ?>" maxlength="120" /></label>
-          <label class="field id-wide"><span class="lbl">Postal Address</span><textarea class="input" name="legal_address" rows="3" maxlength="300"><?= e($lg['address']) ?></textarea></label>
-          <label class="field id-wide"><span class="lbl">Support Email<?= tip('Shown on the Contacts page for legal matters about the website’s content.') ?></span><input class="input" type="email" name="support_email" value="<?= e(m3d_support_email()) ?>" maxlength="120" /></label>
-        </div>
-        <div class="form-actions"><a class="btn btn-ghost btn-sm" href="/privacy/" target="_blank">View the Privacy Page ↗</a><button class="btn btn-primary btn-sm">Save</button></div>
+    <section style="margin-top:20px" class="sec" id="timezone">
+      <h2 class="small-h">Time Zone<?= tip('The clock the site counts in: the release dates you type in the editor, when a changelog day starts, “today” on Admin → Home, the download log and the site notice’s last day. Visitors see release dates and unlock times in their own time zone.') ?></h2>
+      <form method="post" class="days-form tz-form">
+        <?= form_keys('timezone') ?>
+        <span class="lbl">Site Time Zone</span>
+        <select class="input" name="timezone" aria-label="Site time zone">
+          <?php $tzNow = m3d_tz_id(); $tzGroup = '';
+          foreach (DateTimeZone::listIdentifiers() as $id):
+              $g = strstr($id, '/', true) ?: 'Other';
+              if ($g !== $tzGroup): ?><?= $tzGroup !== '' ? '</optgroup>' : '' ?><optgroup label="<?= e($g) ?>"><?php $tzGroup = $g; endif;
+              $off = (new DateTimeImmutable('now', new DateTimeZone($id)))->format('P'); ?>
+            <option value="<?= e($id) ?>"<?= $id === $tzNow ? ' selected' : '' ?>><?= e(str_replace('_', ' ', $id)) ?> · UTC<?= e($off === '+00:00' ? '' : preg_replace(['/^([+-])0?(\d+):(\d\d)$/', '/:00$/'], ['$1$2:$3', ''], $off)) ?></option>
+          <?php endforeach ?></optgroup>
+        </select>
+        <span class="muted small tz-now">Now <?= e(m3d_site_time(time(), 'H:i T')) ?></span>
+        <button class="btn btn-primary btn-sm">Save</button>
       </form>
     </section>
 
@@ -777,7 +815,7 @@ admin_start('Settings', 'settings');
           </div>
         </div>
         <div class="form-actions">
-          <?php if ($l = $dc['last']): $at = m3d_berlin((string) ($l['at'] ?? ''), 'j M Y, H:i T'); ?>
+          <?php if ($l = $dc['last']): $at = m3d_site_time((string) ($l['at'] ?? ''), 'j M Y, H:i T'); ?>
             <p class="act-left dc-last small muted">Last post, <?= e($at) ?>: <?= !empty($l['ok']) ? '<b class="res-ok">✓</b> ' . e((string) ($l['what'] ?? '')) : '<b class="res-err">failed</b> (' . e((string) ($l['what'] ?? '')) . '): ' . e((string) ($l['error'] ?? '')) . (empty($l['stills']) ? ' It will be tried again the next time you save it.' : ' Pictures are tried again ' . intdiv(DISCORD_STILLS_DELAY, 60) . ' minutes later, ' . DISCORD_STILLS_TRIES . ' times at most.') ?></p>
           <?php endif ?>
           <button class="btn btn-ghost btn-sm" name="do" value="discord-test">Save and Send a Test Message</button><button class="btn btn-primary btn-sm" name="do" value="discord">Save</button>
@@ -803,6 +841,8 @@ admin_start('Settings', 'settings');
               <select class="input" name="s4_unit" aria-label="Unit"><option value="minutes"<?= $inHours ? '' : ' selected' ?>>Minutes</option><option value="hours"<?= $inHours ? ' selected' : '' ?>>Hours</option></select></div></div>
           <label class="field"><span class="lbl">Bucket Address<?= tip('Your bucket, e.g. https://s3.g.megas4.com/your-bucket/ (MEGA’s Object URL of any file in it works too). Then a download link only needs “s4:” and the file name: s4:model.zip, or s4:folder/file.zip.') ?></span>
             <input class="input" type="url" name="s4_bucket" value="<?= e($s4['bucket']) ?>" maxlength="1000" placeholder="https://s3.g.megas4.com/your-bucket/" spellcheck="false" /></label>
+          <label class="field"><span class="lbl">Download Domain<?= tip('Optional. Your own address for downloads, e.g. files.example.com: a Cloudflare Worker on it passes each temporary address on to the bucket’s host unchanged. Downloads of files in the bucket above then show your address instead of MEGA’s. Empty: downloads go straight to MEGA.') ?></span>
+            <input class="input" name="s4_domain" value="<?= e($s4['domain']) ?>" maxlength="253" placeholder="files.example.com" spellcheck="false" autocomplete="off" /></label>
         </div>
         <?php $s4TestVal = m3d_s4_short($s4['test']) ? ltrim(substr($s4['test'], 3), '/') : $s4['test']; ?>
         <details class="s4-more"<?= $s4TestVal !== '' ? ' open' : '' ?>>
@@ -812,8 +852,12 @@ admin_start('Settings', 'settings');
         </details>
         <div class="form-actions">
           <?php if ($s4Test !== null): ?>
-            <p class="act-left dc-last small"><?php if ($s4Test['ok']): $tf = (string) ($s4Test['file'] ?? ''); $tp = $tf !== '' ? m3d_s4_parse($tf) : null; $try = $tp ? m3d_s4_presign($tf) : null; ?>
+            <p class="act-left dc-last small"><?php if ($s4Test['ok']): $tf = (string) ($s4Test['file'] ?? ''); $tp = $tf !== '' ? m3d_s4_parse($tf) : null; $try = $tp ? m3d_s4_presign($tf) : null; $try = $try !== null ? m3d_s4_domain_url($try) : null; ?>
               <b class="res-ok">✓ Works:</b> <?= isset($s4Test['list']) ? 'bucket ' . e((string) (m3d_s4_parse($s4['bucket'] . 'x')[1] ?? '')) . ', ' . e($s4Test['list']) . ($tp ? ' · ' : '') : '' ?><?= $tp ? e(basename((string) $tp[2])) : '' ?><?= $tp && $s4['bucket'] !== '' && !isset($s4Test['list']) ? ' · in a download link: <code>s4:' . e((string) $tp[2]) . '</code>' : '' ?><?= ($s4Test['size'] ?? 0) > 0 ? ' · ' . e(m3d_size((int) $s4Test['size'])) : '' ?>.
+              <?php if (isset($s4Test['via'])): $via = $s4Test['via']; ?>
+                <?php if ($via['ok']): ?><b class="res-ok">✓ Through <?= e($s4['domain']) ?> too.</b>
+                <?php else: ?><b class="res-err">✗ Not through <?= e($s4['domain']) ?>:</b> <?= e($via['code'] === 0 ? 'no answer (' . $via['err'] . ')' : (!str_starts_with($via['err'], 'HTTP ') ? m3d_s4_error_text($via['err']) : ($via['code'] === 404 ? 'it answered “Not found” (check the bucket name in the Worker’s code)' : 'it answered ' . $via['err']))) ?>. Downloads use this address anyway: fix the Worker, or empty the Download Domain.<?php endif ?>
+              <?php endif ?>
               <?php if ($try): ?><a href="<?= e($try) ?>" target="_blank" rel="noopener noreferrer">Try the Download ↗</a> <span class="muted">(this address stops working in <?= e(m3d_s4_lifetime($s4['minutes'])) ?>)</span><?php endif ?>
             <?php else: ?>
               <b class="res-err">✗ Test failed:</b> <?= e(rtrim((string) $s4Test['err'], '.')) ?>.
@@ -847,7 +891,7 @@ admin_start('Settings', 'settings');
     <?php $maint = m3d_settings()['maintenance'] ?? []; $maintOn = !empty($maint['on']); ?>
     <section class="sec maint-sec<?= $maintOn ? ' is-on' : '' ?>" id="maintenance">
       <h2 class="small-h">Maintenance Mode <span class="badge tone-<?= $maintOn ? 'red' : 'grey' ?>"><?= $maintOn ? 'On' : 'Off' ?></span><?= tip('Visitors see a “Back Soon” page and can’t download. Admins can still log in and use the site.') ?></h2>
-      <?php if ($maintOn && ($since = m3d_berlin((string) ($maint['since'] ?? ''), 'j F Y, H:i T')) !== ''): ?><p class="muted small sec-hint">On since <?= e($since) ?>.</p><?php endif ?>
+      <?php if ($maintOn && ($since = m3d_site_time((string) ($maint['since'] ?? ''), 'j F Y, H:i T')) !== ''): ?><p class="muted small sec-hint">On since <?= e($since) ?>.</p><?php endif ?>
       <form method="post" class="maint-form"<?= $maintOn ? '' : ' onsubmit="return confirm(' . e(json_encode('Turn on maintenance mode? Visitors will see the “Back Soon” page until you turn it off.')) . ')"' ?>>
         <?= form_keys('maintenance') ?>
         <label class="field"><span class="lbl">Visitor Message<?= tip('Optional. Shown on the “Back Soon” page.') ?></span>
@@ -873,7 +917,7 @@ admin_start('Settings', 'settings');
           $probs[$k] = $pr + ['n' => 1];
       }
       $probWeek = count(m3d_problems(time() - 7 * 86400));
-      $probTime = fn(int $t) => m3d_berlin($t, 'D j M, H:i T'); ?>
+      $probTime = fn(int $t) => m3d_site_time($t, 'D j M, H:i T'); ?>
     <section style="margin-top:20px" class="sec" id="problems">
       <h2 class="small-h">Site Problems <span class="badge tone-<?= $probWeek ? 'red' : 'green' ?>"><?= $probWeek ? m3d_plural($probWeek, 'This Week', 'This Week') : 'None This Week' ?></span><?= tip('Errors on the site: failed Discord posts, failed Patreon logins, failed saves, PHP errors. Newest ' . PROBLEMS_KEEP . ' kept. Only the page address is stored, no visitor data.') ?></h2>
       <?php if (!$probs): ?>
@@ -932,6 +976,79 @@ admin_start('Settings', 'settings');
       <dl class="sysinfo">
         <?php foreach ($checks as [$k, $v, $ok, $stat]): ?><dt><?= e($k) ?></dt><dd class="<?= $ok ? '' : 'res-err' ?>"<?= $stat ? ' data-stat="' . e($stat) . '"' : '' ?>><?= $stat ? 'Counting…' : e($v) ?><?= $ok ? '' : ' ⚠' ?></dd><?php endforeach ?>
       </dl>
+    </section>
+    <?php endif ?>
+
+    <?php if ($tab === 'privacy'): ?>
+    <?php $lg = m3d_legal(); ?>
+    <section class="sec" id="legal">
+      <h2 class="small-h">Legal &amp; Contact<?= tip('Site operator shown on the privacy page (required in the EU), and the support email shown on the Contacts page. Empty fields use config.php.') ?></h2>
+      <form method="post">
+        <?= form_keys('legal') ?>
+        <div class="id-grid">
+          <label class="field"><span class="lbl">Full Name</span><input class="input" name="legal_name" value="<?= e($lg['name']) ?>" maxlength="120" /></label>
+          <label class="field"><span class="lbl">Privacy Email<?= tip('Shown on the privacy page.') ?></span><input class="input" type="email" name="legal_email" value="<?= e($lg['email']) ?>" maxlength="120" /></label>
+          <label class="field id-wide"><span class="lbl">Postal Address</span><textarea class="input" name="legal_address" rows="3" maxlength="300"><?= e($lg['address']) ?></textarea></label>
+          <label class="field id-wide"><span class="lbl">Support Email<?= tip('Shown on the Contacts page for legal matters about the website’s content.') ?></span><input class="input" type="email" name="support_email" value="<?= e(m3d_support_email()) ?>" maxlength="120" /></label>
+        </div>
+        <div class="form-actions"><a class="btn btn-ghost btn-sm" href="/privacy/" target="_blank">View the Privacy Page ↗</a><button class="btn btn-primary btn-sm">Save</button></div>
+      </form>
+    </section>
+
+    <?php $pdQ = m3d_get_text('who'); $pdHits = m3d_find_patrons($pdQ);
+    $pdOne = count($pdHits) === 1 ? pd_collect($pdHits[0][0]) : null; ?>
+    <section style="margin-top:20px" class="sec" id="personal-data">
+      <h2 class="small-h">Personal Data<?= tip('Everything the site stores about one Patreon user (downloads, likes, bug reports, special access…), as a file to send them when they ask for their data (GDPR). Names are found among people who downloaded or wrote a bug report; anyone else by their Patreon user ID, shown on their My account page.') ?></h2>
+      <form method="get" action="/admin/settings.php#personal-data" class="pd-find">
+        <input type="hidden" name="tab" value="privacy" />
+        <label class="field"><span class="lbl">Patreon User ID or Name</span><input class="input" name="who" value="<?= e($pdQ) ?>" maxlength="80" required list="pd-known" autocomplete="off" placeholder="e.g. 12345678 or Anna" /></label>
+        <button class="btn btn-primary btn-sm">Find</button>
+        <datalist id="pd-known"><?= m3d_patron_options() ?></datalist>
+      </form>
+      <?php if ($pdQ !== '' && !$pdHits): ?>
+        <p class="muted pd-none">Nobody found with that name. Try their Patreon user ID (on their My account page).</p>
+      <?php elseif (count($pdHits) > 1): ?>
+        <p class="muted small pd-pick-h"><?= count($pdHits) ?> people match:</p>
+        <ul class="pd-pick"><?php foreach ($pdHits as [$hid, $hname]): ?>
+          <li><a href="/admin/settings.php?<?= e(http_build_query(['tab' => 'privacy', 'who' => (string) $hid])) ?>#personal-data"><?= e($hname !== '' ? $hname : (string) $hid) ?></a> <span class="muted small">Patreon ID <?= e((string) $hid) ?></span></li>
+        <?php endforeach ?></ul>
+      <?php elseif ($pdOne): $pdAny = pd_found($pdOne); ?>
+        <div class="pd-card">
+          <p class="pd-who"><b><?= e($pdOne['name'] !== '' ? $pdOne['name'] : 'Patreon User ' . $pdOne['id']) ?></b>
+            <span class="muted small">Patreon ID <?= e($pdOne['id']) ?><?= count($pdOne['names']) > 1 ? ' · also seen as ' . e(implode(', ', array_diff($pdOne['names'], [$pdOne['name']]))) : '' ?></span></p>
+          <?php if (!$pdAny): ?>
+            <p class="muted">The site stores nothing about this Patreon ID.</p>
+          <?php else: ?>
+          <table class="pd-table">
+            <thead><tr><th>What</th><th>Found</th></tr></thead>
+            <tbody><?php foreach (pd_summary($pdOne) as $what => $found): ?>
+              <tr><td><?= e($what) ?></td><td<?= $found === '' ? ' class="muted"' : '' ?>><?= e($found !== '' ? $found : ($what === 'Blocked from Bug Reports' ? 'No' : 'None')) ?></td></tr>
+            <?php endforeach ?></tbody>
+          </table>
+          <?php endif ?>
+          <p class="muted small pd-out">Not in the file: the login session (deleted at log out), the web host’s and Cloudflare’s server logs, and the copies inside backups. The file says so too.</p>
+          <div class="form-actions">
+            <?php if ($pdAny): ?><details class="pd-del act-left">
+              <summary class="btn btn-danger btn-sm">Delete All Their Data…</summary>
+              <form method="post" class="pd-del-box" onsubmit="return confirm(<?= e(json_encode('Delete everything about ' . ($pdOne['name'] !== '' ? $pdOne['name'] . ' (Patreon ID ' . $pdOne['id'] . ')' : 'Patreon ID ' . $pdOne['id']) . '? This cannot be undone.')) ?>)">
+                <?= form_keys('pd-delete') ?><input type="hidden" name="id" value="<?= e($pdOne['id']) ?>" />
+                <p><b>This cannot be undone.</b> Everything in the list above is deleted for good:</p>
+                <ul>
+                  <li>Their downloads leave the log, so their unlocks start from zero: they can unlock again as if new, and you lose the record of what they downloaded.</li>
+                  <li>Their bug reports go with every comment on them, other people’s too; their comments elsewhere, Me Too and follows go as well.</li>
+                  <li>Their likes, ignored updates, welcome page mark and access exception go. The like counts drop.</li>
+                </ul>
+                <p class="muted small">What stays: the all-time download totals (numbers only), a bug-report block (only their ID, so the block keeps working), and the copies inside backups until those backups are deleted. If they log in again, new data starts from zero. Download their data first if you need to send it.</p>
+                <label class="field"><span class="lbl">Type <code><?= e($pdOne['id']) ?></code> to Confirm</span><input class="input" name="typed" required autocomplete="off"<?= ctype_digit($pdOne['id']) ? ' pattern="' . e($pdOne['id']) . '"' : '' ?> /></label>
+                <div class="form-actions"><button class="btn btn-danger btn-sm">Delete All Their Data</button></div>
+              </form>
+            </details><?php endif ?>
+            <?php $pdUrl = fn(string $as) => '/admin/settings.php?' . http_build_query(['tab' => 'privacy', 'export' => $pdOne['id']] + ($as !== '' ? ['as' => $as] : [])); ?>
+            <a class="btn btn-ghost btn-sm" href="<?= e($pdUrl('json')) ?>" title="The same data for another program (data portability)">Download as JSON</a>
+            <a class="btn btn-primary btn-sm" href="<?= e($pdUrl('')) ?>" title="One page that opens in any browser and prints">Download Readable File</a>
+          </div>
+        </div>
+      <?php endif ?>
     </section>
     <?php endif ?>
 

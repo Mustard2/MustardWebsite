@@ -35,7 +35,7 @@ layout_start($gen !== null ? "$title (Gen $gen)" : $title, "{$d['name']} from {$
     <a class="back" href="/#catalog" data-back>← All Models</a>
     <?= visibility_banner('models', $d) ?>
     <?php if ($newest): ?>
-      <p class="newer-note"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19V5m0 0-6 6m6-6 6 6"/></svg><span>A newer version of this model is available: <a href="/models/<?= e($newest['slug']) ?>/"><?= e($newest['name']) ?> v<?= (int) $newest['majorVersion'] ?> →</a></span></p>
+      <p class="newer-note"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19V5m0 0-6 6m6-6 6 6"/></svg><span>A newer version of this model <?= m3d_status($newest) === 'in-development' ? 'is in development' : 'is available' ?>: <a href="/models/<?= e($newest['slug']) ?>/"><?= e($newest['name']) ?> v<?= (int) $newest['majorVersion'] ?> →</a></span></p>
     <?php endif ?>
     <div class="model">
       <?= item_media('models', $d, $d, $coverSrc, $slides, $blur) ?>
@@ -97,7 +97,7 @@ layout_start($gen !== null ? "$title (Gen $gen)" : $title, "{$d['name']} from {$
             </section>
           <?php endif ?>
 
-          <?= changelog_block($log, $d['changelogNote'] ?? null, $blur, m3d_bug_fixes_for('models', $d, $log)) ?>
+          <?= changelog_block($log, $d['changelogNote'] ?? null, $blur) ?>
         </div>
 
         <?php if ($hasAside): ?>

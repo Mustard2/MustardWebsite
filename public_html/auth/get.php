@@ -5,8 +5,8 @@
 // Public links redirect straight away; patron links need a fresh Patreon tier check first, then the item's
 // extra requirements if it has any (minimum tier, months as a patron, total support: m3d_check_requirements).
 // Every download is counted (m3d_count_download: totals only, no personal data).
-// Patron links also respect the download limits (m3d_check_limits). Before any download, a waiting page counts down
-// (Admin → Access → Downloads → wait): it links back here with a signed, time-stamped ?t= that the server checks.
+// Patron links also respect the download limits (m3d_check_limits). Before a patron download, a waiting page counts down
+// (Admin → Access → Download Countdown): it links back here with a signed, time-stamped ?t= that the server checks. Public links start at once.
 // A visitor who hasn't confirmed 18+ gets only the age gate (age_gate_page()), which comes back here.
 require dirname(__DIR__) . '/app/_init.php';
 header('X-Robots-Tag: noindex, nofollow');
@@ -37,18 +37,25 @@ $label = (string) ($link['label'] ?? '');
 if (m3d_download_url((string) $link['url']) === null) dl_unavailable(503, 'This download isn’t ready yet.');
 age_gate_page($here);   // not confirmed 18+ yet (a shared link): the age gate first, then back here
 
+// the same link again within 10 minutes (the Download button pressed after the file already started, Back, a download manager):
+// sent again, but not counted, logged or held against the daily cap a second time (m3d_dl_repeat()); a version out meanwhile is a new download
+$code = m3d_dl_code($kind, $slug, $n) . '@' . m3d_released_label($item);
+$again = m3d_dl_repeat($code);
 $capped = fn() => m3d_redirect('/patreon-required/?reason=cap&return=' . rawurlencode(m3d_item_url($kind, $slug)));   // daily download cap (Admin → Access)
 
 if (m3d_link_access($item, $link) === 'public') {   // public links, and every link past the item's public date
     // a patron link that is public only because the item's public date has passed: still log a patron's download (as "free",
     // never counted in the limits), so their "↑ Update" tag and My Models follow the version they got; logged downloads count in the daily cap
     $p = ($link['access'] ?? 'patrons') === 'patrons' ? m3d_patron($M3D) : null;
-    if ($p && !empty($p['access']) && m3d_dl_capped($p) !== null) $capped();
-    dl_wait_gate($kind, $slug, $n, $item, $label, $here);
+    if ($p && !empty($p['access']) && !$again && m3d_dl_capped($p) !== null) $capped();
+    dl_wait_gate($kind, $slug, $n, $item, $label, $here, free: true);   // free downloads start at once
     if (m3d_preview()) preview_download_page($kind, $item, $label);   // admin previewing as a patron
-    m3d_count_download($kind, $slug, !($p && !empty($p['access'])));   // before the log line, like below
-    if ($p && !empty($p['access'])) {
-        m3d_log_download($M3D, $p, m3d_log_item($kind, $slug), $label, m3d_released_label($item), true);
+    if (!$again) {
+        m3d_count_download($kind, $slug, !($p && !empty($p['access'])));   // before the log line, like below
+        if ($p && !empty($p['access'])) {
+            m3d_log_download($M3D, $p, m3d_log_item($kind, $slug), $label, m3d_released_label($item), true);
+        }
+        m3d_dl_done($code);
     }
     m3d_redirect(m3d_download_url((string) $link['url']));
 }
@@ -69,7 +76,7 @@ if (!$req['ok']) {
     m3d_redirect('/patreon-required/?reason=requirements&type=' . ($kind === 'outfits' ? 'outfit' : 'model') . '&item=' . rawurlencode($slug) . '&return=' . rawurlencode($here));
 }
 
-if (m3d_dl_capped($patron) !== null) $capped();
+if (!$again && m3d_dl_capped($patron) !== null) $capped();
 
 // download limits (Admin → Access): checked before the waiting page and again when it sends the patron back
 $limits = m3d_check_limits($patron, $kind, $slug);
@@ -84,6 +91,9 @@ if (!empty($patron['preview'])) preview_download_page($kind, $item, $label);   /
 
 // the version logged = the newest one out (one dated in the future isn't yet); "free" = not counted in the limits, even if that changes later
 // counted before the log line: with no stats.json yet the counters are first worked out from the log, which would then hold this one too
-m3d_count_download($kind, $slug, false);
-m3d_log_download($M3D, $patron, m3d_log_item($kind, $slug), $label, m3d_released_label($item), !empty($item['noLimits']), $unlocks && $limits['update']);
+if (!$again) {
+    m3d_count_download($kind, $slug, false);
+    m3d_log_download($M3D, $patron, m3d_log_item($kind, $slug), $label, m3d_released_label($item), !empty($item['noLimits']), $unlocks && $limits['update']);
+    m3d_dl_done($code);
+}
 m3d_redirect(m3d_download_url((string) $link['url']));   // an S4 file: a fresh pre-signed address (app/s4.php)

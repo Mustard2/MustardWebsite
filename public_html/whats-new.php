@@ -1,13 +1,13 @@
 <?php
 // /whats-new/  (rewritten here by .htaccess): every version of every listed model and accessory, newest first, grouped by
-// month (German time, CET/CEST); linked from the homepage's "Recently Updated" title. One entry per dated changelog version (not
+// month (site time); linked from the homepage's "Recently Updated" title. One entry per dated changelog version (not
 // future dates) of the items the catalogs list (m3d_listed_items(): no drafts, no unlisted password items). Pictures through
 // card_pic() (blurred copies for hidden ones); a password item still locked for this visitor shows no changes, like its page.
 // Filters in the address: ?kind=models|outfits, ?mine=1 (the items this patron downloaded), ?page=N (PER_PAGE entries).
 require __DIR__ . '/app/_init.php';
 
 const WN_PER_PAGE = 30;
-$tz = new DateTimeZone('Europe/Berlin');
+$tz = m3d_tz();
 $at = fn(int $t, string $f) => (new DateTimeImmutable('@' . $t))->setTimezone($tz)->format($f);
 
 $p = m3d_patron($M3D);

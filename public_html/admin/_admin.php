@@ -181,12 +181,12 @@ function clean_requirements(array $in, array &$out): void
 }
 
 /**
- * Release dates (editor → Access → Release dates): typed in Berlin time ("2026-10-20T18:00"), stored as UTC ISO dates
+ * Release dates (editor → Access → Release dates): typed in the site's time zone ("2026-10-20T18:00", m3d_tz()), stored as UTC ISO dates
  * (patronsFrom, publicFrom) + releaseBefore (soon; absent = hidden before the patrons date). Empty = none.
  */
 function clean_release(array $in, array &$out): void
 {
-    $tz = new DateTimeZone('Europe/Berlin');
+    $tz = m3d_tz();
     $read = function (string $key, string $what) use ($in, $tz): ?int {
         $v = trim((string) ($in[$key] ?? ''));
         if ($v === '') return null;
@@ -202,12 +202,12 @@ function clean_release(array $in, array &$out): void
     if ($p !== null && ($in['releaseBefore'] ?? '') === 'soon') $out['releaseBefore'] = 'soon';
 }
 
-/** The release dates as the editor's fields want them: Berlin time "2026-10-20T18:00", '' when not set. */
+/** The release dates as the editor's fields want them: site time "2026-10-20T18:00", '' when not set; tz = the site's time zone. */
 function admin_release_local(array $item): array
 {
     $r = m3d_release($item);
-    $f = fn(?int $t) => $t === null ? '' : m3d_berlin($t, 'Y-m-d\TH:i');
-    return ['patrons' => $f($r['patrons']), 'public' => $f($r['public']), 'before' => $r['before']];
+    $f = fn(?int $t) => $t === null ? '' : m3d_site_time($t, 'Y-m-d\TH:i');
+    return ['patrons' => $f($r['patrons']), 'public' => $f($r['public']), 'before' => $r['before'], 'tz' => m3d_tz_id()];
 }
 
 /** Visibility (public | blurred | password | draft). The password is stored only as a hash; empty = keep the current one. */
@@ -461,7 +461,7 @@ const FORMAT_EXAMPLES = [
     'inline'  => ['Bold, Italic, Code, Links', "**bold**, *italic*, `code` and [a link](/docs/)"],
     'heading' => ['Headings', "## Heading\n\n### Smaller heading"],
     'small-h' => ['Small Heading', "### Small heading"],
-    'list'    => ['Bullet List', "- First item\n- Second item\n  - indented: a sub-item"],
+    'list'    => ['Bullet List', "- First item\n- Second item\n  - indented: a sub-item\n    - indented more: one level deeper"],
     'steps'   => ['Numbered Steps', "1. Open Blender\n2. Press N\n  Two spaces continue the step."],
     'box'     => ['Box', "> [!TIP] Faster posing\n> Use the pose library.\n\n> [!WARNING]\n> Save your file first."],
     'table'   => ['Table', "| Generation | Blender |\n|---|---|\n| 4 | 4.2 or newer |"],
@@ -590,9 +590,9 @@ function discord_preview_html(string $message): string
     $em = discord_sample_embed();
     $color = isset($em['color']) ? sprintf('#%06x', $em['color']) : '#1e1f22';
     $name = site_name();
-    $now = m3d_berlin(time(), 'H:i');
+    $now = m3d_site_time(time(), 'H:i');
     $foot = (string) ($em['footer']['text'] ?? '');
-    if (isset($em['timestamp'])) $foot .= ($foot !== '' ? ' • ' : '') . m3d_berlin((string) $em['timestamp'], 'd/m/Y');
+    if (isset($em['timestamp'])) $foot .= ($foot !== '' ? ' • ' : '') . m3d_site_time((string) $em['timestamp'], 'd/m/Y');
     return '<div class="dc-prev" aria-hidden="true"><div class="dc-msg">'
         . '<span class="dc-ava">' . e(mb_strtoupper(mb_substr($name, 0, 1))) . '</span>'
         . '<div class="dc-body"><div class="dc-head"><b class="dc-name">' . e($name) . '</b><span class="dc-app">APP</span><span class="dc-time">Today at ' . e($now) . '</span></div>'
@@ -740,6 +740,7 @@ function admin_forget_items(string $kind, array $gone, array $vis = []): void
         foreach ($slugs as $s) unset($d[$kind][$s]);
         return [$d, null];
     });
+    foreach ($slugs as $s) m3d_ignored_move($kind, $s, null);
     if (!is_file(m3d_log_file())) return;
     $pre = $kind === 'outfits' ? 'outfit:' : '';
     $date = m3d_today();
@@ -1017,10 +1018,11 @@ function admin_gallery_payload(): array
  * Section ids that aren't on this site yet are harmless: they only send old #addresses to the right tab (admin.js).
  */
 const SETTINGS_TABS = [
-    'site' => ['Site', ['identity', 'social', 'homepage', 'notice', 'legal']],
+    'site' => ['Site', ['identity', 'social', 'homepage', 'notice', 'timezone']],
     'features' => ['Features', ['welcome', 'bugs', 'discord', 's4', 'mustardui', 'smutbase']],
     'patreon' => ['Patreon', ['patreon', 'logins']],
     'maintenance' => ['Maintenance', ['maintenance', 'problems', 'tools', 'system']],
+    'privacy' => ['Privacy', ['legal', 'personal-data']],   // last, after Update: rarely used
 ];
 
 /** The Settings tab asked for in the address (Site when none). */
@@ -1047,16 +1049,17 @@ function assets_menu(string $current): string
     return $h . '<a href="/admin/links.php"' . ($current === 'links' ? ' aria-current="page"' : '') . '>Link Check' . ($dead ? '<span class="lc-tab-dead">' . $dead . ' dead</span>' : '') . '</a></nav>';
 }
 
-/** Tabs at the top of Settings and of the Update page ($current: a tab key, or 'update'). */
+/** Tabs at the top of Settings and of the Update page ($current: a tab key, or 'update'); Update sits before Privacy, the last tab. */
 function settings_menu(string $current = ''): string
 {
     $map = [];
     foreach (SETTINGS_TABS as $k => [, $ids]) foreach ($ids as $id) $map[$id] = $k;
     $h = '<nav class="lib-tabs set-tabs" aria-label="Settings" data-set-tabs="' . e(json_encode($map)) . '">';
     foreach (SETTINGS_TABS as $k => [$label]) {
+        if ($k === 'privacy') $h .= '<a href="/admin/update.php"' . ($current === 'update' ? ' aria-current="page"' : '') . '>Update</a>';
         $h .= '<a href="/admin/settings.php' . ($k === 'site' ? '' : '?tab=' . $k) . '"' . ($current === $k ? ' aria-current="page"' : '') . '>' . $label . '</a>';
     }
-    return $h . '<a href="/admin/update.php"' . ($current === 'update' ? ' aria-current="page"' : '') . '>Update</a></nav>'
+    return $h . '</nav>'
         . '<a class="to-top" href="#main" data-to-top hidden aria-label="Back to the top" title="Back to the top"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" aria-hidden="true"><path d="M12 19V5m0 0-6 6m6-6 6 6" stroke-linecap="round" stroke-linejoin="round"/></svg></a>';
 }
 

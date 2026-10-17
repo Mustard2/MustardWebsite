@@ -37,7 +37,7 @@ if ($reason === 'requirements') {
 
 // Download limit reached (Admin → Access → Download rules)
 $limits = null;
-$when = fn(int $t) => m3d_berlin($t, 'l j F, H:i T');
+$when = fn(int $t) => when_mark($t, 'long');   // in the visitor's own time (when_text() below)
 if ($reason === 'limit') {
     if ($item) {
         $limits = m3d_check_limits(m3d_patron($M3D), $kind, $slug);
@@ -71,7 +71,7 @@ layout_start('Patreon Membership Needed', 'Downloads are available to Patreon me
   <section class="wrap gate">
     <p class="eyebrow">Downloads</p>
     <h1><?= e($title) ?></h1>
-    <p class="lead"><?= e($text) ?></p>
+    <p class="lead"><?= when_text($text) ?></p>
     <?php if ($cap): ?>
       <div class="cta">
         <?php if ($cap['until'] === null): ?><a class="btn btn-primary" href="<?= e($return) ?>">Back to the Download</a><?php endif ?>

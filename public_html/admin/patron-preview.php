@@ -16,6 +16,11 @@ if (($_POST['do'] ?? '') === 'stop') {
 $old = $_SESSION['preview'] ?? [];
 $tier = (string) ($_POST['tier'] ?? ($old['tier'] ?? 'ok'));
 $as = trim((string) ($_POST['as'] ?? ($old['as'] ?? '')));
+$asMiss = '';   // a name that finds nobody, or several people: kept in the bar with a note, the preview runs without a real patron
+if ($as !== '' && !preg_match('/^\d{1,20}$/', $as)) {
+    $hits = m3d_find_patrons($as, 2);
+    [$as, $asMiss] = count($hits) === 1 ? [$hits[0][0], ''] : ['', mb_substr($as, 0, 80) . ($hits ? "\x1fmany" : '')];
+}
 $total = str_replace(',', '.', trim((string) ($_POST['total'] ?? '')));
 $price = str_replace(',', '.', trim((string) ($_POST['price'] ?? '')));
 $_SESSION['preview'] = [
@@ -27,7 +32,7 @@ $_SESSION['preview'] = [
     'dl_outfits'  => max(0, min(99, (int) ($_POST['dl_outfits'] ?? ($old['dl_outfits'] ?? 0)))),
     'updates'     => max(0, min(20, (int) ($_POST['updates'] ?? ($old['updates'] ?? 0)))),   // simulated updates (m3d_patron_history)
     'as'          => preg_match('/^\d{1,20}$/', $as) ? $as : '',
-];
+] + ($asMiss !== '' ? ['as_miss' => $asMiss] : []);
 // the real start date of the patron below, kept while the months stay the same (m3d_preview_patron())
 if (!empty($old['since']) && $_SESSION['preview']['as'] === ($old['as'] ?? '') && $_SESSION['preview']['months'] === (int) ($old['months'] ?? -1)) $_SESSION['preview']['since'] = $old['since'];
 // a real Patreon ID (newly typed in the bar, or "Preview as This Patron" on Admin → Downloads, real=1): start from the membership saved

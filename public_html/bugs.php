@@ -230,10 +230,10 @@ if ($n > 0) {
           <?php // the version it was fixed in, from the item's changelog: out already, or dated later ("coming 18 Oct", no button yet)
             $fixLog = $a['item'] ? (array) ($a['item']['changelog'] ?? []) : [];
             $fixIn = m3d_bug_fixed_in($b, $a['item']);
-            $fixAt = $fixIn['label'] !== '' ? m3d_changelog_find($fixLog, $fixIn['label']) : null;
+            $fixAt = $fixIn !== '' ? m3d_changelog_find($fixLog, $fixIn) : null;
             $fixTs = $fixAt !== null ? m3d_changelog_ts((string) (array_values($fixLog)[$fixAt]['date'] ?? '')) : null;
             $fixSoon = $fixTs !== null && $fixTs > time(); ?>
-          <div class="fixed-bar"><?= bug_icon('check') ?><span>Fixed<?= $fixIn['next'] ? ' in the next version of <b>' . e($a['name']) . '</b>' : ($fixIn['label'] !== '' ? ' in <b>' . e($a['name'] . ' ' . $fixIn['label']) . '</b>' : '') ?><?= $fixSoon ? ', coming ' . e(m3d_release_day($fixTs)) : ($fixAt !== null ? ', out now' : '') ?>.</span><?php if ($a['url'] !== '' && $a['item'] && !$fixSoon && !$fixIn['next'] && ($fixIn['label'] === '' || $fixAt !== null)): ?><a class="btn btn-sm btn-ghost" href="<?= e($a['url']) ?>#changelog">Get the Update →</a><?php endif ?></div>
+          <div class="fixed-bar"><?= bug_icon('check') ?><span>Fixed<?= $fixIn !== '' ? ' in <b>' . e($a['name'] . ' ' . bug_version_words($fixIn)) . '</b>' : '' ?><?= $fixSoon ? ', coming ' . e(m3d_release_day($fixTs)) : ($fixAt !== null ? ', out now' : '') ?>.</span><?php if ($a['url'] !== '' && $a['item'] && !$fixSoon && ($fixIn === '' || $fixAt !== null)): ?><a class="btn btn-sm btn-ghost" href="<?= e($a['url']) ?>#changelog">Get the Update →</a><?php endif ?></div>
         <?php elseif ($status === 'closed' && ($b['reason'] ?? '') === 'duplicate' && (int) ($b['dup'] ?? 0) > 0): ?>
           <?php $dupB = m3d_bug((int) $b['dup']); /* a hidden, waiting or deleted report would be a dead link */ ?>
           <?php if ($dupB && m3d_bug_visible($dupB, $p)): ?><div class="fixed-bar is-dup"><span>Same bug as <a href="/bugs/<?= (int) $b['dup'] ?>/"><b>#<?= (int) $b['dup'] ?></b></a>: follow that report instead.</span></div><?php else: ?><div class="fixed-bar is-closed"><?= bug_icon('closed') ?><span>Closed: <b>duplicate</b>.</span></div><?php endif ?>
@@ -286,7 +286,8 @@ if ($n > 0) {
         </article>
 
         <div class="timeline" id="comments">
-          <?php foreach ($log as $i => $x): $t = (string) ($x['t'] ?? ''); $when = bug_ago((int) ($x['at'] ?? 0)); ?>
+          <?php $itemRep = m3d_bug_about_parts((string) ($b['about'] ?? ''))[1] !== '';   // its version comes from the changelog: its "Fixed in" line says it
+          foreach ($log as $i => $x): $t = (string) ($x['t'] ?? ''); $when = bug_ago((int) ($x['at'] ?? 0)); ?>
             <?php if ($i === $newFrom): ?><p class="new-line" id="new">New since your last visit</p><?php endif ?>
             <?php if ($t === 'c'): $cr = !empty($x['admin']); ?>
               <article class="post<?= $cr ? ' by-creator' : '' ?>" id="c<?= (int) $i ?>">
@@ -307,7 +308,9 @@ if ($n > 0) {
                 <?php endif ?>
               </article>
             <?php elseif ($t === 's'): $st = (string) ($x['status'] ?? 'new'); ?>
-              <p class="ev" style="--c:<?= e((BUG_STATUSES[$st] ?? BUG_STATUSES['new'])[2]) ?>"><span>Status set to <?= bug_status_badge($x) ?> · <?= e($when) ?></span></p>
+              <p class="ev" style="--c:<?= e((BUG_STATUSES[$st] ?? BUG_STATUSES['new'])[2]) ?>"><span>Status set to <?= bug_status_badge($itemRep ? array_diff_key($x, ['fixed' => 1]) : $x) ?> · <?= e($when) ?></span></p>
+            <?php elseif ($t === 'ref' && ($ref = bug_ref_event($b, $x)) !== ''): ?>
+              <p class="ev" style="--c:<?= e(BUG_STATUSES['fixed'][2]) ?>"><span><?= $ref ?> · <?= e($when) ?></span></p>
             <?php elseif ($t === 'tag' && ($pills = implode(' ', array_filter(array_map(fn($id) => bug_tag_html((string) $id, $tags), (array) ($x['add'] ?? []))))) !== ''): ?>
               <p class="ev" style="--c:var(--muted)"><span>Tagged <?= $pills ?> · <?= e($when) ?></span></p>
             <?php endif ?>
@@ -332,27 +335,21 @@ if ($n > 0) {
       </div>
 
       <aside class="bside">
-        <?php if ($creator): $vAll ??= $a['item'] ? array_values(array_unique(array_map('m3d_version_label', m3d_versions($a['item'])))) : []; /* every version, also one dated later */ ?>
+        <?php if ($creator): ?>
           <form class="ctools" id="tools" method="post" action="<?= e($act) ?>" data-dirty><?= $keys ?><input type="hidden" name="do" value="state" /><input type="hidden" name="lock_set" value="" />
             <h3>Creator Tools</h3>
             <div class="ct-sec"><span class="ct-lbl">Status</span>
               <div class="ct-chips">
                 <?php foreach (BUG_STATUSES as $k => [$l, , $c]): ?><label class="ct-chip"><input type="radio" name="status" value="<?= e($k) ?>" <?= $k === $status ? 'checked' : '' ?> /><i class="sdot" style="--c:<?= e($c) ?>"></i><?= e($l) ?></label><?php endforeach ?>
               </div></div>
-            <label class="ct-sec st-fixed"><span class="ct-lbl">Fixed In</span>
-              <?php if ($vAll): /* a menu of the item's versions, newest first, so the changelog finds it; an older typed value that matches none stays as its own choice */
-                $fixIn = m3d_bug_fixed_in($b, $a['item']); $fixNow = $fixIn['label'];
-                $fixVers = is_array($a['item']['changelog'] ?? null) ? array_values(array_filter($a['item']['changelog'], 'is_array')) : [];
-                $fixPick = $fixNow !== '' && ($fi = m3d_changelog_find($fixVers, $fixNow)) !== null ? m3d_version_label($fixVers[$fi]) : $fixNow;
-                // Next Version = whatever is added above today's top version; a choice still waiting keeps the version it was picked after
-                $fixNext = $fixIn['next'] ? (string) $b['fixed'] : BUG_NEXT . ($fixVers ? m3d_version_label($fixVers[0]) : ''); ?>
-                <select class="input" name="fixed"><option value="">Not Set</option><option value="<?= e($fixNext) ?>"<?= $fixIn['next'] ? ' selected' : '' ?>>Next Version</option>
-                  <?php if ($fixPick !== '' && !in_array($fixPick, $vAll, true)): ?><option value="<?= e($fixPick) ?>" selected><?= e($fixPick) ?> (not in the changelog)</option><?php endif ?>
-                  <?php foreach ($vAll as $v): ?><option value="<?= e($v) ?>"<?= $v === $fixPick ? ' selected' : '' ?>><?= e($v) ?></option><?php endforeach ?>
-                </select>
-              <?php else: ?>
-                <input class="input" name="fixed" value="<?= e(m3d_bug_fixed_in($b, $a['item'])['label']) ?>" maxlength="<?= BUG_MAX['short'] ?>" placeholder="V2" />
-              <?php endif ?></label>
+            <?php if ($a['item']): /* an item's report: the version comes from its changelog ("Fix #6: …" in a version's changes) */
+              $fixIn = m3d_bug_fixed_in($b, $a['item']); ?>
+              <div class="ct-sec st-fixed"><span class="ct-lbl">Fixed In<?= help_tip('Write #' . $n . ' in a version’s changes, in the ' . ($a['kindKey'] === 'outfits' ? 'accessory' : 'model') . '’s changelog: saving it marks this report fixed in that version.') ?></span>
+                <p class="ct-fixin"><?= $fixIn !== '' ? '<b>' . e(bug_version_words($fixIn)) . '</b>' : '<span class="muted">Not in the changelog</span>' ?></p></div>
+            <?php else: ?>
+              <label class="ct-sec st-fixed"><span class="ct-lbl">Fixed In</span>
+                <input class="input" name="fixed" value="<?= e(m3d_bug_fixed_in($b)) ?>" maxlength="<?= BUG_MAX['short'] ?>" placeholder="V2" /></label>
+            <?php endif ?>
             <div class="ct-sec st-closed">
               <label class="ct-sec"><span class="ct-lbl">Why It’s Closed</span>
                 <select class="input" name="reason"><option value="">No Reason</option><?php foreach (BUG_REASONS as $k => $l): ?><option value="<?= e($k) ?>"<?= ($b['reason'] ?? '') === $k ? ' selected' : '' ?>><?= e($l) ?></option><?php endforeach ?></select></label>

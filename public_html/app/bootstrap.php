@@ -46,7 +46,7 @@ function m3d_setup_needed(): bool
     return m3d_owner_ids($GLOBALS['M3D']) === [];
 }
 
-/** Who runs the site, for the privacy page: Admin → Settings → Legal & contact (settings.json → legal), else config.php → legal. */
+/** Who runs the site, for the privacy page: Admin → Settings → Privacy → Legal & Contact (settings.json → legal), else config.php → legal. */
 function m3d_legal(): array
 {
     $saved = (array) (m3d_settings()['legal'] ?? []);
@@ -59,7 +59,7 @@ function m3d_legal(): array
     return $out;
 }
 
-/** The website support address (Contacts): Admin → Settings → Legal & contact, else config.php → support_email. */
+/** The website support address (Contacts): Admin → Settings → Privacy → Legal & Contact, else config.php → support_email. */
 function m3d_support_email(): string
 {
     $v = trim((string) (m3d_settings()['support_email'] ?? ''));
@@ -539,6 +539,26 @@ function m3d_patron_tier(?array $p): ?array
     return $best;
 }
 
+/**
+ * The membership the download checks use (requirements, unlock rules, the download box): Patreon's, raised by a "Custom" exception
+ * (Admin → Access): ['months' => ?int, 'total' => int (cents), 'tier' => ?[title, cents]]. The exception sets a floor ("at least"):
+ * Patreon's own value counts when it is higher. The download log keeps Patreon's real values (m3d_log_download()).
+ */
+function m3d_patron_counts(?array $p): array
+{
+    $months = m3d_months_since($p['since'] ?? null);
+    $total = (int) ($p['total_cents'] ?? 0);
+    $tier = m3d_patron_tier($p);
+    $x = (array) ($p['exception'] ?? []);
+    if (($x['extra'] ?? '') === 'custom') {
+        if (($x['months'] ?? null) !== null) $months = max($months ?? 0, (int) $x['months']);
+        if (($x['total_cents'] ?? null) !== null) $total = max($total, (int) $x['total_cents']);
+    }
+    $tc = (int) ($x['tier_cents'] ?? 0);
+    if (($x['tier'] ?? '') === 'custom' && $tc > 0 && (!$tier || $tier[1] < $tc)) $tier = [m3d_known_tiers()[$tc] ?? '', $tc];
+    return ['months' => $months, 'total' => $total, 'tier' => $tier];
+}
+
 /** Tiers seen at patron logins (settings.json → tiers: {cents: title}), cheapest first: the editor offers them for the minimum tier. */
 function m3d_known_tiers(): array
 {
@@ -578,15 +598,16 @@ function m3d_check_requirements(array $item, ?array $patron): array
     $r = m3d_requirements($item);
     $rows = [];
     if (!$r['months'] && !$r['total_cents'] && !$r['tier_cents']) return ['ok' => true, 'unknown' => false, 'rows' => [], 'mode' => 'and', 'tier_ok' => true, 'mt_ok' => true, 'missing' => []];
-    // owners and people with an "extra requirements" exception pass every row
-    $owner = ($patron['reason'] ?? '') === 'owner' || !empty($patron['exception']['extra']);
+    // owners and people with a "Bypass" requirements exception pass every row; a "Custom" one raises their months / total (m3d_patron_counts())
+    $owner = ($patron['reason'] ?? '') === 'owner' || ($patron['exception']['extra'] ?? '') === 'bypass';
     $known = $patron !== null && array_key_exists('total_cents', $patron) && (!$r['tier_cents'] || array_key_exists('tier_list', $patron));
-    $months = $patron ? m3d_months_since($patron['since'] ?? null) : null;
-    $total = (int) ($patron['total_cents'] ?? 0);
+    $counts = m3d_patron_counts($patron);
+    $months = $patron ? $counts['months'] : null;
+    $total = $counts['total'];
     $cur = $patron['currency'] ?? null;   // amounts are in the campaign currency, as Patreon reports them
     $tierOk = true;
     if ($r['tier_cents']) {
-        $t = m3d_patron_tier($patron);
+        $t = $counts['tier'];
         $tierOk = $owner || ($t && $t[1] >= $r['tier_cents']);
         $rows[] = ['Patreon Tier', m3d_tier_label($r['tier_cents'], $cur) . ' or higher', $t ? ($t[0] !== '' ? $t[0] . ' (' . m3d_money($t[1], $cur) . ')' : m3d_money($t[1], $cur)) : 'none', $tierOk];
     }
@@ -661,23 +682,43 @@ function m3d_link_access(array $item, array $link): string
     return ($link['access'] ?? 'patrons') === 'public' || m3d_release_phase($item) === 'free' ? 'public' : 'patrons';
 }
 
-/** A moment in German time, in the date() format $fmt: $t = a timestamp, or a date text ("2026-10-14T09:00:00Z"; '' or unreadable = ''). */
-function m3d_berlin(int|string $t, string $fmt): string
+const SITE_TZ_DEFAULT = 'Europe/Berlin';
+
+/** The site's own time zone (Admin → Settings → Site → Time Zone, settings.json → timezone; default Europe/Berlin): release dates typed in
+ *  the editor, changelog days, "today", daily counts, the admin's times. Visitors see moments in their own zone (when_html() in view.php). */
+function m3d_tz(): DateTimeZone
+{
+    static $tz = [];
+    $id = m3d_tz_id();
+    return $tz[$id] ??= new DateTimeZone($id);
+}
+
+/** The site's time zone name ("Europe/Berlin"); a saved name PHP doesn't know falls back to the default. */
+function m3d_tz_id(): string
+{
+    static $known = [];
+    $id = m3d_settings()['timezone'] ?? '';
+    if (!is_string($id) || $id === '') return SITE_TZ_DEFAULT;
+    return ($known[$id] ??= in_array($id, DateTimeZone::listIdentifiers(), true)) ? $id : SITE_TZ_DEFAULT;
+}
+
+/** A moment in the site's time zone, in the date() format $fmt: $t = a timestamp, or a date text ("2026-10-14T09:00:00Z"; '' or unreadable = ''). */
+function m3d_site_time(int|string $t, string $fmt): string
 {
     $d = is_int($t) || ctype_digit($t) ? new DateTimeImmutable('@' . $t) : ($t === '' ? false : date_create_immutable($t));
-    return $d ? $d->setTimezone(new DateTimeZone('Europe/Berlin'))->format($fmt) : '';
+    return $d ? $d->setTimezone(m3d_tz())->format($fmt) : '';
 }
 
-/** Today's date in German time: "2026-10-14". */
+/** Today's date in the site's time zone: "2026-10-14". */
 function m3d_today(): string
 {
-    return m3d_berlin(time(), 'Y-m-d');
+    return m3d_site_time(time(), 'Y-m-d');
 }
 
-/** "Tue 20 Oct, 18:00 CEST" (Berlin time); $time false = "Tue 20 Oct". */
+/** "Tue 20 Oct, 18:00 CEST" (site time: Discord, admin); $time false = "Tue 20 Oct". Pages for visitors use when_html(). */
 function m3d_release_when(int $ts, bool $time = true): string
 {
-    return m3d_berlin($ts, $time ? 'D j M, H:i T' : 'D j M');
+    return m3d_site_time($ts, $time ? 'D j M, H:i T' : 'D j M');
 }
 
 // The Discord posts of the release dates: settings.json → release {done: [event codes], next: timestamp of the earliest one not done}.
@@ -787,10 +828,10 @@ function m3d_release_run(): void
     });
 }
 
-/** "12 Oct" (Berlin time), for the small card pills. */
+/** "12 Oct" (site time). */
 function m3d_release_day(int $ts): string
 {
-    return m3d_berlin($ts, 'j M');
+    return m3d_site_time($ts, 'j M');
 }
 
 /** "in 2 days", "in 5 hours", "in 12 minutes" */
@@ -939,11 +980,16 @@ function m3d_preview_patron(array $real, array $pv): array
     ];
 }
 
-// ── Exceptions (Admin → Access): people with special access, who skip some download rules ──
-// data/exceptions.json: {people: [{id, name, note, tier: bool, extra: bool, limits: bool, added}]}
-//   tier:  downloads (and likes, patron pictures) without a paid tier: free Patreon account, no tier, declined payment
-//   extra: the extra requirements of models/outfits (months as a patron, total support) aren't checked
-//   limits: the download limits (Admin → Access → Download limits) don't apply
+// ── Exceptions (Admin → Access): people with special access, who skip or change some download rules ──
+// data/exceptions.json: {people: [{id, name, note, tier, extra, limits ('bypass' | 'custom' | absent; true = 'bypass', from before
+// "Custom"), tierCents, months, totalCents, rules, added}]}
+//   tier:   bypass = downloads (and likes, patron pictures) without a paid tier: free Patreon account, no tier, declined payment;
+//           custom = the same, and they count as at least the tier of `tierCents` (requirements, tier rules)
+//   extra:  bypass = the extra requirements of models/outfits (minimum tier, months as a patron, total support) aren't checked;
+//           custom = they count as at least `months` months as a patron and `totalCents` of total support (empty = Patreon's own);
+//           the months also pick the unlock rules by months (m3d_patron_counts())
+//   limits: bypass = the unlock limits (Admin → Access → Unlock Limits) don't apply; custom = their own `rules` [{max, what, per}]
+//           replace the general ones (m3d_rules_for())
 // Applied every time the session is read (m3d_patron), so changes count at once, without logging in again.
 function m3d_exceptions(bool $fresh = false): array
 {
@@ -966,13 +1012,36 @@ function m3d_save_exceptions(array $people): bool
     return $ok;
 }
 
-/** Adds the exception (if any) to the patron from the session: 'exception' => [tier, extra, limits]; tier also opens downloads. */
+/** An exception's setting: 'bypass', 'custom' or '' (Normal); true from before "Custom" = 'bypass'. */
+function m3d_ex_mode($v): string
+{
+    return $v === 'custom' ? 'custom' : ($v === true || $v === 'bypass' ? 'bypass' : '');
+}
+
+/** An exception's own unlock rules, in the shape of the general ones (always on, any tier and months; 'own' for the texts). */
+function m3d_ex_rules(array $x): array
+{
+    $out = [];
+    foreach (array_values((array) ($x['rules'] ?? [])) as $i => $r) {
+        if (!is_array($r) || !isset(DL_WHAT[$r['what'] ?? '']) || !isset(DL_PERIODS[$r['per'] ?? ''])) continue;
+        $out[] = ['id' => 'x' . $i, 'on' => true, 'max' => max(1, min(999, (int) ($r['max'] ?? 1))), 'what' => $r['what'], 'per' => $r['per'], 'from' => '', 'to' => '', 'tier' => '', 'own' => true];
+    }
+    return $out;
+}
+
+/**
+ * Adds the exception (if any) to the patron from the session: 'exception' => [tier, extra, limits ('bypass' | 'custom' | ''),
+ * tier_cents, months, total_cents (null = not set), rules]; a tier exception also opens downloads.
+ */
 function m3d_apply_exception(array $p): array
 {
     $x = m3d_exception((string) ($p['id'] ?? ''));
     if (!$x || ($p['reason'] ?? '') === 'owner') return $p;
-    $p['exception'] = ['tier' => !empty($x['tier']), 'extra' => !empty($x['extra']), 'limits' => !empty($x['limits'])];
-    if (!empty($x['tier']) && empty($p['access'])) {
+    $num = fn($v) => is_int($v) || (is_string($v) && ctype_digit($v)) ? (int) $v : null;
+    $p['exception'] = ['tier' => m3d_ex_mode($x['tier'] ?? null), 'extra' => m3d_ex_mode($x['extra'] ?? null), 'limits' => m3d_ex_mode($x['limits'] ?? null),
+                       'tier_cents' => (int) ($x['tierCents'] ?? 0), 'months' => $num($x['months'] ?? null), 'total_cents' => $num($x['totalCents'] ?? null),
+                       'rules' => m3d_ex_rules($x)];
+    if ($p['exception']['tier'] !== '' && empty($p['access'])) {
         $p['access'] = true;
         $p['denied_reason'] = $p['reason'] ?? null;   // what Patreon said (shown on My account)
         $p['reason'] = 'exception';
@@ -1020,7 +1089,7 @@ function m3d_log_download(array $cfg, array $patron, string $model, string $labe
 }
 
 // ── Download wait and limits (Admin → Access → Downloads; settings.json → downloads) ──
-//   wait:  seconds of the "Your download starts in…" page before every download (0 = off). Enforced by the server with a
+//   wait:  seconds of the "Your download starts in…" page before every patron download (0 = off; public links never wait). Enforced by the server with a
 //          signed, time-stamped link (m3d_dl_token): no cookie, no session needed, and the real link is never in the page.
 //   rules: [{id, on, max, what: models|outfits|all, per: day|week|month, from, to, tier}]: at most `max` DIFFERENT items per
 //          rolling period for patrons whose months as a patron are >= from (if set) and < to (if set), and whose tier
@@ -1149,6 +1218,27 @@ function m3d_dl_free(string $code): void
     if (session_status() === PHP_SESSION_ACTIVE && ($_SESSION['dl_busy']['code'] ?? '') === $code) unset($_SESSION['dl_busy']);
 }
 
+// The same link again soon after (the waiting page's Download button pressed after the countdown already started the file, the Back
+// button reopening the waiting page, a download manager asking twice): the file is sent again but not counted or logged a second time,
+// so the counters, the log and the daily cap see one download. Kept in the login (session → dl_done {code: time}), like dl_busy.
+const DL_REPEAT_SECS = 600;
+
+/** This visitor downloaded $code less than DL_REPEAT_SECS ago. */
+function m3d_dl_repeat(string $code): bool
+{
+    $at = (int) ($_SESSION['dl_done'][$code] ?? 0);
+    return $at > time() - DL_REPEAT_SECS;
+}
+
+/** $code was downloaded now (older entries are dropped). */
+function m3d_dl_done(string $code): void
+{
+    if (session_status() !== PHP_SESSION_ACTIVE) return;
+    $done = array_filter(is_array($_SESSION['dl_done'] ?? null) ? $_SESSION['dl_done'] : [], fn($t) => (int) $t > time() - DL_REPEAT_SECS);
+    $done[$code] = time();
+    $_SESSION['dl_done'] = $done;
+}
+
 /**
  * "1 model unlock per 7 days for patrons with less than 3 months" (an unlock = the first download of an item).
  * $short (My account): "1 model / 7 days · under 3 months", "5 unlocks / 30 days · everyone".
@@ -1166,6 +1256,7 @@ function m3d_rule_text(array $r, bool $short = false): string
             $from !== null && $to !== null => "{$from}–" . m3d_plural($to, 'month'),
             $to !== null                   => 'under ' . m3d_plural($to, 'month'),
             $from !== null                 => "$from+ months",
+            !empty($r['own'])              => 'just for you',   // an exception's own rule (m3d_ex_rules())
             default                        => $tier !== '' ? '' : 'everyone',
         };
         $nb = fn(string $t) => str_replace(' ', "\u{a0}", $t);   // "3+ months", "30 days" never split over two lines
@@ -1179,7 +1270,7 @@ function m3d_rule_text(array $r, bool $short = false): string
     if ($from !== null && $to !== null) $text .= " for $who with at least $from and less than " . m3d_plural($to, 'month');
     elseif ($to !== null) $text .= " for $who with less than " . m3d_plural($to, 'month');
     elseif ($from !== null) $text .= " for $who with " . m3d_plural($from, 'month') . ' or more';
-    else $text .= $tier !== '' ? " for every $tier patron" : ' for every patron';
+    else $text .= !empty($r['own']) ? ', set just for you' : ($tier !== '' ? " for every $tier patron" : ' for every patron');
     return $text;
 }
 
@@ -1200,7 +1291,10 @@ function m3d_rule_matches(array $r, int $months, ?int $tierCents): bool
  */
 function m3d_rules_for(?array $patron): array
 {
-    return m3d_rules_pick(m3d_dl_settings()['rules'], (int) (m3d_months_since($patron['since'] ?? null) ?? 0), m3d_patron_tier($patron)[1] ?? null);
+    // a "Custom" limits exception: their own rules instead of all the general ones
+    if (($patron['exception']['limits'] ?? '') === 'custom') return (array) ($patron['exception']['rules'] ?? []);
+    $c = m3d_patron_counts($patron);
+    return m3d_rules_pick(m3d_dl_settings()['rules'], (int) ($c['months'] ?? 0), $c['tier'][1] ?? null);
 }
 
 /** m3d_rules_for() for any months and tier (null = no paid tier known): the welcome page's table asks it for each tier and stretch of months. */
@@ -1233,6 +1327,67 @@ function m3d_patron_log(string $patronId): array
     }
     fclose($fh);
     return $cache[$patronId] = $out;
+}
+
+/**
+ * Patreon users the site has met, for finding one by name in the admin (Preview, Add Exception, Settings → Privacy): [id => name],
+ * the newest name from the download log, else from their bug reports / comments, else the name of their exception (written by the admin).
+ * The site learns a name only from these, so anyone else is found by their Patreon user ID.
+ */
+function m3d_known_patrons(): array
+{
+    static $known = null;
+    if ($known !== null) return $known;
+    $known = [];
+    if ($fh = @fopen(m3d_log_file(), 'rb')) {
+        while (($line = fgets($fh)) !== false) {
+            $r = m3d_log_cols($line);
+            if (($r[1] ?? '') !== '') $known[(string) $r[1]] = (string) ($r[2] ?? '');
+        }
+        fclose($fh);
+    }
+    if (function_exists('m3d_bugs')) foreach (m3d_bugs() as $b) {
+        if (($b['by'] ?? '') !== '') $known[(string) $b['by']] ??= (string) ($b['name'] ?? '');
+        foreach ((array) ($b['log'] ?? []) as $x) if (($x['t'] ?? '') === 'c' && ($x['by'] ?? '') !== '' && empty($x['admin'])) $known[(string) $x['by']] ??= (string) ($x['name'] ?? '');
+    }
+    foreach (m3d_exceptions() as $x) $known[(string) $x['id']] ??= (string) ($x['name'] ?? '');
+    return $known;
+}
+
+/** What goes in a "Patreon ID or name" field's suggestion list for one person: "Anna · 12345678" (m3d_find_patrons() reads it back). */
+function m3d_patron_pick(string $id, string $name): string
+{
+    return $name !== '' && $name !== $id ? $name . ' · ' . $id : $id;
+}
+
+/**
+ * The people matching what was typed in a "Patreon ID or name" field: [[id, name]…]. A known ID, a picked "Name · ID", or a
+ * number (an ID the site may not know yet) give one; otherwise every known name holding all the words (accents and case ignored).
+ */
+function m3d_find_patrons(string $q, int $max = 30): array
+{
+    $q = trim($q);
+    if ($q === '') return [];
+    $known = m3d_known_patrons();
+    if (preg_match('/·\s*([\w-]{1,40})$/u', $q, $m)) $q = $m[1];
+    if (isset($known[$q])) return [[$q, $known[$q]]];
+    if (preg_match('/^\d{1,20}$/', $q)) return [[$q, '']];
+    $words = array_filter(preg_split('/\s+/', m3d_fold($q)) ?: []);
+    $out = [];
+    foreach ($known as $id => $name) {
+        $n = m3d_fold($name);
+        foreach ($words as $w) if (!str_contains($n, $w)) continue 2;
+        $out[] = [(string) $id, $name];
+    }
+    return array_slice($out, 0, $max);
+}
+
+/** The <option>s of a "Patreon ID or name" field's <datalist>. */
+function m3d_patron_options(): string
+{
+    $h = '';
+    foreach (m3d_known_patrons() as $id => $name) $h .= '<option value="' . e(m3d_patron_pick((string) $id, $name)) . '"></option>';
+    return $h;
 }
 
 /** The membership saved with a patron's newest download that has one (m3d_log_membership()) + 'at' (timestamp of that download), or null. */
@@ -1311,7 +1466,7 @@ function m3d_free_items(): array
  */
 function m3d_check_limits(?array $patron, ?string $kind = null, ?string $slug = null): array
 {
-    $exempt = $patron === null || ($patron['reason'] ?? '') === 'owner' || !empty($patron['exception']['limits']);
+    $exempt = $patron === null || ($patron['reason'] ?? '') === 'owner' || ($patron['exception']['limits'] ?? '') === 'bypass';
     // the rules of this patron's months and tier; those counting $kind (for My account, $kind null, all of them)
     $rules = array_values(array_filter(m3d_rules_for($patron), fn($r) => $kind === null || in_array($kind, m3d_rule_kinds($r), true)));
     if (!$rules) return ['ok' => true, 'exempt' => $exempt, 'free' => false, 'owned' => false, 'update' => false, 'rows' => []];
@@ -1436,7 +1591,7 @@ function m3d_versions(array $item): array
     return array_values(array_filter((array) ($item['changelog'] ?? []), fn($en) => is_array($en) && trim((string) ($en['version'] ?? '')) !== ''));
 }
 
-/** m3d_versions() that are out: a version dated in the future (a later German day, like What's new) isn't, so downloads, the
+/** m3d_versions() that are out: a version dated in the future (a later day in site time, like What's new) isn't, so downloads, the
  *  download log and updates leave it out until its day; undated versions are out. The item's page still lists every version. */
 function m3d_released_versions(array $item): array
 {
@@ -1475,7 +1630,7 @@ function m3d_latest_version(array $item): array
 }
 
 /**
- * A changelog date as a timestamp (start of that day, German time CET/CEST): "16/08/2026" (the editor's format), also "16.08.2026",
+ * A changelog date as a timestamp (start of that day, site time): "16/08/2026" (the editor's format), also "16.08.2026",
  * "2026-08-16" or anything strtotime() reads. null when empty or unreadable.
  */
 function m3d_changelog_ts(string $d): ?int
@@ -1483,7 +1638,7 @@ function m3d_changelog_ts(string $d): ?int
     $d = trim($d);
     if ($d === '') return null;
     if (preg_match('#^(\d{1,2})[/.](\d{1,2})[/.](\d{2})$#', $d, $m)) return m3d_changelog_ts("$m[1]/$m[2]/20$m[3]");   // "13/10/26": 2026, not the year 26
-    $tz = new DateTimeZone('Europe/Berlin');
+    $tz = m3d_tz();
     foreach (['!j/n/Y', '!j.n.Y', '!Y-m-d'] as $f) {
         $x = DateTimeImmutable::createFromFormat($f, $d, $tz);
         $err = DateTimeImmutable::getLastErrors();
@@ -1492,7 +1647,7 @@ function m3d_changelog_ts(string $d): ?int
     if (preg_match('/^(19|20)\d\d$/', $d)) return m3d_changelog_ts("1/1/$d");   // a year alone (strtotime reads "2021" as 20:21 today)
     // anything else needs a 4-digit year: words like "today" or "next week" (or "13 Oct") would move every day
     if (!preg_match('/(?<!\d)\d{4}(?!\d)/', $d)) return null;
-    $t = strtotime($d . ' Europe/Berlin');
+    $t = ($x = date_create_immutable($d, m3d_tz())) ? $x->getTimestamp() : false;
     return $t === false ? null : $t;
 }
 
@@ -1551,6 +1706,72 @@ function m3d_update_codes(array $updates): array
     foreach ($updates as $kind => $list) foreach ($list as $slug => $version) $out[] = "$kind:$slug@$version";
     return $out;
 }
+
+// ── Ignored updates ("Ignore this update", the ✕ on a catalog card's "↑ Update" tag) ──
+// data/ignored.json: {ignored: {patron code (m3d_like_code()): {"kind:slug": version label}}}: no raw ids or names (privacy.php).
+// An entry hides the tag and the account button's dot for that version only: a newer version has another label, so it shows
+// again. Entries no longer matching one of the patron's updates (downloaded since, newer version) go at their next change.
+
+/** The patron's ignored updates: ["kind:slug" => version label]. */
+function m3d_ignored_updates(?array $patron): array
+{
+    if (!$patron || ($patron['id'] ?? '') === '') return [];
+    static $all = null;
+    $all ??= m3d_read_json('ignored')['ignored'] ?? [];
+    $mine = $all[m3d_like_code((string) $patron['id'])] ?? null;
+    return is_array($mine) ? array_filter($mine, 'is_string') : [];
+}
+
+/** m3d_updates_for() without the ones this patron ignored (catalog tags, the account button's dot). */
+function m3d_updates_shown(?array $patron): array
+{
+    $out = m3d_updates_for($patron);
+    if (!($ign = m3d_ignored_updates($patron))) return $out;
+    foreach ($out as $kind => $list) foreach ($list as $slug => $version) if (($ign["$kind:$slug"] ?? null) === $version) unset($out[$kind][$slug]);
+    return $out;
+}
+
+/**
+ * Ignores (or shows again) the current update of one item for a patron. Returns false when that item has no update for them
+ * now, null when it couldn't be saved. Drops their entries that no longer match an update.
+ */
+function m3d_ignore_update(array $patron, string $kind, string $slug, bool $ignore): ?bool
+{
+    $updates = m3d_updates_for($patron);
+    $version = $updates[$kind][$slug] ?? null;
+    if ($version === null) return false;
+    $code = m3d_like_code((string) $patron['id']);
+    return m3d_json_update('ignored', function ($d) use ($updates, $code, $kind, $slug, $version, $ignore) {
+        $d = is_array($d) ? $d : [];
+        $mine = is_array($d['ignored'][$code] ?? null) ? $d['ignored'][$code] : [];
+        $mine = array_filter($mine, function ($v, $key) use ($updates) {
+            [$k, $s] = explode(':', (string) $key, 2) + [1 => ''];
+            return ($updates[$k][$s] ?? null) === $v;
+        }, ARRAY_FILTER_USE_BOTH);
+        if ($ignore) $mine["$kind:$slug"] = $version; else unset($mine["$kind:$slug"]);
+        if ($mine) $d['ignored'][$code] = $mine; else unset($d['ignored'][$code]);
+        $d['ignored'] = (object) ($d['ignored'] ?? []);   // {} in the file, also when empty
+        return [$d, true];
+    });
+}
+
+/** An item got a new address ($new) or was deleted (null): every patron's ignored entry for it moves or goes. */
+function m3d_ignored_move(string $kind, string $old, ?string $new): void
+{
+    if (!is_file(M3D_PRIVATE . '/data/ignored.json')) return;
+    m3d_json_update('ignored', function ($d) use ($kind, $old, $new) {
+        if (!is_array($d) || !is_array($d['ignored'] ?? null)) return [$d, null];
+        foreach ($d['ignored'] as $code => $mine) {
+            if (!is_array($mine) || !isset($mine["$kind:$old"])) continue;
+            if ($new !== null) $mine["$kind:$new"] = $mine["$kind:$old"];
+            unset($mine["$kind:$old"]);
+            if ($mine) $d['ignored'][$code] = $mine; else unset($d['ignored'][$code]);
+        }
+        $d['ignored'] = (object) $d['ignored'];
+        return [$d, null];
+    });
+}
+
 
 /** Release stage of a changelog version: 'alpha' | 'beta' | 'standard' (absent = standard). */
 const M3D_STAGES = ['standard' => 'Standard', 'alpha' => 'Alpha', 'beta' => 'Beta'];
@@ -1650,10 +1871,10 @@ function m3d_set_like(string $slug, string $patronId, bool $like, string $kind =
 
 const LIKES_DAILY_KEEP = 60;   // days of new-like counts kept (Admin → Home shows the last 7)
 
-/** likes.json → daily: {since: first day counted, n: {Y-m-d (German time): new likes that day}}; numbers only, no patron codes. */
+/** likes.json → daily: {since: first day counted, n: {Y-m-d (site time): new likes that day}}; numbers only, no patron codes. */
 function m3d_likes_daily_add(mixed $daily): array
 {
-    $tz = new DateTimeZone('Europe/Berlin');
+    $tz = m3d_tz();
     $today = (new DateTimeImmutable('now', $tz))->format('Y-m-d');
     $daily = is_array($daily) ? $daily : [];
     $n = is_array($daily['n'] ?? null) ? $daily['n'] : [];
@@ -1665,7 +1886,7 @@ function m3d_likes_daily_add(mixed $daily): array
     return ['since' => $since, 'n' => $n];
 }
 
-/** New likes (models, accessories, gallery pictures) from day $from (Y-m-d, German time) on, and the day counting started ('' = never). */
+/** New likes (models, accessories, gallery pictures) from day $from (Y-m-d, site time) on, and the day counting started ('' = never). */
 function m3d_likes_new_since(string $from): array
 {
     $daily = (m3d_read_json('likes') ?? [])['daily'] ?? null;
@@ -1673,6 +1894,35 @@ function m3d_likes_new_since(string $from): array
     $sum = 0;
     foreach ((array) ($daily['n'] ?? []) as $day => $v) if ((string) $day >= $from) $sum += (int) $v;
     return [$sum, is_string($daily['since'] ?? null) ? $daily['since'] : ''];
+}
+
+const LOGINS_KEEP = 60;   // days of login counts kept (Admin → Home shows the last 30)
+
+/** A Patreon login (auth/callback.php; owners aren't counted): data/logins.json → {since: first day counted, n: {Y-m-d (site time):
+ *  [logins that can download, logins refused]}}. Numbers only: no Patreon ids, names or codes. */
+function m3d_login_count(bool $ok): void
+{
+    m3d_json_update('logins', function ($d) use ($ok) {
+        $tz = m3d_tz();
+        $today = (new DateTimeImmutable('now', $tz))->format('Y-m-d');
+        $oldest = (new DateTimeImmutable('today', $tz))->modify('-' . (LOGINS_KEEP - 1) . ' days')->format('Y-m-d');
+        $d = is_array($d) ? $d : [];
+        $n = array_filter(is_array($d['n'] ?? null) ? $d['n'] : [], fn($v, $day) => is_string($day) && $day >= $oldest && is_array($v), ARRAY_FILTER_USE_BOTH);
+        $day = array_map('intval', array_values($n[$today] ?? [0, 0])) + [0, 0];
+        $day[$ok ? 0 : 1]++;
+        $n[$today] = [$day[0], $day[1]];
+        ksort($n);
+        return [['since' => is_string($d['since'] ?? null) ? $d['since'] : $today, 'n' => $n], true];
+    });
+}
+
+/** The logins counted per day: [{Y-m-d: [can download, refused]}, the day counting started ('' = never)]. */
+function m3d_logins_daily(): array
+{
+    $d = m3d_read_json('logins') ?? [];
+    $n = [];
+    foreach ((array) ($d['n'] ?? []) as $day => $v) if (is_array($v)) $n[(string) $day] = [(int) ($v[0] ?? 0), (int) ($v[1] ?? 0)];
+    return [$n, is_string($d['since'] ?? null) ? $d['since'] : ''];
 }
 
 /** A model or outfit got a new address: its download counts and likes move with it. */
@@ -1693,6 +1943,7 @@ function m3d_rename_counts(string $kind, string $old, string $new): void
         unset($d[$kind][$old]);
         return [$d, null];
     });
+    m3d_ignored_move($kind, $old, $new);   // an ignored update stays ignored
     // the log too: what patrons unlocked, their My Models and updates are read from it by the item's address
     m3d_log_rename_items([m3d_log_item($kind, $old) => m3d_log_item($kind, $new)]);
 }
@@ -1990,6 +2241,7 @@ function m3d_save_items(string $kind, array $items): bool
     m3d_items($kind, true);   // later reads in this request see the save
     if ($ok) m3d_discord_after_save($kind, $old, $items);
     if ($ok) m3d_release_after_save($kind, $old, $items);   // release dates: what the first visit after each date posts
+    if ($ok) m3d_bugs_after_save($kind, $old, $items);   // "#6" newly written in a version's changes: that report is fixed in it
     return $ok;
 }
 

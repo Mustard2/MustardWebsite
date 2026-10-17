@@ -12,7 +12,7 @@ require_once dirname(__DIR__) . '/app/version.php';
 const ALLOWED_EXT = ['php', 'js', 'css', 'svg', 'png', 'jpg', 'jpeg', 'webp', 'gif', 'ico', 'txt', 'md', 'json', 'woff2'];
 const MEDIA_EXT = ['webp', 'png', 'jpg', 'jpeg', 'gif', 'glb'];   // glb: 3D previews (app/model3d.php)
 /** Data files restored only with their own tick box: the counters (stats, likes, who saw the welcome page) and the bug reports; every other one is the site's content. */
-const DATA_PARTS = ['stats' => 'counters', 'likes' => 'counters', '.likes-key' => 'counters', 'welcomed' => 'counters', 'bugs' => 'bugs'];
+const DATA_PARTS = ['stats' => 'counters', 'likes' => 'counters', '.likes-key' => 'counters', 'welcomed' => 'counters', 'ignored' => 'counters', 'logins' => 'counters', 'bugs' => 'bugs'];
 
 /** A restore that failed after it had written something: what was put back before the failure stays (the "before restore" backup undoes it). */
 class RestorePartial extends RuntimeException {}

@@ -6,11 +6,11 @@
 require __DIR__ . '/_admin.php';
 
 // ── The table's rows ──
-/** "Today 20:15 CEST", "Yesterday 09:02 CEST", "Mon 5 Oct, 09:02 CEST" (Berlin time), or "Never". */
+/** "Today 20:15 CEST", "Yesterday 09:02 CEST", "Mon 5 Oct, 09:02 CEST" (site time), or "Never". */
 function lc_when(?int $t): string
 {
     if (!$t) return 'Never';
-    $tz = new DateTimeZone('Europe/Berlin');
+    $tz = m3d_tz();
     $d = (new DateTimeImmutable('@' . $t))->setTimezone($tz);
     $today = new DateTimeImmutable('today', $tz);
     if ($d >= $today) return 'Today ' . $d->format('H:i T');

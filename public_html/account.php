@@ -30,8 +30,8 @@ layout_start('My Account', 'Your Patreon membership on ' . site_name() . '.', 'p
         !empty($p['member'])               => [($p['status'] ?? '') === 'former_patron' ? 'Former Patron' : 'Not a Paying Member', 'grey'],
         default                            => ['Not a Member', 'grey'],
     };
-    $date = fn(?string $iso) => m3d_berlin((string) $iso, 'j F Y') ?: '—';
-    $day = fn(?int $t) => $t ? m3d_berlin($t, 'j M Y') : '—';   // short, for tables
+    $date = fn(?string $iso) => m3d_site_time((string) $iso, 'j F Y') ?: '—';
+    $day = fn(?int $t) => $t ? m3d_site_time($t, 'j M Y') : '—';   // short, for tables
     $cadence = ['1' => 'every month', '12' => 'every year'][(string) ($p['cadence'] ?? '')] ?? (!empty($p['cadence']) ? 'every ' . m3d_plural((int) $p['cadence'], 'month') : '');
 
     // Download button for a model/outfit and the link label used: /get/<item>/<n>/ for the patron link with that label
@@ -59,7 +59,7 @@ layout_start('My Account', 'Your Patreon membership on ' . site_name() . '.', 'p
         if (m3d_release_phase($it) === 'free') $why = [];   // past its public date: free for everyone
         // no download while in development or before the patrons date (auth/get.php): a short label instead of the button
         $dev = $kind === 'models' && m3d_status($it) === 'in-development' ? 'In Development'
-            : (m3d_release_phase($it) === 'soon' ? 'Coming ' . m3d_release_day((int) m3d_release($it)['patrons']) : '');
+            : (m3d_release_phase($it) === 'soon' ? 'Coming ' . when_mark((int) m3d_release($it)['patrons'], 'short') : '');
         return ['item' => $it, 'kind' => $kind, 'ok' => !$why, 'why' => $why, 'dev' => $dev,
                 'href' => $n === null || $dev ? null : ($several ? m3d_item_url($kind, $it['slug']) . '#download' : ($kind === 'outfits' ? '/get/outfit/' : '/get/') . $it['slug'] . '/' . $n . '/')];
     };
@@ -82,7 +82,7 @@ layout_start('My Account', 'Your Patreon membership on ' . site_name() . '.', 'p
         return '<div class="acc-item">' . $pic . '<span><a class="acc-n" href="' . $url . '">' . e($kind === 'models' ? m3d_model_name($it) : (string) $it['name']) . '</a>' . $sub . '</span></div>';
     };
     // the Download button, or "✗ Not eligible (2 months)": what the patron has where they fall short
-    $action = fn(array $t) => !$t['item'] ? '' : (!empty($t['dev']) ? '<span class="muted small">' . e($t['dev']) . '</span>' : ($t['ok']
+    $action = fn(array $t) => !$t['item'] ? '' : (!empty($t['dev']) ? '<span class="muted small">' . when_text($t['dev']) . '</span>' : ($t['ok']
         ? ($t['href'] ? '<a class="btn btn-primary btn-sm" href="' . e($t['href']) . '" rel="nofollow">Download</a>' : '')
         : '<span class="warn-text">✗ Not Eligible' . ($t['why'] ? ' (' . e(implode(', ', $t['why'])) . ')' : '') . '</span>'));
     // My Models: every model/outfit this patron has downloaded (once each, last downloaded first), with the link, version
@@ -102,14 +102,18 @@ layout_start('My Account', 'Your Patreon membership on ' . site_name() . '.', 'p
     if (!empty($p['preview_updates'])) foreach ($updates as $kind => $list) foreach ($list as $slug => $v) {
         if (!isset($claimed["$kind:$slug"]) && ($c = $target($kind, $slug, '')) !== null) $claimed["$kind:$slug"] = $c + ['slug' => $slug, 'first' => null, 'lastT' => 0, 'got' => m3d_preview_got($c['item']), 'sim' => true];
     }
+    $ignored = m3d_ignored_updates($p);   // "Ignore This Update": still listed here, greyed, after the others; no catalog tag or dot
     foreach ($claimed as $key => &$c) {
         $c['update'] = $updates[$c['kind']][$c['slug']] ?? null;
+        $c['ign'] = $c['update'] !== null && ($ignored[$c['kind'] . ':' . $c['slug']] ?? null) === $c['update'];
         // the update tag opens the versions released since their download under the row (site.js, [data-upd-toggle])
         $c['updTag'] = $c['update'] === null ? '' : '<button type="button" class="upd-tag" data-upd-toggle aria-expanded="false" title="What\'s new since your download"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19V5M5.5 11.5 12 5l6.5 6.5"/></svg><span class="upd-word">Update · </span>' . e($c['update']) . '<svg class="upd-chev" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></button>';
     }
     unset($c);
-    uasort($claimed, fn($a, $b) => ($b['update'] !== null) <=> ($a['update'] !== null));
+    $rank = fn($c) => $c['update'] === null ? 2 : ($c['ign'] ? 1 : 0);   // updates first, the ignored ones after them
+    uasort($claimed, fn($a, $b) => $rank($a) <=> $rank($b));
     $updCount = count(array_filter(array_column($claimed, 'update'), fn($v) => $v !== null));
+    $newCount = count(array_filter($claimed, fn($c) => $c['update'] !== null && !$c['ign']));   // the summary's count: not the ignored ones
     // "Updates Use an Unlock": a newer version needs an unlock again, so with none left it can't be downloaded now
     if (m3d_dl_settings()['updates']) foreach ($claimed as &$c) {
         if (!$c['item'] || !$c['ok'] || !$c['href']) continue;
@@ -125,8 +129,9 @@ layout_start('My Account', 'Your Patreon membership on ' . site_name() . '.', 'p
     $mine = [];
     foreach ($limits['rows'] as $row) $mine[(string) ($row['rule']['id'] ?? '')] = $row;
     // without a paid tier nothing downloads anyway: no card (like the "left" boxes and the header counter)
-    $allRules = $owner || !empty($p['access']) ? array_values(array_filter(m3d_dl_settings()['rules'], fn($r) => !empty($r['on']) && isset($mine[(string) ($r['id'] ?? '')]))) : [];
-    $when = fn(int $t) => m3d_berlin($t, 'D j M, H:i T');
+    // (a "Custom" limits exception: their own rules, Admin → Access)
+    $allRules = !$owner && empty($p['access']) ? [] : (($p['exception']['limits'] ?? '') === 'custom' ? array_column($limits['rows'], 'rule')
+        : array_values(array_filter(m3d_dl_settings()['rules'], fn($r) => !empty($r['on']) && isset($mine[(string) ($r['id'] ?? '')]))));
     $code = m3d_like_code((string) $p['id']);
     $liked = array_values(array_filter(m3d_models(), fn($m) => m3d_can_view('models', $m) && in_array($code, m3d_likes('models')[$m['slug']] ?? [], true)));
     $likedOutfits = array_values(array_filter(m3d_outfits(), fn($o) => m3d_can_view('outfits', $o) && in_array($code, m3d_likes('outfits')[$o['slug']] ?? [], true)));
@@ -153,7 +158,7 @@ layout_start('My Account', 'Your Patreon membership on ' . site_name() . '.', 'p
       <?php if ($owner || !empty($p['access'])): $dlLeft = m3d_downloads_left($p);   // downloads left now, per kind (null = no rule: unlimited)
         foreach (['models' => 'Model Unlocks Left', 'outfits' => 'Accessory Unlocks Left'] as $k => $lbl): $n = $dlLeft[$k] ?? null; ?>
         <?php $tag = $n === null ? 'div' : 'a';   // with rules the whole box links to (and highlights) the Unlock limits ?>
-        <<?= $tag ?> class="acc-stat<?= $n === null ? '' : ' acc-link' ?>"<?= $n === null ? '' : ' href="#limits"' ?>><span class="muted small"><?= $lbl ?></span><b class="<?= $n === 0 ? 'warn-text' : 'ok-text' ?>"><?= $n === null ? 'Unlimited' : $n ?></b><?php if ($n === 0 && !empty($dlLeft['next'][$k])): ?><span class="muted small">next: <?= e(m3d_berlin($dlLeft['next'][$k], 'D j M, H:i T')) ?></span><?php elseif ($n !== null): ?><span class="muted small acc-link-hint">see the limits →</span><?php endif ?></<?= $tag ?>>
+        <<?= $tag ?> class="acc-stat<?= $n === null ? '' : ' acc-link' ?>"<?= $n === null ? '' : ' href="#limits"' ?>><span class="muted small"><?= $lbl ?></span><b class="<?= $n === 0 ? 'warn-text' : 'ok-text' ?>"><?= $n === null ? 'Unlimited' : $n ?></b><?php if ($n === 0 && !empty($dlLeft['next'][$k])): ?><span class="muted small">next: <?= when_html((int) $dlLeft['next'][$k]) ?></span><?php elseif ($n !== null): ?><span class="muted small acc-link-hint">see the limits →</span><?php endif ?></<?= $tag ?>>
       <?php endforeach; endif ?>
     </section>
     <?php // a card right under the downloads row: the "left" boxes scroll to it and light it up (site.js) ?>
@@ -168,7 +173,7 @@ layout_start('My Account', 'Your Patreon membership on ' . site_name() . '.', 'p
             [$status, $cls] = $limits['exempt'] ? ['No Limit', 'muted'] : [(int) $row['used'] . '/' . (int) $row['max'] . ' used', $row['used'] < $row['max'] ? 'ok-text' : 'warn-text']; ?>
             <li<?= $cls === 'muted' ? ' class="is-off"' : '' ?>>
               <b class="<?= $cls ?>"><?= e($status) ?></b>
-              <span><?= e(m3d_rule_text($r, true)) ?><?php if (!$limits['exempt'] && $row['used'] >= $row['max'] && $row['next']): ?><span class="muted small acc-limit-next">Next: <?= e($when($row['next'])) ?></span><?php endif ?></span>
+              <span><?= e(m3d_rule_text($r, true)) ?><?php if (!$limits['exempt'] && $row['used'] >= $row['max'] && $row['next']): ?><span class="muted small acc-limit-next">Next: <?= when_html((int) $row['next']) ?></span><?php endif ?></span>
             </li>
           <?php endforeach ?>
         </ul>
@@ -182,8 +187,8 @@ layout_start('My Account', 'Your Patreon membership on ' . site_name() . '.', 'p
       <div class="acc-stat"><span class="muted small">Current Pledge</span><b><?= !empty($p['entitled_cents']) ? e(m3d_money((int) $p['entitled_cents'], $cur)) : '—' ?></b><?php if ($cadence): ?><span class="muted small"><?= e($cadence) ?></span><?php endif ?></div>
     </section>
 
-    <details class="acc-sec acc-fold" id="my-models" open data-updates-seen="<?= e(json_encode(m3d_update_codes($updates))) ?>">   <!-- site.js: opening My account marks these updates as seen (the dot goes) -->
-        <summary><h2>My Models</h2><?php if ($updCount): ?><span class="upd-count"><?= $updCount ?> update<?= $updCount === 1 ? '' : 's' ?></span><?php endif ?></summary>
+    <details class="acc-sec acc-fold" id="my-models" open>
+        <summary><h2>My Models</h2><span class="upd-count" data-upd-count<?= $newCount ? '' : ' hidden' ?>><?= $newCount ?> update<?= $newCount === 1 ? '' : 's' ?></span></summary>
         <?php if (!$claimed): ?>
           <p class="muted">Nothing yet: the models and accessories you download appear here.</p>
         <?php else: ?>
@@ -207,7 +212,7 @@ layout_start('My Account', 'Your Patreon membership on ' . site_name() . '.', 'p
               <thead><tr><th>Model / Accessory</th><th class="hide-sm">Unlocked</th><th class="hide-sm"></th><th></th></tr></thead>
               <tbody>
                 <?php foreach ($claimed as $c): ?>
-                  <tr data-<?= $c['kind'] === 'outfits' ? 'accessories' : 'models' ?><?= $c['avail'] ? ' data-avail' : '' ?><?= $c['update'] !== null ? ' data-upd' : '' ?>>
+                  <tr data-<?= $c['kind'] === 'outfits' ? 'accessories' : 'models' ?><?= $c['avail'] ? ' data-avail' : '' ?><?= $c['update'] !== null ? ' data-upd="' . e($c['kind'] . ':' . $c['slug'] . '@' . $c['update']) . '"' : '' ?><?= $c['ign'] ? ' class="is-upd-ignored"' : '' ?>>
                     <td><?= $cell($c) ?></td>
                     <td class="muted nowrap hide-sm"><?= e($day($c['first'])) ?></td>
                     <td class="hide-sm c-upd"><?= $c['updTag'] ?></td>
@@ -216,7 +221,10 @@ layout_start('My Account', 'Your Patreon membership on ' . site_name() . '.', 'p
                   <?php if ($c['update'] !== null):
                     $newer = m3d_newer_versions($c['item'], $c['got'], (int) $c['lastT']); ?>
                     <tr class="upd-row" hidden><td colspan="4">
-                      <p class="upd-since"><?= count($newer) === 1 ? 'What’s new' : count($newer) . ' new versions' ?> since <?= $c['got'] !== '' ? e($c['got']) : 'your download' ?></p>
+                      <div class="upd-head">
+                        <p class="upd-since"><?= count($newer) === 1 ? 'What’s new' : count($newer) . ' new versions' ?> since <?= $c['got'] !== '' ? e($c['got']) : 'your download' ?></p>
+                        <?php if (empty($p['preview'])): ?><button type="button" class="btn btn-ghost btn-sm" data-upd-ignore title="<?= $c['ign'] ? 'Show the update tag and the dot again' : 'No update tag on its card and no dot on your account button until the next version' ?>"><?= $c['ign'] ? 'Stop Ignoring' : 'Ignore This Update' ?></button><?php endif ?>
+                      </div>
                       <ol class="log"><?= changelog_items($newer, m3d_pics_hidden($c['kind'], $c['item'])) ?></ol>
                     </td></tr>
                   <?php endif ?>

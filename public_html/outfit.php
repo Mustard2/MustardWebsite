@@ -53,7 +53,7 @@ layout_start($o['name'] . ' (' . mb_strtolower($type) . ')', $o['name'] . ', ' .
 
     <?php if (!empty($o['changelog'])): ?>
       <div class="details details-single"><div class="main-col">
-        <?= changelog_block($o['changelog'], $o['changelogNote'] ?? null, $blur, m3d_bug_fixes_for('outfits', $o, $o['changelog'])) ?>
+        <?= changelog_block($o['changelog'], $o['changelogNote'] ?? null, $blur) ?>
       </div></div>
     <?php endif ?>
 

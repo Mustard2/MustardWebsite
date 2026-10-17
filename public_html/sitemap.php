@@ -13,7 +13,7 @@ foreach (['models' => '/models/', 'outfits' => '/accessories/'] as $kind => $bas
     foreach (m3d_items($kind) as $it) {
         if (!in_array(m3d_visibility($it), ['public', 'blurred', 'blurred-patrons'], true) || m3d_release_hidden($it)) continue;   // "Coming Soon" pages too, like teasers
         $ts = m3d_changelog_ts(m3d_current_version($it)['date']);
-        $urls[$base . $it['slug'] . '/'] = $ts !== null && $ts <= time() ? m3d_berlin($ts, 'Y-m-d') : null;
+        $urls[$base . $it['slug'] . '/'] = $ts !== null && $ts <= time() ? m3d_site_time($ts, 'Y-m-d') : null;
     }
 }
 // the gallery, once a visitor can see one of its pictures

@@ -280,9 +280,8 @@ function m3d_bugs_for(string $about): array
 }
 
 // ── Fixed in a version ───────────────────────────────────────────────────────
-// A fixed report's `fixed` is a version label as typed ("V3", "3", "Beta 2"); the item's changelog shows it under that version.
-// "Next Version" is stored as 'next:<label of the top changelog entry when it was picked>' and becomes the version added above that one.
-const BUG_NEXT = 'next:';
+// An item's fixed report takes its version from the changelog ("#6" in a version's changes, see "Changelog mentions"); a website /
+// other report's `fixed` is a version label as typed ("V3", "3", "Beta 2").
 
 /** A version label made comparable: lower case, single spaces, no "V" before the number ("V 3" = "3"). */
 function m3d_ver_key(string $v): string
@@ -301,36 +300,158 @@ function m3d_changelog_find(array $log, string $label): ?int
     return null;
 }
 
-/** The version a fixed report names: ['label' => version label ('' while it waits for the next version), 'next' => still waiting]. */
-function m3d_bug_fixed_in(array $b, ?array $item = null): array
+/**
+ * The version a fixed report names ('' = none). A report about an item: only its changelog, the oldest version whose changes write
+ * "#6" (see "Changelog mentions"); a value stored by the old Fixed In menu is ignored. Website / other reports: the typed `fixed`.
+ */
+function m3d_bug_fixed_in(array $b, ?array $item = null): string
 {
-    $f = (string) ($b['fixed'] ?? '');
-    if (!str_starts_with($f, BUG_NEXT)) return ['label' => $f, 'next' => false];
-    if ($item === null) {
-        [$kind, $slug] = m3d_bug_about_parts((string) ($b['about'] ?? ''));
-        $item = $slug !== '' ? m3d_item($kind, $slug) : null;
-    }
+    [$kind, $slug] = m3d_bug_about_parts((string) ($b['about'] ?? ''));
+    if ($slug === '') return str_starts_with($f = (string) ($b['fixed'] ?? ''), 'next:') ? '' : $f;
+    $item ??= m3d_item($kind, $slug);
     $log = $item && is_array($item['changelog'] ?? null) ? array_values(array_filter($item['changelog'], 'is_array')) : [];
-    $base = substr($f, strlen(BUG_NEXT));
-    $at = $base === '' ? count($log) : m3d_changelog_find($log, $base);   // no version when it was picked: the first one added
-    return $at !== null && $at > 0 ? ['label' => m3d_version_label($log[$at - 1]), 'next' => false] : ['label' => '', 'next' => true];
+    $at = m3d_changelog_bug_refs($log)[(int) ($b['n'] ?? 0)] ?? null;
+    return $at !== null ? m3d_version_label($log[$at]) : '';
 }
 
-/** The item's fixed reports this visitor may see, by changelog index: [i => [[n, title]…]]; none while bug reports are off. */
-function m3d_bug_fixes_for(string $kind, array $item, array $log): array
+// ── Changelog mentions ───────────────────────────────────────────────────────
+// "Fix #6: …" in a version's changes (the editor offers the reports as you type #, bugMention() in admin.js): on the site the #6
+// is a link to the report with its title (change_line() → bug_refs_html()), in Discord a link; saving the item puts "Fixed in <item>
+// Version 2" in a report about it and marks it Fixed, removing the "#6" undoes both (m3d_bugs_after_save()); its "Fixed in" is the
+// oldest version naming it (m3d_bug_fixed_in()).
+const BUG_REF_RE = '/(?<![\w&\/#])#(\d{1,6})\b/';   // not "&#39;", "page#6", "##6"
+
+/** Report numbers written in a changelog's changes: n => index of the oldest version naming it. */
+function m3d_changelog_bug_refs(array $log): array
 {
-    if (!m3d_bugs_on() || !$log) return [];
-    $p = m3d_patron($GLOBALS['M3D']);
     $out = [];
-    foreach (m3d_bugs() as $b) {
-        if (($b['about'] ?? '') !== "$kind:" . $item['slug'] || ($b['status'] ?? '') !== 'fixed' || ($b['fixed'] ?? '') === '') continue;
-        if (!empty($b['pending']) || !empty($b['hidden']) || !m3d_bug_visible($b, $p)) continue;
-        $fx = m3d_bug_fixed_in($b, $item)['label'];
-        $i = $fx !== '' ? m3d_changelog_find($log, $fx) : null;
-        if ($i !== null) $out[$i][] = [(int) $b['n'], (string) $b['title']];
+    foreach (array_values($log) as $i => $en) {
+        if (!is_array($en)) continue;
+        foreach ((array) ($en['changes'] ?? []) as $c) {
+            if (preg_match_all(BUG_REF_RE, (string) $c, $m)) foreach ($m[1] as $n) $out[(int) $n] = $i;   // newest first: an older version overwrites
+        }
     }
-    foreach ($out as &$list) sort($list);
     return $out;
+}
+
+/** n => [title, status] of the reports this visitor may open (none while bug reports are off): what "#6" in a text links to. */
+function m3d_bug_ref_map(): array
+{
+    static $map = null;
+    if ($map !== null) return $map;
+    $map = [];
+    if (!m3d_bugs_on()) return $map;
+    $p = m3d_patron($GLOBALS['M3D']);
+    foreach (m3d_bugs() as $b) {
+        if (empty($b['hidden']) && empty($b['pending']) && m3d_bug_visible($b, $p)) $map[(int) $b['n']] = [(string) $b['title'], (string) ($b['status'] ?? 'new')];
+    }
+    return $map;
+}
+
+/**
+ * "#6" as a link to the report, its title in a small card on hover / focus (GitHub-like); plain "#6" for a report this visitor can't
+ * open. $chip: the yellow chip with a bug icon that follows a line's tag ("Fix #6: …"), a grey one without a link.
+ */
+function bug_ref_link(int $n, bool $chip = false): string
+{
+    $b = m3d_bug_ref_map()[$n] ?? null;
+    if (!$b) return $chip ? '<span class="bug-chip is-off">#' . $n . '</span>' : '#' . $n;
+    $c = (BUG_STATUSES[$b[1]] ?? BUG_STATUSES['new'])[2];
+    return '<a class="bug-ref' . ($chip ? ' bug-chip' : '') . '" href="/bugs/' . $n . '/" aria-label="#' . $n . ': ' . e($b[0]) . '">' . ($chip ? bug_icon('bug') : '') . '#' . $n
+        . '<span class="bug-ref-pop" aria-hidden="true"><i class="sdot" style="--c:' . e($c) . '"></i><span class="muted">#' . $n . '</span> ' . e($b[0]) . '</span></a>';
+}
+
+/** Links every "#6" in a piece of HTML made by md_inline(), outside links and code. */
+function bug_refs_html(string $html): string
+{
+    if (!str_contains($html, '#') || !m3d_bug_ref_map()) return $html;
+    $parts = preg_split('#(<[^>]*>)#', $html, -1, PREG_SPLIT_DELIM_CAPTURE);
+    $skip = 0;   // inside <a> or <code>
+    foreach ($parts as $i => $part) {
+        if ($i % 2) { if (preg_match('#^<(/?)(a|code)\b#i', $part, $m)) $skip = max(0, $skip + ($m[1] === '' ? 1 : -1)); continue; }
+        if (!$skip) $parts[$i] = (string) preg_replace_callback(BUG_REF_RE, fn($m) => isset(m3d_bug_ref_map()[(int) $m[1]]) ? bug_ref_link((int) $m[1]) : $m[0], $part);
+    }
+    return implode('', $parts);
+}
+
+/** "#6" in a Discord text as a link to the report, when everyone may open it (Discord posts are public). */
+function m3d_bug_refs_discord(string $text): string
+{
+    if (!m3d_bugs_on() || !str_contains($text, '#')) return $text;
+    $open = [];
+    foreach (m3d_bugs() as $b) {
+        if (!empty($b['hidden']) || !empty($b['pending'])) continue;
+        [$kind, $slug] = m3d_bug_about_parts((string) ($b['about'] ?? ''));
+        if ($slug !== '' && (!($it = m3d_item($kind, $slug)) || !in_array(m3d_visibility($it), ['public', 'blurred', 'blurred-patrons'], true) || m3d_release_hidden($it))) continue;
+        $open[(int) $b['n']] = true;
+    }
+    $parts = preg_split('/(`[^`\n]*`|\[[^\]\n]*\]\([^)\s]*\))/', $text, -1, PREG_SPLIT_DELIM_CAPTURE);   // not inside code or a link
+    foreach ($parts as $i => $part) {
+        if ($i % 2 === 0) $parts[$i] = (string) preg_replace_callback(BUG_REF_RE, fn($m) => isset($open[(int) $m[1]]) ? '[#' . $m[1] . '](' . abs_url('/bugs/' . $m[1] . '/') . ')' : $m[0], $part);
+    }
+    return implode('', $parts);
+}
+
+/**
+ * After a save of models or outfits, for reports about the saved item: one whose "#6" a version's changes name for the first time
+ * gets a "Fixed in <item> Version 2" line in its timeline (`t` = 'ref', `item` = "kind:slug", its followers see it) and becomes
+ * Fixed if it wasn't (`was` = the status before, `lock` = this locked its comments). Removing the "#6" removes that line again,
+ * and gives the report back its earlier status when nothing changed it since.
+ */
+function m3d_bugs_after_save(string $kind, array $old, array $items): void
+{
+    if (!m3d_bugs_on()) return;
+    $refs = fn($it) => m3d_changelog_bug_refs((array) ($it['changelog'] ?? []));
+    $was = $now = [];
+    foreach ($old as $it) if (is_array($it)) $was[(string) ($it['slug'] ?? '')] = $refs($it);
+    foreach ($items as $it) if (is_array($it)) $now[(string) ($it['slug'] ?? '')] = $refs($it);
+    $add = $drop = [];   // "kind:slug" => [n => true]
+    foreach ($now as $slug => $ns) foreach ($ns as $n => $i) if (!isset($was[$slug][$n])) $add["$kind:$slug"][$n] = true;
+    foreach ($was as $slug => $ns) if (isset($now[$slug])) foreach ($ns as $n => $i) if (!isset($now[$slug][$n])) $drop["$kind:$slug"][$n] = true;
+    $hit = fn(array $b, array $set) => isset($set[(string) ($b['about'] ?? '')][(int) ($b['n'] ?? 0)]);
+    if (!array_filter(m3d_bugs(), fn($b) => $hit($b, $add) || $hit($b, $drop))) return;
+    $at = time();
+    $ok = m3d_bugs_update(function (array $bugs, int $next) use ($add, $drop, $hit, $at) {
+        foreach ($bugs as &$b) {
+            $about = (string) ($b['about'] ?? '');
+            if ($hit($b, $drop)) $b = m3d_bug_unref($b, $about);
+            if ($hit($b, $add) && !array_filter((array) ($b['log'] ?? []), fn($x) => ($x['t'] ?? '') === 'ref' && ($x['item'] ?? '') === $about)) {
+                $st = (string) ($b['status'] ?? 'new');
+                $ref = ['t' => 'ref', 'at' => $at, 'item' => $about];
+                if ($st !== 'fixed') {
+                    $locked = !empty($b['locked']);
+                    $log = (array) ($b['log'] ?? []);
+                    $b = m3d_bug_set_status($b, 'fixed', $at);
+                    $b['log'] = $log;   // the "Fixed in" line says it, not a "Status set to" one
+                    $ref += ['was' => $st] + (!$locked && !empty($b['locked']) ? ['lock' => true] : []);
+                }
+                $b['log'][] = $ref;
+                $b['act'] = $at;
+            }
+        }
+        unset($b);
+        return [$bugs, $next, true];
+    });
+    if ($ok === null) m3d_problem('Bug reports', 'Could not update the reports named in the changelog.');
+}
+
+/** A report whose "#6" left that item's changelog: its "Fixed in" line goes, and the status it had comes back if nothing changed it since. */
+function m3d_bug_unref(array $b, string $about): array
+{
+    $log = array_values((array) ($b['log'] ?? []));
+    $last = null;   // the last status change: a 'ref' that set Fixed, or an 's'
+    foreach ($log as $i => $x) if (($x['t'] ?? '') === 's' || (($x['t'] ?? '') === 'ref' && isset($x['was']))) $last = $i;
+    foreach ($log as $i => $x) {
+        if (($x['t'] ?? '') !== 'ref' || ($x['item'] ?? '') !== $about) continue;
+        if ($i === $last && ($b['status'] ?? '') === 'fixed' && isset($x['was'])) {
+            $b['status'] = (string) $x['was'];
+            unset($b['fixed']);
+            if (!empty($x['lock'])) unset($b['locked']);
+        }
+        unset($log[$i]);
+    }
+    $b['log'] = array_values($log);
+    return $b;
 }
 
 // ── Following ────────────────────────────────────────────────────────────────
@@ -365,7 +486,7 @@ function m3d_bug_follow(array $b, array $p, int $now): array
 function m3d_bug_new_entries(array $b, int $seen, string $patronId): array
 {
     return array_filter((array) ($b['log'] ?? []), fn($x) => (int) ($x['at'] ?? 0) > $seen
-        && (($x['t'] ?? '') === 's' || (($x['t'] ?? '') === 'c' && (!empty($x['admin']) || (string) ($x['by'] ?? '') !== $patronId))));
+        && (in_array($x['t'] ?? '', ['s', 'ref'], true) || (($x['t'] ?? '') === 'c' && (!empty($x['admin']) || (string) ($x['by'] ?? '') !== $patronId))));
 }
 
 /**
@@ -394,7 +515,7 @@ function bug_news_label(array $entries): string
     $k = count($entries);
     $types = array_unique(array_map(fn($x) => (string) ($x['t'] ?? ''), $entries));
     if ($types === ['c']) return m3d_plural($k, 'new comment');
-    return $types === ['s'] && $k === 1 ? 'New status' : $k . ' new';
+    return count(array_diff($types, ['s', 'ref'])) === 0 && $k === 1 ? 'New status' : $k . ' new';
 }
 
 /** How many followed reports have something new (the number next to "Bugs" in the menu). */
@@ -511,15 +632,30 @@ function m3d_bug_notify(array $b): void
 }
 
 // ── Pieces of pages ──────────────────────────────────────────────────────────
+/** A version label as words: "2" → "Version 2"; "Beta 2", "V3" stay. */
+function bug_version_words(string $label): string
+{
+    return preg_match('/^\d/', $label) ? 'Version ' . $label : $label;
+}
+
 function bug_status_label(array $b): string
 {
     $st = (string) ($b['status'] ?? 'new');
     $label = (BUG_STATUSES[$st] ?? BUG_STATUSES['new'])[0];
-    if ($st === 'fixed' && ($b['fixed'] ?? '') !== '') $label = ($fx = m3d_bug_fixed_in($b))['next'] ? 'Fixed in Next Version' : 'Fixed in ' . $fx['label'];
+    if ($st === 'fixed' && ($fx = m3d_bug_fixed_in($b)) !== '') $label = 'Fixed in ' . bug_version_words($fx);
     if ($st === 'closed' && isset(BUG_REASONS[$b['reason'] ?? ''])) {
         $label = 'Closed · ' . ($b['reason'] === 'duplicate' && (int) ($b['dup'] ?? 0) > 0 ? 'Duplicate of #' . (int) $b['dup'] : BUG_REASONS[$b['reason']]);
     }
     return $label;
+}
+
+/** The timeline line of a report named in a changelog: "Fixed in <Fantasy Dress Version 2>" linked to that changelog; '' once the item or the "#6" is gone. */
+function bug_ref_event(array $b, array $x): string
+{
+    [$kind, $slug] = m3d_bug_about_parts((string) ($x['item'] ?? ''));
+    $item = $slug !== '' && ($x['item'] ?? '') === ($b['about'] ?? '') ? m3d_item($kind, $slug) : null;
+    if (!$item || ($ver = m3d_bug_fixed_in($b, $item)) === '') return '';
+    return 'Fixed in <a class="badge tone-' . BUG_STATUSES['fixed'][1] . ' ev-ref" href="' . e(m3d_item_url($kind, $slug)) . '#changelog">' . e(m3d_model_name($item) . ' ' . bug_version_words($ver)) . '</a>';
 }
 
 function bug_status_badge(array $b): string
@@ -585,6 +721,7 @@ const BUG_ICONS = [
     'pen'     => '<path d="M4 20h4L19 9a2.8 2.8 0 0 0-4-4L4 16z"/><path d="m13.5 6.5 4 4"/>',
     'ui'      => '<path d="M4 6h9M17 6h3M4 12h3M11 12h9M4 18h11M19 18h1"/><circle cx="15" cy="6" r="2"/><circle cx="9" cy="12" r="2"/><circle cx="17" cy="18" r="2"/>',
     'tag'     => '<path d="M3.5 12.2V4.5a1 1 0 0 1 1-1h7.7l8.3 8.3a1.4 1.4 0 0 1 0 2l-6.2 6.2a1.4 1.4 0 0 1-2 0z"/><circle cx="8" cy="8" r="1.6"/>',
+    'open'    => '<circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="1.5" fill="currentColor"/>',
 ];
 
 /** The creator's "Edit Tags" window (a <dialog>, opened by [data-tags-open]; site.js [data-tags-dlg]): name + colour per tag, drag to reorder,
@@ -652,7 +789,7 @@ function bug_icon(string $name): string
     return '<svg class="bi" viewBox="0 0 24 24" aria-hidden="true">' . (BUG_ICONS[$name] ?? '') . '</svg>';
 }
 
-/** "2 hours ago", "3 days ago", then the date (Europe/Berlin). */
+/** "2 hours ago", "3 days ago", then the date (site time). */
 function bug_ago(int $t): string
 {
     $d = time() - $t;
@@ -660,7 +797,7 @@ function bug_ago(int $t): string
     if ($d < 3600) return m3d_plural((int) round($d / 60), 'minute') . ' ago';
     if ($d < 86400) return m3d_plural((int) round($d / 3600), 'hour') . ' ago';
     if ($d < 86400 * 14) return m3d_plural((int) round($d / 86400), 'day') . ' ago';
-    return 'on ' . m3d_berlin($t, m3d_berlin($t, 'Y') === m3d_berlin(time(), 'Y') ? 'j M' : 'j M Y');
+    return 'on ' . m3d_site_time($t, m3d_site_time($t, 'Y') === m3d_site_time(time(), 'Y') ? 'j M' : 'j M Y');
 }
 
 /** Initial of a name for the round avatars, and a hue from the name. */
@@ -687,6 +824,6 @@ function bug_item_box(string $kind, array $item): string
         foreach (array_slice($info['pinned'], 0, 3) as $b) $h .= '<li><a href="/bugs/' . (int) $b['n'] . '/">' . bug_icon('pin') . '<span>' . e($b['title']) . '</span></a></li>';
         $h .= '</ul>';
     }
-    if ($info['open']) $h .= '<a class="bug-box-more" href="/bugs/?about=' . e(rawurlencode($about)) . '">' . m3d_plural($info['open'], 'open report') . ' →</a>';   // none: only the title and Report It
+    if ($info['open']) $h .= '<a class="bug-box-more" href="/bugs/?about=' . e(rawurlencode($about)) . '">' . bug_icon('open') . '<span>' . m3d_plural($info['open'], 'open report') . ' →</span></a>';   // none: only the title and Report It
     return $h . '</section>';
 }

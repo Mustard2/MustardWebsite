@@ -271,7 +271,7 @@ function image_info(string $url, array $use, array $fields, string $folder): arr
         'size' => m3d_size((int) @filesize($p)),
         'type' => strtoupper(pathinfo($name, PATHINFO_EXTENSION)),
         'folder' => $folder,
-        'added' => m3d_berlin((int) @filemtime($p), 'j M Y, H:i T'),
+        'added' => m3d_site_time((int) @filemtime($p), 'j M Y, H:i T'),
         'vers' => $vers,
         'uses' => $uses,
     ];
@@ -332,11 +332,14 @@ foreach ($items as &$i) {
 }
 unset($i);
 usort($items, fn($a, $b) => [$a['group'], $b['time']] <=> [$b['group'], $a['time']]);
-$tabCount = array_fill_keys(array_keys(IMG_TABS), 0);
-foreach ($items as $i) $tabCount[$i['section']]++;
+$tabCount = $tabUnused = array_fill_keys(array_keys(IMG_TABS), 0);   // every image of each tab, and the unused ones (what the tabs show while Unused Only is on)
+foreach ($items as $i) { $tabCount[$i['section']]++; if (empty($use[$i['url']])) $tabUnused[$i['section']]++; }
 $glbs = media_3d_files();
 $tabCount['3d'] = count($glbs);
+$tabUnused['3d'] = count(array_filter($glbs, fn($g) => empty($use[$g['url']])));
+$onlyUnused = m3d_get_text('unused') !== '';
 $tab = isset(IMG_TABS[m3d_get_text('tab')]) ? m3d_get_text('tab') : 'models';
+if ($onlyUnused && !isset(IMG_TABS[m3d_get_text('tab')]) && !$tabUnused['models']) $tab = array_key_first(array_filter($tabUnused)) ?? 'models';   // ?unused=1 alone (Settings → Tools): the first tab with unused ones
 $items = array_values(array_filter($items, fn($i) => $i['section'] === $tab));
 if ($tab === '3d') {   // listed under the model / accessory using it, else its folder; the facts read from the file's header (m3d_glb_info())
     $items = [];
@@ -361,7 +364,6 @@ $unused3d = unused_3d($use);
 $unused = count($unusedAll) + count($unused3d);
 $unusedWhat = unused_words(count($unusedAll), count($unused3d));
 $unusedBytes = array_sum(array_column($unusedAll, 'bytes')) + array_sum(array_column($unused3d, 'bytes'));
-$tabUnused = count(array_filter($items, fn($i) => empty($use[$i['url']])));
 
 // what the picture window (admin.js) shows for each picture of the tab: sizes made, date, which part of an item uses it
 $fields = use_fields($models, m3d_outfits());
@@ -387,7 +389,7 @@ admin_start('Images', 'images');
     <?php if (isset($purged)) admin_flash($purged[0] || $purged[2] ? '✓ Deleted ' . unused_words($purged[0], $purged[2]) . ' that weren’t used, ' . m3d_size($purged[1]) . ' freed.' : 'There were no unused images to delete.', $purged[0] || $purged[2] ? 'ok' : 'info') ?>
     <?php if ($unused): ?>
       <form method="post" class="notice opt-notice" onsubmit="return confirm(<?= e(json_encode('Delete ' . $unusedWhat . ' that aren’t used (' . m3d_size($unusedBytes) . ')? No model, accessory, FAQ answer, docs page or gallery picture uses them. This can’t be undone.')) ?>)">
-        <span><b><?= e($unusedWhat) ?></b> <?= $unused === 1 ? 'isn’t' : 'aren’t' ?> used anywhere (<?= m3d_size($unusedBytes) ?>). Tick “Unused Only” in each section to review them first.</span>
+        <span><b><?= e($unusedWhat) ?></b> <?= $unused === 1 ? 'isn’t' : 'aren’t' ?> used anywhere (<?= m3d_size($unusedBytes) ?>). Turn on “Unused Only” to review them first.</span>
         <?= form_keys('purge') ?>
         <button class="btn btn-ghost btn-sm del-btn">Delete All Unused</button>
       </form>
@@ -424,7 +426,7 @@ admin_start('Images', 'images');
 
     <nav class="lib-tabs" aria-label="Sections">
       <?php foreach (IMG_TABS as $k => $label): if ($k !== 'models' && !$tabCount[$k] && $tab !== $k) continue; ?>
-        <a href="/admin/images.php?tab=<?= $k ?>" <?= $tab === $k ? 'aria-current="page"' : '' ?>><?= e($label) ?> <span><?= $tabCount[$k] ?></span></a>
+        <a href="/admin/images.php?tab=<?= $k ?><?= $onlyUnused ? '&amp;unused=1' : '' ?>" <?= $tab === $k ? 'aria-current="page"' : '' ?> data-lib-tab><?= e($label) ?> <span data-all="<?= $tabCount[$k] ?>" data-unused="<?= $tabUnused[$k] ?>"><?= $onlyUnused ? $tabUnused[$k] : $tabCount[$k] ?></span></a>
       <?php endforeach ?>
     </nav>
 
@@ -438,7 +440,7 @@ admin_start('Images', 'images');
           <option value=""><?= ['models' => 'All Models', 'outfits' => 'All Accessories', 'docs' => 'All Pages', 'faq' => 'All Questions', '3d' => 'All Items'][$tab] ?? 'All Folders' ?></option>
           <?php foreach ($folders as $f) echo folder_option($f, $pick, $names) ?>
         </select>
-        <label class="field check lib-unused"><input type="checkbox" data-lib-unused <?= isset($_GET['unused']) ? 'checked' : '' ?> /><span class="lbl">Unused Only<?= $tabUnused ? ' (' . $tabUnused . ')' : '' ?></span></label>
+        <label class="toggle lib-unused"><input type="checkbox" class="switch" data-lib-unused <?= $onlyUnused ? 'checked' : '' ?> /><span>Unused Only</span></label>
         <span class="muted small" data-lib-count></span>
       </div>
 

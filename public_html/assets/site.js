@@ -5,6 +5,103 @@ const searchFold = (t) => String(t ?? '').normalize('NFD').replace(/[\u0300-\u03
 const searchWords = (q) => searchFold(q).split(/\s+/).filter(Boolean);
 const searchHasAll = (hay, words) => { const h = searchFold(hay); return words.every((w) => h.includes(w)); };
 
+// Times in the visitor's own time zone: localTime(unix seconds, style) = "Tue 20 Oct, 12:00 PM EDT" in their zone and clock (12 / 24 hours
+// as their browser uses), or '' when their zone is the site's (<html data-tz>, the page already says it) or the browser can't tell.
+// Styles = WHEN_FORMATS in view.php: full, at, day, short, long.
+const localTime = (() => {
+  const site = document.documentElement.dataset.tz || '';
+  let zone = '', h12 = false;
+  try {
+    zone = Intl.DateTimeFormat().resolvedOptions().timeZone || '';
+    const o = new Intl.DateTimeFormat(undefined, { hour: 'numeric' }).resolvedOptions();
+    h12 = o.hourCycle ? o.hourCycle === 'h12' || o.hourCycle === 'h11' : !!o.hour12;
+  } catch { zone = ''; }
+  if (!zone || !site || zone === site) return () => '';
+  const make = (long) => new Intl.DateTimeFormat('en-US', { timeZone: zone, weekday: long ? 'long' : 'short', day: 'numeric', month: long ? 'long' : 'short',
+    hour: h12 ? 'numeric' : '2-digit', minute: '2-digit', hourCycle: h12 ? 'h12' : 'h23' });
+  let fmt = null, names = null;   // made on first use, inside the try below
+  // the zone's short name: "EDT", "CEST", "BST", else "GMT+9" (en-US knows the American names, en-GB the European ones)
+  const zoneName = (d) => {
+    names = names || ['en-US', 'en-GB'].map((l) => new Intl.DateTimeFormat(l, { timeZone: zone, timeZoneName: 'short' }));
+    let off = '';
+    for (const f of names) {
+      const v = (f.formatToParts(d).find((x) => x.type === 'timeZoneName') || {}).value || '';
+      if (v && !/^GMT[+-]/.test(v)) return v;
+      off = off || v;
+    }
+    return off;
+  };
+  return (ts, style) => {
+    const d = new Date(ts * 1000);
+    if (!ts || isNaN(d)) return '';
+    try {
+      fmt = fmt || { short: make(false), long: make(true) };
+      const p = {};
+      (style === 'long' ? fmt.long : fmt.short).formatToParts(d).forEach((x) => { p[x.type] = x.value; });
+      // AM / PM whenever the browser gives one (an old one that ignores hourCycle answers in 12 hours)
+      const time = p.hour + ':' + p.minute + (p.dayPeriod ? ' ' + p.dayPeriod : '');
+      const day = p.weekday + ' ' + p.day + ' ' + p.month;
+      if (style === 'short') return p.day + ' ' + p.month;
+      if (style === 'day') return day;
+      return day + (style === 'at' ? ' at ' : ', ') + time + ' ' + zoneName(d);
+    } catch { return ''; }   // the page keeps the site's time
+  };
+})();
+
+// <time data-lt> (when_html() in view.php) and titles with a time in them (when_title(): data-lt-title = "unix|style|text with {t}")
+(() => {
+  document.querySelectorAll('time[data-lt]').forEach((t) => {
+    const s = localTime(Date.parse(t.dateTime) / 1000, t.dataset.lt);
+    if (!s || s === t.textContent) return;
+    if (!t.parentElement.closest('[title]')) t.title = 'Site time: ' + t.textContent;
+    t.textContent = s;
+  });
+  document.querySelectorAll('[data-lt-title]').forEach((el) => {
+    const [ts, style, ...tpl] = el.dataset.ltTitle.split('|');
+    const s = localTime(+ts, style);
+    if (s) el.title = tpl.join('|').replace('{t}', s);
+  });
+})();
+
+// ── "Ignore this update" (/auth/ignore-update.php): the ✕ on a catalog card's "↑ Update" tag and My account's button. The
+// update stays ignored for that version only (code "kind:slug@version"); the header's dot follows (event m3d-upd {code, on}) ──
+const updIgnore = async (code, ignore) => {
+  let me = {};
+  try { me = JSON.parse(document.querySelector('[data-account]')?.dataset.me || '{}'); } catch { /* no status */ }
+  const colon = code.indexOf(':'), at = code.indexOf('@');   // slugs have no @
+  const r = await fetch('/auth/ignore-update.php', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': me.csrf || '' },
+    body: JSON.stringify({ kind: code.slice(0, colon), slug: code.slice(colon + 1, at), ignore }) });
+  let d = {};
+  try { d = await r.json(); } catch { /* not JSON */ }
+  if (!r.ok) throw new Error(d.error || 'Something went wrong, try again.');
+  document.dispatchEvent(new CustomEvent('m3d-upd', { detail: { code, on: !ignore } }));
+};
+// a floating message in the page's stack (flash_stack() in view.php), with an optional button after the text (Undo)
+const siteToast = (text, kind = 'info', act = null) => {
+  const stack = document.querySelector('[data-toasts]');
+  if (!stack) return;
+  const t = document.createElement('div');
+  t.className = 'toast ' + kind;
+  t.setAttribute('role', kind === 'err' ? 'alert' : 'status');
+  const msg = document.createElement('span');
+  msg.className = 'toast-msg';
+  msg.textContent = text;
+  if (act) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'toast-act';
+    b.textContent = act.label;
+    b.addEventListener('click', () => { t.querySelector('.toast-x').click(); act.fn(); }, { once: true });
+    msg.append(' ', b);
+  }
+  const x = document.createElement('button');
+  x.type = 'button'; x.className = 'toast-x'; x.textContent = '✕';
+  x.setAttribute('aria-label', 'Close'); x.title = 'Close';
+  t.append(msg, x);
+  stack.append(t);
+  toastWire(t);
+};
+
 // ── Header: show the account button (name) / Admin / Log out when logged in ──────────────
 (async () => {
   const box = document.querySelector('[data-account]');
@@ -27,18 +124,21 @@ const searchHasAll = (hay, words) => { const h = searchFold(hay); return words.e
     nm.className = 'who-name';
     nm.textContent = s.name;
     who.append(nm);
-    // a dot when something they downloaded has a newer version they haven't seen yet on My account (browser storage
-    // m3d_seen_updates: the codes "kind:slug@version" already seen; listed in privacy.php)
-    let seen = [];
-    try { seen = JSON.parse(localStorage.getItem('m3d_seen_updates') || '[]'); } catch { /* no storage: always shown */ }
-    const fresh = (Array.isArray(s.updates) ? s.updates : []).filter((c) => !seen.includes(c));
-    if (fresh.length && !document.querySelector('[data-updates-seen]')) {
-      const dot = document.createElement('span');
-      dot.className = 'who-dot';
-      who.append(dot);
-      who.title += ` · ${fresh.length} new update${fresh.length === 1 ? '' : 's'} for what you downloaded`;
-      who.setAttribute('aria-label', who.title);
-    }
+    // a dot while something they downloaded has a newer version they haven't downloaded or ignored yet (s.updates: codes
+    // "kind:slug@version" without the ignored ones); ignoring one on this page takes it off at once (event m3d-upd)
+    const shown = new Set(Array.isArray(s.updates) ? s.updates : []);
+    const dot = document.createElement('span');
+    dot.className = 'who-dot';
+    const whoTitle = who.title;
+    const paintDot = () => {
+      const n = shown.size;
+      if (n) who.append(dot); else dot.remove();
+      who.title = whoTitle + (n ? ` · ${n} new update${n === 1 ? '' : 's'} for what you downloaded` : '');
+      if (n) who.setAttribute('aria-label', who.title); else who.removeAttribute('aria-label');
+    };
+    paintDot();
+    document.addEventListener('m3d-upd', (e) => { if (e.detail.on) shown.add(e.detail.code); else shown.delete(e.detail.code); paintDot(); });
+    try { localStorage.removeItem('m3d_seen_updates'); } catch { /* the old "seen" list: no longer used */ }
     // unlocks left under the download limits (only when rules apply to this patron): a person icon (models) and a
     // hanger icon (accessories), each with its number; red when none are left. The title says it in words.
     if (s.left) {
@@ -58,7 +158,7 @@ const searchHasAll = (hay, words) => { const h = searchFold(hay); return words.e
         n.append(document.createTextNode(String(L[k])));
         c.append(n);
       });
-      c.title = parts.map(([k, one]) => `${L[k]} ${one} unlock${L[k] === 1 ? '' : 's'} left`).join(' · ') + (L.next ? ` · next on ${L.next}` : '') + ' · See your unlock limits';
+      c.title = parts.map(([k, one]) => `${L[k]} ${one} unlock${L[k] === 1 ? '' : 's'} left`).join(' · ') + (L.next ? ` · next on ${localTime(L.nextTs, 'full') || L.next}` : '') + ' · See your unlock limits';
       c.setAttribute('aria-label', c.title);
       box.append(c);
     }
@@ -81,18 +181,43 @@ const searchHasAll = (hay, words) => { const h = searchFold(hay); return words.e
       document.querySelectorAll('[data-owned-row]').forEach((n) => (n.hidden = false));
     } } catch { /* a nicety */ }
     // catalogs: "↑ Update · V4" on the picture of what this patron downloaded and now has a newer version (s.updates,
-    // codes "kind:slug@version"); it stays until they download the new version
+    // codes "kind:slug@version"); it stays until they download the new version or press its ✕ (ignored until the next version)
     try { (Array.isArray(s.updates) ? s.updates : []).forEach((code) => {
       const kind = code.slice(0, code.indexOf(':')), at = code.indexOf('@');
       const slug = code.slice(kind.length + 1, at), ver = code.slice(at + 1);
       const sel = kind === 'models' ? '[data-card]' : '[data-ocard]';
+      const tags = [];
+      const ignore = async (ev) => {
+        ev.preventDefault(); ev.stopPropagation();   // the card is a link: the ✕ never opens it
+        if (tags.some((t) => t.dataset.busy)) return;
+        tags.forEach((t) => (t.dataset.busy = '1'));
+        try {
+          await updIgnore(code, true);
+          tags.forEach((t) => (t.hidden = true));
+          siteToast('Update hidden until the next version.', 'info', { label: 'Undo', fn: async () => {
+            try { await updIgnore(code, false); tags.forEach((t) => (t.hidden = false)); } catch (e) { siteToast(e.message, 'err'); }
+          } });
+        } catch (e) { siteToast(e.message, 'err'); }
+        tags.forEach((t) => delete t.dataset.busy);
+      };
       document.querySelectorAll(sel).forEach((c) => {
         if (c.dataset.slug !== slug) return;
         const t = document.createElement('span');
         t.className = 'card-upd';
         t.title = `${ver} is out since your download`;
-        t.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19V5M5.5 11.5 12 5l6.5 6.5"/></svg>';
-        t.append(document.createTextNode(`Update · ${ver}`));
+        t.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19V5M5.5 11.5 12 5l6.5 6.5"/></svg><span class="card-upd-txt"></span>';
+        t.lastChild.textContent = `Update · ${ver}`;
+        const x = document.createElement('span');
+        x.className = 'upd-x';
+        x.setAttribute('role', 'button');
+        x.tabIndex = 0;
+        x.title = 'Ignore this update';
+        x.setAttribute('aria-label', `Ignore the update to ${ver}`);
+        x.textContent = '✕';
+        x.addEventListener('click', ignore);
+        x.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') ignore(e); });
+        t.append(x);
+        tags.push(t);
         (c.querySelector('.cover, .ocard-img') || c).append(t);
       });
     }); } catch { /* a nicety */ }
@@ -725,6 +850,29 @@ const likedOk = (root) => {
   });
 })();
 
+// ── Changelog: one tag column for every version (the widest tag of the whole changelog, hidden versions too) ──
+(() => {
+  const logs = document.querySelectorAll('ol.log');
+  if (!logs.length) return;
+  const fit = () => logs.forEach((log) => {
+    const seen = new Set();
+    const box = document.createElement('div');   // copies of the distinct tags, measured off screen (hidden versions have no width)
+    box.style.cssText = 'position:absolute;visibility:hidden;left:-9999px;top:0;display:flex;flex-direction:column;align-items:flex-start';
+    log.querySelectorAll('.tag').forEach((t) => {
+      if (seen.has(t.textContent)) return;
+      seen.add(t.textContent);
+      box.append(t.cloneNode(true));
+    });
+    if (!seen.size) return;
+    log.append(box);
+    const w = Math.max(...[...box.children].map((t) => t.getBoundingClientRect().width));
+    box.remove();
+    log.style.setProperty('--tagw', Math.ceil(w) + 'px');
+  });
+  fit();
+  document.fonts?.ready.then(fit);
+})();
+
 // ── Changelog: show/hide older versions, newest/oldest first ─────────────────
 (() => {
   const log = document.querySelector('[data-log]');
@@ -1008,7 +1156,7 @@ document.addEventListener('click', async (e) => {
     if (ms > 0) return void setTimeout(tick, 200);
     now.removeAttribute('aria-disabled');
     count.querySelector('.lead').textContent = 'Your download is starting…';
-    location.href = go;
+    location.replace(go);   // Back then skips this page instead of counting down and downloading again
   };
   tick();
 })();
@@ -1032,15 +1180,28 @@ document.addEventListener('click', async (e) => {
   });
 })();
 
-// ── My account: the updates listed in My Models count as seen (the dot on the account button goes away) ──
-(() => {
-  const box = document.querySelector('[data-updates-seen]');
-  if (!box) return;
+// ── My account → My Models: "Ignore This Update" / "Stop Ignoring" under an update's versions (the row before carries
+// data-upd = its code; ignored rows are greyed, the summary counts the others) ──
+document.addEventListener('click', async (ev) => {
+  const b = ev.target.closest('[data-upd-ignore]');
+  const tr = b?.closest('tr.upd-row')?.previousElementSibling;
+  if (!tr?.dataset.upd || b.disabled) return;
+  const ignore = !tr.classList.contains('is-upd-ignored');
+  b.disabled = true;
   try {
-    const now = JSON.parse(box.dataset.updatesSeen || '[]');
-    if (now.length) localStorage.setItem('m3d_seen_updates', JSON.stringify(now));   // only the current ones: stays small
-  } catch { /* no storage: the dot simply stays */ }
-})();
+    await updIgnore(tr.dataset.upd, ignore);
+    tr.classList.toggle('is-upd-ignored', ignore);
+    b.textContent = ignore ? 'Stop Ignoring' : 'Ignore This Update';
+    b.title = ignore ? 'Show the update tag and the dot again' : 'No update tag on its card and no dot on your account button until the next version';
+    const count = document.querySelector('[data-upd-count]');
+    if (count) {
+      const n = tr.parentElement.querySelectorAll('tr[data-upd]:not(.is-upd-ignored)').length;
+      count.textContent = `${n} update${n === 1 ? '' : 's'}`;
+      count.hidden = !n;
+    }
+  } catch (e) { siteToast(e.message, 'err'); }
+  b.disabled = false;
+});
 
 // ── My account → My Models: All / Models / Accessories / Available / Updates (rows carry data-models or data-accessories, data-avail, data-upd) ──
 (() => {
@@ -1686,25 +1847,22 @@ document.addEventListener('click', (ev) => {
 
 // Floating messages after an action (site_flash() in view.php: "Saved.", "Not saved: …"), the same as the admin's (admin.js toastWire()):
 // the ✕ closes one; ok / info ones fade out by themselves (longer texts stay longer; the pointer or the focus on one keeps it), errors stay.
-(() => {
-  const all = document.querySelectorAll('[data-toasts] .toast');
-  if (!all.length) return;
+function toastWire(t) {
   const still = matchMedia('(prefers-reduced-motion: reduce)').matches;
-  all.forEach((t) => {
-    const close = () => {
-      if (t.classList.contains('is-out')) return;
-      t.classList.add('is-out');
-      setTimeout(() => t.remove(), still ? 0 : 250);
-    };
-    t.querySelector('.toast-x').addEventListener('click', close);
-    if (t.classList.contains('err')) return;
-    let timer = setTimeout(close, Math.min(10000, 3000 + t.textContent.length * 45)), held = 0;
-    const hold = () => { held++; clearTimeout(timer); };
-    const free = () => { if (--held <= 0) { held = 0; timer = setTimeout(close, 2000); } };
-    t.addEventListener('pointerenter', hold); t.addEventListener('pointerleave', free);
-    t.addEventListener('focusin', hold); t.addEventListener('focusout', free);
-  });
-})();
+  const close = () => {
+    if (t.classList.contains('is-out')) return;
+    t.classList.add('is-out');
+    setTimeout(() => t.remove(), still ? 0 : 250);
+  };
+  t.querySelector('.toast-x').addEventListener('click', close);
+  if (t.classList.contains('err')) return;
+  let timer = setTimeout(close, Math.min(10000, 3000 + t.textContent.length * 45)), held = 0;
+  const hold = () => { held++; clearTimeout(timer); };
+  const free = () => { if (--held <= 0) { held = 0; timer = setTimeout(close, 2000); } };
+  t.addEventListener('pointerenter', hold); t.addEventListener('pointerleave', free);
+  t.addEventListener('focusin', hold); t.addEventListener('focusout', free);
+}
+document.querySelectorAll('[data-toasts] .toast').forEach(toastWire);
 
 // The creator edits a bug report's title in place (like GitHub): the pencil swaps the title for its field, Cancel / Esc puts it back.
 (() => {

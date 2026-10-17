@@ -127,9 +127,9 @@ usort($all, fn($a, $b) => $b['time'] <=> $a['time']);
 $history = data_history();
 $media = media_files();   // walked once: the count and size of "Include Images"
 $mediaBytes = array_sum(array_map('filesize', $media));
-$when = fn(int $t) => m3d_berlin($t, 'd/m/Y H:i');
-// the calendar: backups by day (German time, CET/CEST), and every month from the newest backup back to the oldest (newest first)
-$berlin = new DateTimeZone('Europe/Berlin');
+$when = fn(int $t) => m3d_site_time($t, 'd/m/Y H:i');
+// the calendar: backups by day (site time), and every month from the newest backup back to the oldest (newest first)
+$berlin = m3d_tz();
 $day = fn(int $t) => (new DateTimeImmutable('@' . $t))->setTimezone($berlin)->format('Y-m-d');
 $clock = fn(int $t) => (new DateTimeImmutable('@' . $t))->setTimezone($berlin)->format('H:i');
 $today = (new DateTimeImmutable('now', $berlin))->format('Y-m-d');

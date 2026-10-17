@@ -66,9 +66,9 @@ foreach ($rows as [, $id]) $patrons[$id] = true;
 
 // ── Filters (all in the address, so a filtered view can be bookmarked and exported) ──
 $date = fn($v) => is_string($v) && preg_match('/^\d{4}-\d{2}-\d{2}$/', $v) ? $v : '';
-// the log stores UTC (ISO, +00:00); shown and filtered in German time (CET/CEST), like the rest of the admin
+// the log stores UTC (ISO, +00:00); shown and filtered in site time (CET/CEST), like the rest of the admin
 $berlin = function (string $d, string $fmt = 'Y-m-d H:i:s'): string {
-    try { return (new DateTimeImmutable($d, new DateTimeZone('UTC')))->setTimezone(new DateTimeZone('Europe/Berlin'))->format($fmt); }
+    try { return (new DateTimeImmutable($d, new DateTimeZone('UTC')))->setTimezone(m3d_tz())->format($fmt); }
     catch (Exception) { return $d; }
 };
 // the membership saved with a line (m3d_log_membership()): "4 mo" in the Patron column, the rest in its hover text
@@ -139,8 +139,8 @@ const PER_PAGE = 50;
 $pages = max(1, (int) ceil(count($found) / PER_PAGE));
 $page = min($pages, max(1, (int) ($_GET['page'] ?? 1)));
 $shown = array_slice($found, ($page - 1) * PER_PAGE, PER_PAGE);
-// "Last N days" = N calendar days (German time) with today: from N - 1 days ago (Admin → Home links its 7-day tile the same way)
-$daysAgo = fn(int $n) => (new DateTimeImmutable('today', new DateTimeZone('Europe/Berlin')))->modify('-' . ($n - 1) . ' days')->format('Y-m-d');
+// "Last N days" = N calendar days (site time) with today: from N - 1 days ago (Admin → Home links its 7-day tile the same way)
+$daysAgo = fn(int $n) => (new DateTimeImmutable('today', m3d_tz()))->modify('-' . ($n - 1) . ' days')->format('Y-m-d');
 
 // All-time totals (counters, they don't expire like the log)
 $stats = m3d_stats();
@@ -227,7 +227,7 @@ admin_start('Downloads', 'log');
     <section class="sec log-sec" id="log">
     <div class="dl-log-head">
       <div>
-        <h2 class="small-h">Patron Download Log<?= tip('Downloads of patron links from the last ' . (int) ($M3D['log_retention_days'] ?? 365) . ' days, in German time (CET in winter, CEST in summer). It also decides what each patron has unlocked.') ?></h2>
+        <h2 class="small-h">Patron Download Log<?= tip('Downloads of patron links from the last ' . (int) ($M3D['log_retention_days'] ?? 365) . ' days, in the site’s time zone (' . e(str_replace('_', ' ', m3d_tz_id())) . '). It also decides what each patron has unlocked.') ?></h2>
       </div>
       <?php if ($rows): ?>
         <div class="log-actions">

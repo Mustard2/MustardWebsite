@@ -102,7 +102,7 @@ function gh_problem(string $channel, int $status, array $headers, string $err): 
     if ($status === 401) return 'GitHub refused the key: it is wrong or has expired. Make a new one and save it below.';
     if (($status === 403 || $status === 429) && (($headers['x-ratelimit-remaining'] ?? '') === '0')) {
         $at = (int) ($headers['x-ratelimit-reset'] ?? 0);
-        return 'GitHub asks this server to wait (too many checks from it)' . ($at ? ', until ' . m3d_berlin($at, 'H:i T') : '') . '.';
+        return 'GitHub asks this server to wait (too many checks from it)' . ($at ? ', until ' . m3d_site_time($at, 'H:i T') : '') . '.';
     }
     if ($status === 403 || $status === 404) {
         return UPDATE_CHANNELS[$channel][2]

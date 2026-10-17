@@ -26,9 +26,11 @@ $updUnlock = $cfg['updates'];
     ($p['reason'] ?? '') === 'exception' => ['Downloads Unlocked by ' . site_name(), 'violet'],
     default                              => ['Active Patron', 'green'],
 };
-$tier = m3d_patron_tier($p);
+$counts = m3d_patron_counts($p);   // with a "Custom" exception's tier / months
+$tier = $counts['tier'];
 $unlocks = [];   // kind => [label, value, note]
-$ruleRows = m3d_welcome_rule_rows();
+$ownRules = !$owner && ($p['exception']['limits'] ?? '') === 'custom';   // their own unlock rules (Admin → Access) replace the general ones
+$ruleRows = $ownRules ? m3d_welcome_own_rows((array) ($p['exception']['rules'] ?? [])) : m3d_welcome_rule_rows();
 if ($ruleRows) {
     foreach (['models' => 'Model Unlocks', 'outfits' => 'Accessory Unlocks'] as $kind => $lbl) {
         $c = m3d_check_limits($p, $kind, '');
@@ -44,7 +46,7 @@ $exempt = $owner || $mine['exempt'];
 // what a first download uses an unlock for: "model", "model or accessory", or nothing (no rule counts this patron)
 $limitedKinds = array_keys(array_filter($unlocks, fn($u) => $u[1] !== 'Unlimited'));
 $unlockWhat = $exempt ? '' : implode(' or ', array_map(fn($k) => DL_WHAT[$k][0], $limitedKinds));
-$months = (int) (m3d_months_since($p['since'] ?? null) ?? 0);
+$months = (int) ($counts['months'] ?? 0);
 // the patron's rows: their tier's when it has rules of its own, else the "Any Tier" ones (no tier found too), like m3d_rules_for();
 // the owner sees every tier's (the Tier column, only when a rule is for one tier). No rows when nothing limits this patron.
 $tierRules = in_array(true, array_map(fn($r) => $r['tier'] !== null, $ruleRows), true);
@@ -146,14 +148,15 @@ if (empty($p['preview']) && !$owner) m3d_welcome_mark((string) $p['id']);
     <?php if ($ruleRows): ?>
     <section class="wl-sec" id="rules">
       <h2>Download Rules</h2>
-      <?php if ($owner && $tierRules): ?><p class="wl-rules-for muted">Patrons see only the rules of their own tier.</p>
+      <?php if ($ownRules): ?><p class="wl-rules-for">These rules were set just for you.</p>
+      <?php elseif ($owner && $tierRules): ?><p class="wl-rules-for muted">Patrons see only the rules of their own tier.</p>
       <?php elseif ($tierRules && $tier): ?><p class="wl-rules-for">For your tier, <b><?= e(m3d_tier_label($tier[1])) ?></b>.</p>
       <?php elseif ($tierRules && ($p['reason'] ?? '') === 'exception'): ?><p class="wl-rules-for">You have no paid tier, so the general rules apply.</p>
       <?php elseif ($tierRules): ?><p class="wl-rules-for">Your Patreon tier wasn’t found, so the general rules apply. <a rel="nofollow" href="/auth/login.php?return=%2Faccount%2F"<?= $new ?>>Refresh from Patreon</a></p>
       <?php endif ?>
       <div class="wl-rules">
         <table class="wl-table">
-          <thead><tr><th><?= $tierCol ? 'Tier · Time as a Patron' : 'Time as a Patron' ?></th><th>New Models</th><th>New Accessories</th></tr></thead>
+          <thead><tr><th><?= $ownRules ? 'Your Rules' : ($tierCol ? 'Tier · Time as a Patron' : 'Time as a Patron') ?></th><th>New Models</th><th>New Accessories</th></tr></thead>
           <tbody>
           <?php foreach ($ruleRows as $r): $me = !$exempt && $r['tier'] === $myTierRow && $months >= $r['from'] && ($r['to'] === null || $months < $r['to']); ?>
             <tr<?= $me ? ' class="is-me"' : '' ?>>

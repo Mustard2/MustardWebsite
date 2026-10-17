@@ -79,6 +79,7 @@ if (!empty($M3D['debug'])) {
 }
 
 $patron = m3d_apply_exception($result);
+if (!$setup && ($result['reason'] ?? '') !== 'owner') m3d_login_count((bool) $patron['access']);   // Admin → Home → Logins (numbers only)
 if (!$patron['access']) $fail($result['reason']);   // Admin → Access exceptions ("Bypass Tier") count here too
 // a paying patron's first login: the welcome page first (Admin → Settings → Features → Welcome Page), which continues to $return
 if (m3d_welcome_due($patron)) $return = '/welcome/' . ($return !== '/' ? '?return=' . rawurlencode($return) : '');

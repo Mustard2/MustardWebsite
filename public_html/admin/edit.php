@@ -56,13 +56,18 @@ $payload = [
     'games'      => admin_value_counts(array_map(fn($m) => $m['game'] ?? '', $models), array_map(fn($m) => $m['franchise'] ?? '', $models)),
     'statuses'   => array_map(fn($s) => $s[0], M3D_STATUSES),
     'currency'   => m3d_currency(),
-    'release'    => admin_release_local($item),   // the release dates in Berlin time for the date fields
+    'release'    => admin_release_local($item),   // the release dates in site time for the date fields
     'tiers'      => array_map(fn($c, $t) => [$c, $t . ' · ' . m3d_money($c)], array_keys(m3d_known_tiers()), m3d_known_tiers()),   // [cents, "Fan · €10"]: the Access section's tier buttons
     'types'      => admin_value_counts(array_map('m3d_accessory_type', m3d_outfits()), [], M3D_ACCESSORY_TYPES),
     'visibility' => M3D_VISIBILITY,
     'model3d'    => m3d_model3d_facts($item),   // the 3D preview's facts (size, triangles, textures) or why it can't be shown
     's4'         => m3d_s4()['bucket'] !== '' && m3d_s4_on(),   // MEGA S4 on with a bucket: download links may be "s4:<file>" (the S4… picker)
     'deadLinks'  => array_map(fn() => true, lc_dead_for($item)),   // Link Check: these addresses get red fields + a broken chain (markDead() in admin.js)
+    // typing # in a version's changes lists the reports (bugMention() in admin.js): newest first, this item's own marked
+    'bugs'       => m3d_bugs_on() ? array_map(fn($b) => ['n' => (int) $b['n'], 't' => (string) $b['title'], 's' => isset(BUG_STATUSES[$b['status'] ?? '']) ? $b['status'] : 'new',
+        'mine' => !$isNew && ($b['about'] ?? '') === $kind . ':' . $item['slug'], 'a' => m3d_bug_about($b)['name'], 'f' => ($b['status'] ?? '') === 'fixed' ? bug_version_words(m3d_bug_fixed_in($b)) : ''],
+        array_slice(m3d_bugs(), 0, 500)) : [],
+    'bugStatuses' => array_map(fn($s) => [$s[0], $s[2]], BUG_STATUSES),
     'models'     => array_map(fn($m) => ['slug' => $m['slug'], 'name' => admin_item_label('models', $m), 'thumb' => img_small(item_pic('models', $m))], $models),
 ];
 $public = m3d_item_url($kind, $item['slug']);

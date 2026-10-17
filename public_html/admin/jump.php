@@ -42,10 +42,11 @@ $boxes = [
     'homepage'    => ['Homepage Section', 'plans how to get tiers'],
     'notice'      => ['Site Notice', 'banner announcement message'],
     'legal'       => ['Legal & Contact', 'privacy imprint address support email'],
+    'timezone'    => ['Time Zone', 'clock timezone utc cet cest berlin hours'],
     'welcome'     => ['Welcome Page', 'first login tour new patrons onboarding landing intro'],
     'bugs'        => ['Bug Reports (Settings)', 'bugs webhook uploads moderation blender mustardui versions'],
     'discord'     => ['Discord Announcements', 'webhook post new versions renders gallery message'],
-    's4'          => ['MEGA S4 Downloads', 'object storage bucket signed temporary download links keys'],
+    's4'          => ['MEGA S4 Downloads', 'object storage bucket signed temporary download links keys download domain cloudflare worker'],
     'mustardui'   => ['MustardUI Page', 'add-on addon'],
     'smutbase'    => ['SmutBase Import (Setting)', 'import'],
     'patreon'     => ['Patreon', 'client id secret campaign currency keys creator access refresh token pledge history months as a patron'],
@@ -54,6 +55,7 @@ $boxes = [
     'problems'    => ['Site Problems', 'errors log failed broken'],
     'tools'       => ['Tools', 'php cache sessions clear log unused images temporary files cloudflare'],
     'system'      => ['System', 'php version disk space'],
+    'personal-data' => ['Personal Data', 'gdpr export user data access request dsgvo patron download copy'],
 ];
 foreach ($boxes as $id => [$t, $s]) $add($t, 'Settings', settings_url($id), $s);
 

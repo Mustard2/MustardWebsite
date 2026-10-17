@@ -195,7 +195,7 @@ function maintenance_gate(): void
     header('Content-Type: text/html; charset=utf-8');
     ?>
 <!doctype html>
-<html lang="en">
+<html lang="en" data-tz="<?= e(m3d_tz_id()) ?>">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -264,7 +264,7 @@ function layout_start(string $title = '', string $description = '', string $body
     if (session_status() !== PHP_SESSION_ACTIVE && !$noStore) header('Cache-Control: private, no-cache');
     ?>
 <!doctype html>
-<html lang="en">
+<html lang="en" data-tz="<?= e(m3d_tz_id()) ?>">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -428,7 +428,7 @@ function m3d_status_data(?array $p): array
     if (!empty($p['access']) && ($l = m3d_downloads_left($p)) !== null) {
         $next = array_filter($l['next']);
         $left = ['models' => $l['models'], 'outfits' => $l['outfits'],
-                 'next' => $next ? m3d_berlin(min($next), 'D j M, H:i T') : null];
+                 'next' => $next ? m3d_site_time(min($next), 'D j M, H:i T') : null, 'nextTs' => $next ? min($next) : null];
         // only items this visitor may know of (in the catalogs, or a page they can open): never a draft's or hidden password item's
         // address in the page; slugs always as strings ("2077" would be a number in the JSON)
         $seen = fn(string $k, string $slug) => ($it = m3d_item($k, $slug)) && (m3d_listed($it) || m3d_can_view($k, $it));
@@ -449,9 +449,9 @@ function m3d_status_data(?array $p): array
     return ['loggedIn' => true, 'name' => $p['name'], 'access' => (bool) $p['access'], 'admin' => m3d_is_admin($GLOBALS['M3D']),
             'owner' => ($p['reason'] ?? '') === 'owner',
             'left' => $left,
-            // newer versions of what they downloaded, as codes "kind:slug@version": the dot on the account button shows while
-            // one isn't in the browser's "seen" list yet (localStorage m3d_seen_updates, filled on My account)
-            'updates' => m3d_update_codes(m3d_updates_for($p))];
+            // newer versions of what they downloaded, as codes "kind:slug@version", without the ones they ignored: the "↑ Update"
+            // tags on catalog cards and the dot on the account button (until downloaded or ignored)
+            'updates' => m3d_update_codes(m3d_updates_shown($p))];
 }
 
 /**
@@ -493,7 +493,9 @@ function account_box(string $path): string
         . '        <a class="btn btn-patreon btn-sm" rel="nofollow" href="/auth/login.php?return=' . e(rawurlencode($path)) . '" data-login>Log In with Patreon</a>' . "\n"
         . "      </div>\n";
     $ok = !empty($p['access']);
-    return '      <div class="account" data-account' . $join . ' data-session data-me="' . e(json_encode(m3d_status_data($p), JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE)) . '">'
+    $me = m3d_status_data($p);
+    if (!empty($p['access'])) $me['csrf'] = m3d_csrf();   // "Ignore this update" (cards, My account → /auth/ignore-update.php); only this visitor gets the page
+    return '      <div class="account" data-account' . $join . ' data-session data-me="' . e(json_encode($me, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE)) . '">'
         . '<a class="btn btn-sm btn-who' . ($ok ? ' ok' : '') . '" href="/account/" title="My account' . ($ok ? ' · Patron' : '') . '"><span class="who-name">' . e((string) ($p['name'] ?? '')) . '</span></a>'
         . (m3d_is_admin($GLOBALS['M3D']) ? '<a class="btn btn-primary btn-sm" href="/admin/">Admin</a>' : '')
         . '<a class="btn btn-ghost btn-sm" href="/auth/logout.php?return=' . e(rawurlencode($path)) . '">Log Out</a>'
@@ -533,6 +535,41 @@ function visibility_pill(string $kind, array $item): string
     return visibility_pill_only($kind, $item) . release_pill($item);
 }
 
+// Moments visitors read (release dates, the next unlock, the daily cap): printed in site time inside a <time>, which site.js
+// (localTime()) shows again in the visitor's own time zone and clock (12 / 24 hours as their browser uses). Calendar days the owner types
+// (changelog dates) and the admin stay in site time.
+const WHEN_FORMATS = ['full' => 'D j M, H:i T', 'at' => 'D j M \\a\\t H:i T', 'day' => 'D j M', 'short' => 'j M', 'long' => 'l j F, H:i T'];
+
+/** A moment for visitors: "Tue 20 Oct, 18:00 CEST" in a <time> that site.js turns into their own time ($style: WHEN_FORMATS key). */
+function when_html(int $ts, string $style = 'full'): string
+{
+    return '<time datetime="' . gmdate('Y-m-d\TH:i:s\Z', $ts) . '" data-lt="' . e($style) . '">' . e(m3d_site_time($ts, WHEN_FORMATS[$style] ?? WHEN_FORMATS['full'])) . '</time>';
+}
+
+/** A moment inside a sentence built as plain text: a mark that when_text() turns into when_html() (and when_plain() into site time). */
+function when_mark(int $ts, string $style = 'full'): string
+{
+    return "\x01$ts|$style\x02";
+}
+
+/** Plain text with when_mark()s → HTML: escaped, each mark a when_html(). */
+function when_text(string $text): string
+{
+    return preg_replace_callback('/\x01(\d+)\|(\w+)\x02/', fn($m) => when_html((int) $m[1], $m[2]), e($text));
+}
+
+/** Plain text with when_mark()s → plain text (attributes): each mark in site time. */
+function when_plain(string $text): string
+{
+    return preg_replace_callback('/\x01(\d+)\|(\w+)\x02/', fn($m) => m3d_site_time((int) $m[1], WHEN_FORMATS[$m[2]] ?? WHEN_FORMATS['full']), $text);
+}
+
+/** A title attribute holding a moment ("Coming for patrons on {t}"): in site time, and again in the visitor's own time by site.js. */
+function when_title(string $tpl, int $ts, string $style = 'full'): string
+{
+    return ' title="' . e(str_replace('{t}', m3d_site_time($ts, WHEN_FORMATS[$style] ?? WHEN_FORMATS['full']), $tpl)) . '" data-lt-title="' . e("$ts|$style|$tpl") . '"';
+}
+
 const CLOCK_ICON = '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>';
 
 /** Before its patrons date: "Patrons 12 Oct"; patrons only until its public date: "Free 20 Oct". */
@@ -540,8 +577,8 @@ function release_pill(array $item): string
 {
     $r = m3d_release($item);
     return match (m3d_release_phase($item)) {
-        'soon'  => '<span class="lock-pill rel-pill soon" title="Coming for patrons on ' . e(m3d_release_when($r['patrons'])) . '">' . CLOCK_ICON . 'Patrons ' . e(m3d_release_day($r['patrons'])) . '</span>',
-        'early' => '<span class="lock-pill rel-pill" title="Patrons only until ' . e(m3d_release_when($r['public'])) . ', then free for everyone">' . CLOCK_ICON . 'Free ' . e(m3d_release_day($r['public'])) . '</span>',
+        'soon'  => '<span class="lock-pill rel-pill soon"' . when_title('Coming for patrons on {t}', $r['patrons']) . '>' . CLOCK_ICON . 'Patrons ' . when_html($r['patrons'], 'short') . '</span>',
+        'early' => '<span class="lock-pill rel-pill"' . when_title('Patrons only until {t}, then free for everyone', $r['public']) . '>' . CLOCK_ICON . 'Free ' . when_html($r['public'], 'short') . '</span>',
         default => '',
     };
 }
@@ -628,15 +665,21 @@ function highlight_badge(?string $h): string
     return '<span class="badge tone-' . $tone . '" title="' . e($h) . '">' . e($label) . '</span>';
 }
 
-/** "Fix: ..." / "New: ..." prefixes on changelog lines become small coloured tags. */
+/**
+ * "Fix: ..." / "New: ..." prefixes on changelog lines become small coloured tags; report numbers before the colon ("Fix #6: ...",
+ * "Fix #6, #7: ...") start the text as chips linking to the reports, and any other "#6" in the line becomes one too (bug_refs_html()).
+ * The tags make a column (site.css: the version's lines share a grid), so every text starts at the same place.
+ */
 function change_line(string $line): string
 {
     $tones = ['new' => 'new', 'feature' => 'new', 'fix' => 'fix', 'bug' => 'fix', 'enhancement' => 'enh', 'improvement' => 'enh',
               'optimization' => 'opt', 'removal' => 'rem', 'ui' => 'ui', 'outfit' => '', 'outfits' => '', 'physics' => '', 'note' => ''];
-    if (preg_match('/^(New|Feature|Fix|Bug|Enhancement|Improvement|Optimization|Removal|UI|Outfits?|Physics|Note)(\s*\([^)]*\))?:\s+(.*)$/s', $line, $m)) {
-        return '<li><span class="tag tag-' . $tones[strtolower($m[1])] . '">' . e($m[1] . ($m[2] ?? '')) . '</span><span class="chg md">' . md_inline($m[3]) . '</span></li>';
+    if (preg_match('/^(New|Feature|Fix|Bug|Enhancement|Improvement|Optimization|Removal|UI|Outfits?|Physics|Note)(\s*\([^)]*\))?((?:\s*,?\s*#\d{1,6})*):\s+(.*)$/s', $line, $m)) {
+        preg_match_all('/#(\d{1,6})/', $m[3], $refs);
+        $chips = implode('', array_map(fn($n) => bug_ref_link((int) $n, true), $refs[1]));
+        return '<li><span class="tag tag-' . $tones[strtolower($m[1])] . '">' . e($m[1] . ($m[2] ?? '')) . '</span><span class="chg md">' . $chips . bug_refs_html(md_inline($m[4])) . '</span></li>';
     }
-    return '<li><span class="chg md">' . md_inline($line) . '</span></li>';
+    return '<li class="no-tag"><span class="chg md">' . bug_refs_html(md_inline($line)) . '</span></li>';
 }
 
 /** Gallery / notes entries can be a plain string or an object. */
@@ -757,6 +800,10 @@ function preview_bar(string $return): string
     $total = (int) ($pv['total_cents'] ?? 0);
     $price = (int) ($pv['tier_cents'] ?? 500);
     $amt = fn(int $c) => $c % 100 ? number_format($c / 100, 2, '.', '') : (string) intdiv($c, 100);
+    // the real patron: shown as "Name · ID" when the site knows the name; a name that found nobody (or several) stays, with a note
+    [$miss, $many] = explode("\x1f", (string) ($pv['as_miss'] ?? '')) + [1 => ''];
+    $asId = (string) ($pv['as'] ?? '');
+    $asVal = $miss !== '' ? $miss : ($asId !== '' ? m3d_patron_pick($asId, m3d_known_patrons()[$asId] ?? '') : '');
     return '<form class="preview-bar" method="post" action="/admin/patron-preview.php">'
         . '<input type="hidden" name="csrf" value="' . e(m3d_csrf()) . '" /><input type="hidden" name="return" value="' . e(m3d_safe_return($return, '/')) . '" />'
         . '<b class="pv-title">Preview</b>'
@@ -767,7 +814,9 @@ function preview_bar(string $return): string
         . '<label title="Models downloaded: counted as downloaded a minute ago (other models than the one you look at), so they count in every limit period."><span>Models</span><input type="number" name="dl_models" min="0" max="99" value="' . (int) ($pv['dl_models'] ?? 0) . '" /></label>'
         . '<label title="Accessories downloaded: counted as downloaded a minute ago, so they count in every limit period."><span>Accessories</span><input type="number" name="dl_outfits" min="0" max="99" value="' . (int) ($pv['dl_outfits'] ?? 0) . '" /></label>'
         . '<label title="This many of your latest updated models/accessories count as downloaded before their latest version: the account button gets the dot and My Models shows them as updates."><span>Updates</span><input type="number" name="updates" min="0" max="20" value="' . (int) ($pv['updates'] ?? 0) . '" /></label>'
-        . '<label title="Optional: a real Patreon user ID (a long number, see Admin → Downloads). Adds that patron’s real downloads (limits, Unlocked) and their special access (Admin → Access)."><span>Patreon ID</span><input name="as" inputmode="numeric" pattern="\\d{1,20}" placeholder="optional" value="' . e($pv['as'] ?? '') . '" /></label>'
+        . '<label class="pv-who" title="Optional: a real patron, by Patreon user ID or name (names of people who downloaded or wrote a bug report). Adds that patron’s real downloads (limits, Unlocked) and their special access (Admin → Access)."><span>Patreon ID or Name</span><input name="as" maxlength="80" placeholder="optional" list="pv-known" autocomplete="off" value="' . e($asVal) . '"' . ($miss !== '' ? ' class="is-miss" aria-describedby="pv-miss"' : '') . ' /></label>'
+        . ($miss !== '' ? '<span class="pv-miss" id="pv-miss">' . ($many ? 'Several match: pick one' : 'Not found: type the ID') . '</span>' : '')
+        . '<datalist id="pv-known">' . m3d_patron_options() . '</datalist>'
         . '<span class="pv-btns"><button class="btn btn-primary btn-sm" name="do" value="apply">Apply</button><button class="btn btn-ghost btn-sm" name="do" value="stop">Stop</button></span>'
         . '</form>';
 }
@@ -858,7 +907,7 @@ function dl_wait_facts(array $item): string
     $v = m3d_current_version($item);
     if (($label = m3d_version_label($v)) !== '') {
         $ts = m3d_changelog_ts((string) ($v['date'] ?? ''));
-        $parts[] = 'Version <b>' . e($label) . '</b>' . ($ts ? ' · ' . e(m3d_berlin($ts, 'j M Y')) : '');
+        $parts[] = 'Version <b>' . e($label) . '</b>' . ($ts ? ' · ' . e(m3d_site_time($ts, 'j M Y')) : '');
     }
     if (($bl = trim((string) ($item['blender'] ?? ''))) !== '') $parts[] = 'Blender <b>' . e($bl) . '</b>';
     $addons = [];
@@ -881,8 +930,6 @@ function dl_unlock_line(array $rows): string
     return $left <= 1 ? "This uses your last {$noun}unlock." : "This uses 1 of your $left {$noun}unlocks left.";
 }
 
-/** One download at a time (auth/get.php, auth/get-still.php): another download of this visitor is still counting down ($busy =
- *  m3d_dl_busy()), so this one is refused; the visitor goes back and tries again once it has started. */
 /** A /get/ address with nothing to download: a plain answer (404 unknown or switched off, 503 not ready yet). */
 function dl_unavailable(int $code, string $msg): never
 {
@@ -895,11 +942,12 @@ function dl_unavailable(int $code, string $msg): never
  * one when missing, wrong or expired); returns once the download may start. $confirm (limit rows): the download will use one of the
  * patron's unlocks, so the page first asks "Unlock this model?"; its Yes comes back here with c (m3d_dl_confirm_code()), and the
  * countdown starts then. One download at a time: while another download of this visitor counts down, a new one is refused
- * (download_busy_page()). $back: where the pages' back button goes (null = the item's page).
+ * (download_busy_page()). $back: where the pages' back button goes (null = the item's page). $free: a public link (anyone downloads it):
+ * no countdown, so it returns at once and never holds or waits for another download.
  */
-function dl_wait_gate(string $kind, string $slug, int $n, array $item, string $label, string $here, ?array $confirm = null, bool $update = false, ?string $back = null): void
+function dl_wait_gate(string $kind, string $slug, int $n, array $item, string $label, string $here, ?array $confirm = null, bool $update = false, ?string $back = null, bool $free = false): void
 {
-    $wait = m3d_dl_settings()['wait'];
+    $wait = $free ? 0 : m3d_dl_settings()['wait'];
     $code = m3d_dl_code($kind, $slug, $n);
     // the version out now is part of it: an old Yes link (browser history) doesn't skip the question for a newer version
     $cCode = $confirm !== null ? m3d_dl_confirm_code($code . '@' . m3d_released_label($item)) : null;
@@ -922,6 +970,8 @@ function dl_wait_gate(string $kind, string $slug, int $n, array $item, string $l
     download_wait_page($kind, $item, $label, $left, $go, $confirmed ? null : $confirm, $back, $update);
 }
 
+/** One download at a time (auth/get.php, auth/get-still.php): another download of this visitor is still counting down ($busy =
+ *  m3d_dl_busy()), so this one is refused; the visitor goes back and tries again once it has started. */
 function download_busy_page(string $kind, array $item, array $busy, ?string $back = null): never
 {
     $page = $back ?? m3d_item_url($kind, $item['slug']);
@@ -1144,7 +1194,7 @@ function downloads_box(string $kind, array $item, bool $comingSoon = false): str
         // logged in: can they download it? A green ✓ by the title when yes (why: on hover / tap), a red ✗ and one line when not
         $v = $p && ($phase !== 'soon' || $admin) ? dl_verdict($kind, $item, $p) : null;
         $mark = $v === null ? '' : ($v['ok']
-            ? '<button type="button" class="help-tip dl-mark ok" data-help="' . e($v['title'] . ' ' . $v['text']) . '" aria-label="' . e($v['title'] . ' ' . $v['text']) . '">' . DL_MARK_OK . '</button>'
+            ? '<button type="button" class="help-tip dl-mark ok" data-help="' . e(when_plain($v['title'] . ' ' . $v['text'])) . '" aria-label="' . e(when_plain($v['title'] . ' ' . $v['text'])) . '">' . DL_MARK_OK . '</button>'
             : '<span class="dl-mark no" aria-hidden="true">' . DL_MARK_NO . '</span>');
         $line = $v && !$v['ok'] ? dl_verdict_html($v) : '';
         if ($line) $patron = str_replace('class="btn btn-primary dl"', 'class="btn btn-primary dl is-limited"', $patron);
@@ -1184,25 +1234,25 @@ function release_note(array $item, bool $guest, bool $admin): string
     $r = m3d_release($item);
     $days = $r['patrons'] !== null && $r['public'] !== null ? (int) round(($r['public'] - $r['patrons']) / 86400) : 0;
     $early = $days > 0 ? m3d_plural($days, 'day') . ' before everyone else' : 'before everyone else';
-    $free = $r['public'] !== null ? ' Free for everyone from ' . m3d_release_when($r['public'], false) . '.' : '';
+    $free = $r['public'] !== null ? ' Free for everyone from ' . when_mark($r['public'], 'day') . '.' : '';
     switch (m3d_release_phase($item)) {
         case 'soon':
-            $when = m3d_release_when($r['patrons']);
+            $when = when_mark($r['patrons']);
             [$b, $t] = $admin ? [$r['before'] === 'soon' ? 'Shown as “Coming Soon”.' : 'Hidden from everyone but admins.', "Patrons can download it from $when; you already can, as an admin."]
                 : ($guest ? ["Coming for patrons on $when", '(' . m3d_release_in($r['patrons']) . ').' . $free]
                 : ["Downloads open $when", '(' . m3d_release_in($r['patrons']) . ').' . ($r['public'] !== null ? " You get it $early." : '')]);
             break;
         case 'early':
-            [$b, $t] = $guest ? ['Early access for patrons.', 'Free for everyone from ' . m3d_release_when($r['public'], false) . ' (' . m3d_release_in($r['public']) . ').']
-                : ['Early access:', "patrons get it $early. Free for all from " . m3d_release_when($r['public'], false) . '.'];
+            [$b, $t] = $guest ? ['Early access for patrons.', 'Free for everyone from ' . when_mark($r['public'], 'day') . ' (' . m3d_release_in($r['public']) . ').']
+                : ['Early access:', "patrons get it $early. Free for all from " . when_mark($r['public'], 'day') . '.'];
             break;
         case 'free':
-            return '<p class="small muted dl-free-since">' . ($days > 0 ? 'Patrons got it ' . m3d_plural($days, 'day') . ' early, on ' . m3d_release_when($r['patrons'], false) . '.'
-                : 'Free for everyone since ' . m3d_release_when($r['public'], false) . '.') . '</p>';
+            return '<p class="small muted dl-free-since">' . when_text($days > 0 ? 'Patrons got it ' . m3d_plural($days, 'day') . ' early, on ' . when_mark($r['patrons'], 'day') . '.'
+                : 'Free for everyone since ' . when_mark($r['public'], 'day') . '.') . '</p>';
         default:
             return '';
     }
-    return '<p class="dl-early">' . CLOCK_ICON . '<span><b>' . e($b) . '</b> ' . e($t) . '</span></p>';
+    return '<p class="dl-early">' . CLOCK_ICON . '<span><b>' . when_text($b) . '</b> ' . when_text($t) . '</span></p>';
 }
 
 const DL_MARK_OK = '<svg width="20" height="20" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="11" fill="currentColor"/><path d="m7 12.5 3.3 3.3L17 9" fill="none" stroke="#121110" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></svg>';
@@ -1228,15 +1278,16 @@ function dl_verdict(string $kind, array $item, array $p): ?array
     $cur = $p['currency'] ?? null;
     if (!$req['tier_ok']) {
         // below the minimum tier: name it, and theirs (dl_verdict_html() adds the Upgrade link)
-        $t = m3d_patron_tier($p);
+        $t = m3d_patron_counts($p)['tier'];
         $need = m3d_tier_label($r['tier_cents'], $cur) . ' or higher';
         $have = $t ? ($t[0] !== '' ? $t[0] . ' (' . m3d_money($t[1], $cur) . ')' : m3d_money($t[1], $cur)) : '';
         $short = $t ? ($t[0] !== '' ? $t[0] . ', ' . m3d_money($t[1], $cur) : m3d_money($t[1], $cur)) : '';   // in the list, without nested brackets
         $miss[] = ['title' => "You need the $need.", 'text' => $have !== '' ? "Yours is $have." : '', 'item' => "the $need" . ($short !== '' ? " (yours: $short)" : '')];
     }
     if (!$req['mt_ok']) {
-        $mo = (int) (m3d_months_since($p['since'] ?? null) ?? 0);
-        $tot = (int) ($p['total_cents'] ?? 0);
+        $counts = m3d_patron_counts($p);   // with a "Custom" exception's months / total
+        $mo = (int) ($counts['months'] ?? 0);
+        $tot = $counts['total'];
         $need = $have = [];
         if ($r['months'] && ($r['mode'] === 'or' || $mo < $r['months'])) { $need[] = m3d_plural($r['months'], 'month') . ' as a patron'; $have[] = m3d_plural($mo, 'month'); }
         if ($r['total_cents'] && ($r['mode'] === 'or' || $tot < $r['total_cents'])) { $need[] = m3d_money($r['total_cents'], $cur) . ' in total support'; $have[] = m3d_money($tot, $cur); }
@@ -1252,13 +1303,13 @@ function dl_verdict(string $kind, array $item, array $p): ?array
     $unit = fn(array $row) => m3d_rule_noun($row['rule']);
     if ($limited && !$c['ok']) {
         $o = m3d_blocking_row($c['rows']);
-        $when = $o['next'] ? m3d_berlin($o['next'], 'D j M \\a\\t H:i T') : '';
+        $when = $o['next'] ? when_mark($o['next'], 'at') : '';
         $miss[] = ['title' => 'You used all your ' . $unit($o) . 'unlocks of ' . $period($o) . '.',
                    'text' => trim(($c['update'] ? 'A new version uses an unlock too. ' : '') . ($when !== '' ? "Your next one is on $when." : '')),
                    'item' => 'one more ' . $unit($o) . 'unlock' . ($when !== '' ? " (next one on $when)" : '')];
     }
     if (($until = m3d_dl_capped($p)) !== null) {   // daily download cap (Admin → Access)
-        $when = m3d_berlin($until, 'D j M \\a\\t H:i T');
+        $when = when_mark($until, 'at');
         $miss[] = ['title' => 'You reached the daily download limit.', 'text' => "You can download again on $when.", 'item' => "a new day of downloads (from $when)"];
     }
     $up = ['upgrade' => !$req['tier_ok']];
@@ -1280,8 +1331,8 @@ function dl_verdict(string $kind, array $item, array $p): ?array
 /** The red line of a download that is blocked (dl_verdict()): what is missing, in one sentence or a short list. */
 function dl_verdict_html(array $v): string
 {
-    $h = '<div class="dl-verdict" role="status"><p><b>' . e($v['title']) . '</b>' . ($v['text'] !== '' ? ' ' . e($v['text']) : '') . '</p>';
-    if ($v['list']) $h .= '<ul>' . implode('', array_map(fn($x) => '<li>' . e($x) . '</li>', $v['list'])) . '</ul>';
+    $h = '<div class="dl-verdict" role="status"><p><b>' . when_text($v['title']) . '</b>' . ($v['text'] !== '' ? ' ' . when_text($v['text']) : '') . '</p>';
+    if ($v['list']) $h .= '<ul>' . implode('', array_map(fn($x) => '<li>' . when_text($x) . '</li>', $v['list'])) . '</ul>';
     // below the item's minimum tier: a way to upgrade (only with a Patreon link set)
     $join = !empty($v['upgrade']) ? social_url('patreon') : '';
     if ($join !== '') $h .= '<p class="dl-upgrade"><a href="' . e($join) . '" rel="noopener" target="_blank">Upgrade on Patreon ↗</a> <span class="muted">then press Refresh on <a href="/account/">My account</a>.</span></p>';
@@ -1289,7 +1340,7 @@ function dl_verdict_html(array $v): string
 }
 
 /** Changelog with "show older" and "oldest first" controls (one per page). */
-function changelog_block(array $log, ?string $note = null, bool $noImages = false, array $fixes = []): string
+function changelog_block(array $log, ?string $note = null, bool $noImages = false): string
 {
     if (!$log) return '';
     $SHOW = 3;
@@ -1300,16 +1351,15 @@ function changelog_block(array $log, ?string $note = null, bool $noImages = fals
         $h .= '<div class="log-controls"><button class="log-btn" data-log-toggle aria-expanded="false"><span data-when="closed">Show ' . $older . ' Older ' . ($older === 1 ? 'Version' : 'Versions') . '</span><span data-when="open" hidden>Hide Older Versions</span></button>'
             . '<button class="log-btn ghost" data-log-order aria-label="Change changelog order"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><path d="M7 4v16m0 0-3-3m3 3 3-3M17 20V4m0 0-3 3m3-3 3 3" stroke-linecap="round" stroke-linejoin="round"/></svg><span data-order-label>Oldest First</span></button></div>';
     }
-    $h .= '<ol class="log" data-log>' . changelog_items($log, $noImages, $SHOW, $fixes) . '</ol>';
+    $h .= '<ol class="log" data-log>' . changelog_items($log, $noImages, $SHOW) . '</ol>';
     if ($older) $h .= '<button class="log-btn ghost log-bottom" data-log-toggle hidden>↑ Hide Older Versions</button>';
     return $h . '</section>';
 }
 
 /**
  * The versions of a changelog as <li>s of an <ol class="log">: the first one is the latest; from $show on they start hidden (older).
- * $fixes = the bug reports fixed in each version, by index (m3d_bug_fixes_for()), listed under its changes.
  */
-function changelog_items(array $log, bool $noImages = false, int $show = PHP_INT_MAX, array $fixes = []): string
+function changelog_items(array $log, bool $noImages = false, int $show = PHP_INT_MAX): string
 {
     $h = '';
     $latest = null;   // "Latest" = the newest version out; one dated in the future says when it comes instead
@@ -1325,11 +1375,6 @@ function changelog_items(array $log, bool $noImages = false, int $show = PHP_INT
             . highlight_badge($en['highlight'] ?? null) . '</div>';
         foreach ($en['notes'] ?? [] as $n) $h .= '<div class="log-note md">' . md_html((string) $n, ['noImages' => $noImages]) . '</div>';
         if (!empty($en['changes'])) { $h .= '<ul>'; foreach ($en['changes'] as $c) $h .= change_line((string) $c); $h .= '</ul>'; }
-        if (!empty($fixes[$i])) {
-            $h .= '<div class="log-fixes"><span class="log-fixes-h">' . bug_icon('bug') . 'Fixes</span><ul>';
-            foreach ($fixes[$i] as [$bn, $bt]) $h .= '<li><a href="/bugs/' . $bn . '/"><span class="muted">#' . $bn . '</span> ' . e($bt) . '</a></li>';
-            $h .= '</ul></div>';
-        }
         if (!empty($en['image']) && !$noImages) $h .= '<img class="note-img" src="' . e($en['image']) . '" alt="" loading="lazy" />';
         $h .= '</li>';
     }
@@ -1580,35 +1625,57 @@ function md_id(string $text): string
 
 const MD_IMG = '/^!\[([^\]]*)\]\(((?:https?:\/\/|\/(?![\/\\\\]))[^\s)]+)\)$/';   // "//other-site/…" (or "/\other-site/…") isn't a picture of this site: never loaded
 
-/** One list (bullets or numbered) from its lines. Indented lines continue the item above; indented "- " lines make a sub-list. */
+/**
+ * One list (bullets or numbered) from its lines. Indented lines continue the item above; indented "- " or "1. " lines make a
+ * sub-list, which can hold its own sub-lists (any depth: each level indented further than the one above).
+ */
 function md_list(array $lines): string
 {
     $ordered = (bool) preg_match('/^\d+\.\s/', $lines[0]);
     $items = [];
     foreach ($lines as $line) {
-        if (preg_match($ordered ? '/^(\d+)\.\s+(.*)$/' : '/^-\s+(.*)$/', $line, $m)) {
+        if (preg_match($ordered ? '/^(\d+)\.\s+(.*)$/' : '/^[-–]\s+(.*)$/u', $line, $m)) {
             $items[] = ['n' => $ordered ? (int) $m[1] : 0, 'text' => $ordered ? $m[2] : $m[1], 'more' => []];
         } else {
-            $items[count($items) - 1]['more'][] = trim($line);
+            $items[count($items) - 1]['more'][] = $line;   // indentation kept: it tells the sub-lists' levels apart
         }
     }
     $start = $ordered && $items[0]['n'] > 1 ? ' start="' . $items[0]['n'] . '"' : '';
     $out = $ordered ? "<ol$start>" : '<ul>';
-    foreach ($items as $it) {
-        $out .= '<li>' . md_inline($it['text']);
-        $text = []; $sub = [];
-        $flush = function () use (&$text, &$sub, &$out) {
-            if ($text) { $out .= '<span class="li-more">' . md_inline(implode("\n", $text)) . '</span>'; $text = []; }
-            if ($sub) { $out .= '<ul>' . implode('', array_map(fn($l) => '<li>' . md_inline($l) . '</li>', $sub)) . '</ul>'; $sub = []; }
-        };
-        foreach ($it['more'] as $l) {
-            if (preg_match('/^[-–]\s+(.*)$/u', $l, $m)) { if ($text) $flush(); $sub[] = $m[1]; }
-            else { if ($sub) $flush(); $text[] = $l; }
-        }
-        $flush();
-        $out .= '</li>';
-    }
+    foreach ($items as $it) $out .= '<li>' . md_inline($it['text']) . md_list_more($it['more']) . '</li>';
     return $out . ($ordered ? '</ol>' : '</ul>');
+}
+
+/**
+ * What follows an item's first line: continuation text, and sub-lists ("- " or "1. " lines). A sub-item starts or continues the
+ * sub-list; lines indented further than its first item belong to it (that item's text, or a deeper level); text that isn't
+ * indented further ends it and continues the item itself.
+ */
+function md_list_more(array $lines): string
+{
+    $out = ''; $text = []; $sub = []; $subType = ''; $subInd = 0;
+    $flush = function () use (&$text, &$sub, &$out) {
+        if ($text) { $out .= '<span class="li-more">' . md_inline(implode("\n", $text)) . '</span>'; $text = []; }
+        if ($sub) { $out .= md_list($sub); $sub = []; }
+    };
+    foreach ($lines as $l) {
+        $t = ltrim($l, ' ');
+        if ($t === '') continue;
+        $ind = strlen($l) - strlen($t);
+        $type = preg_match('/^\d+\.\s/', $t) ? 'ol' : (preg_match('/^[-–]\s/u', $t) ? 'ul' : '');
+        if ($sub && $ind > $subInd) {
+            $sub[] = substr($l, $subInd);   // deeper: the sub-item's own text or sub-list
+        } elseif ($type !== '') {
+            if ($text || ($sub && $type !== $subType)) $flush();   // after text, or a sub-list of the other kind: a new sub-list
+            if (!$sub) { $subType = $type; $subInd = $ind; }
+            $sub[] = $t;
+        } else {
+            if ($sub) $flush();
+            $text[] = $t;
+        }
+    }
+    $flush();
+    return $out;
 }
 
 function md_table(array $lines): string

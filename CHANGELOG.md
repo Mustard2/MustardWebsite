@@ -1,5 +1,65 @@
 # Changelog
 
+## 2026.10.17-5 · 17 Oct 2026
+
+- Fix: Admin → Home's 7-day tile now says it counts downloads, and shows the plain difference instead of a huge % when the week before had few downloads.
+- Fix: The lines in the "Found a Bug?" box now line up with its title, and the open reports line has an icon.
+- Change: An older model's notice says the newer version "is in development" while that version is still in development.
+- New: Admin → Home shows logins (a last-7-days tile and a 30-day chart split by whether the patron can download)
+- New: Admin → Home is made of widgets you can add, remove, move and resize (Edit Layout)
+- Change: Admin → Home widgets keep their own height instead of stretching to the tallest one in the row
+- New: Admin → Home widgets Most Liked, Coming Up, Update Uptake, Bugs This Week and Gallery Downloads (in + Add Widget)
+- New: On Admin → Home, drag a widget anywhere, left or right, and it stays in that column.
+- Fix: Resizing a widget on Admin → Home no longer reshuffles the other widgets or leaves gaps.
+- New: On Admin → Home, drag a box's corner up or down to set its height; taller lists show more rows and taller charts draw taller bars.
+- Change: The README is rewritten to be easier to read, with screenshots of the site and the admin
+- Fix: Downloading the same file again within 10 minutes (pressing Download after it already started, Back, download managers) no longer adds a second line to the download log, a second count or a second download to the daily cap.
+- Fix: Resizing a widget at the bottom of Admin → Home no longer scrolls the page up.
+- Fix: Save Layout stays in reach while scrolling Admin → Home in Edit Layout.
+- Change: Box heights on Admin → Home snap to whole tiles, so boxes line up with the tiles and boxes next to them.
+- Change: The Access box in the model and accessory editors shows its summary as a plain line under the title, with the fold arrow on the left, like the other editor boxes.
+- Fix: The Access summary says "1 month as a patron" instead of "1 months".
+- Fix: The Minimum Tier field and the tier buttons sit on one line under their label.
+- Change: Box heights on Admin → Home move in half-tile steps and stop at the box's own height while dragging
+- Change: Every box on Admin → Home has a height in tiles (at least 1.5), with defaults of 1.5 for charts and 2.5 for lists
+- Fix: Edit Layout on Admin → Home showed more rows in a box than the saved page
+- Fix: Widgets on Admin → Home jumped to their places right after the page opened
+- Fix: Boxes on Admin → Home had a growing empty space under them while editing the layout
+- New: MEGA S4 Downloads can serve downloads from your own address (Download Domain), through a Cloudflare Worker
+- New: Access exceptions can set a custom tier, custom months or total support, or custom unlock rules for one person, instead of bypassing the check completely
+- Change: The Access Exceptions list shows one card per person, so it fits on phones
+- Fix: Lists in docs, FAQ answers and model / accessory texts keep a third (or deeper) level instead of flattening it, and sub-lists can be numbered.
+- New: Type # in a version's changes to pick a bug report from a list
+- New: "#6" in a changelog is a link to the report, with its title on hover, and "Fix #6:" keeps the coloured Fix tag
+- New: Saving a model or accessory marks the reports its changelog names as fixed in that version
+- New: Discord announcements link the bug reports named in the changes
+- Change: A report's Fixed In now comes from the changelog instead of a menu on the report page
+- Change: The "Fixes" list under each changelog version is gone, since the #6 in the changes links to the report
+- Change: The "Next Version" choice for fixed reports is gone
+- Fix: A bug report's Fixed In no longer shows a version set with the old menu when the changelog doesn't mention the report
+- New: Release dates, unlock times and the daily download limit show in each visitor's own time zone and clock.
+- New: Admin → Settings → Site → Time Zone sets the site's own time zone (Europe/Berlin by default).
+- Change: A bug number after a changelog tag ("Fix #2:") shows as its own yellow chip with a bug icon
+- Change: Fixed bug reports say "Fixed in Version 2" instead of "Fixed in 2"
+- Fix: Changelog tags, report chips and text line up, and every line's text starts at the same place.
+- Fix: The version header lines up with its timeline dot.
+- Change: A report named in a changelog shows "Fixed in Tifa Version 2" in its timeline, and removing the #6 takes it away again.
+- New: Patrons can ignore an update with the ✕ on its "Update" tag, or from My account; it stays hidden until the next version.
+- Change: The dot on the account button stays until each update is downloaded or ignored, instead of going away when My account is opened.
+- Change: The privacy page is shorter, with repeated sections merged.
+- New: Settings → Privacy → Personal Data finds a person by Patreon ID or name and downloads everything the site stores about them as a readable file or JSON
+- New: Delete all of a person's data from Settings → Privacy, after a warning and a typed confirmation
+- New: The preview bar and Access → Add User accept a patron's name as well as their Patreon ID
+- Change: Legal & Contact moved from Settings → Site to the new Privacy tab
+- Change: The personal data export no longer names the web host
+- Change: free downloads (public links, items past their public date, public Gallery full size files) start right away, without the countdown page
+- Fix: Admin → Images: the tab numbers count only the unused images while Unused Only is on.
+- Fix: Admin → Images: Unused Only stays on when you switch tabs.
+- Change: Admin → Images: Unused Only is a switch instead of a tick box.
+- Fix: Admin → Images: turning Unused Only on or off no longer shifts the search box, the model menu or the tabs.
+- Change: in the model editor, Status is a row of icon buttons like Visibility instead of a menu.
+- Fix: Admin → Home's likes total now matches the Likes tile on Downloads and says how many of them are on Gallery pictures
+
 ## 2026.10.15-15 · 15 Oct 2026
 
 - Fix: Previewing the site as a non-member no longer shows "Update" tags and the update dot.

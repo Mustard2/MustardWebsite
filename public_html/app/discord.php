@@ -161,7 +161,7 @@ function m3d_discord_embed(string $kind, array $item): array
     $lines = [];
     if (($h = trim((string) ($en['highlight'] ?? ''))) !== '') $lines[] = '**' . $h . '**';
     foreach ((array) ($en['changes'] ?? []) as $c) if (($c = trim((string) $c)) !== '') $lines[] = '• ' . $c;
-    $text = (string) $abs(implode("\n", $lines));
+    $text = m3d_bug_refs_discord((string) $abs(implode("\n", $lines)));   // "#6": a link to the report
     if (mb_strlen($text) > 1800) $text = mb_substr($text, 0, 1800) . '…';
     $color = ltrim((string) (m3d_identity()['color'] ?? ''), '#');
     $what = $kind === 'outfits' ? m3d_accessory_type($item) : 'Model' . (($item['franchise'] ?? '') !== '' ? ' · ' . $item['franchise'] : '');
@@ -172,7 +172,7 @@ function m3d_discord_embed(string $kind, array $item): array
     ];
     if ($text !== '') $e['description'] = $text;
     if (preg_match('/^[0-9a-f]{6}$/i', $color)) $e['color'] = hexdec($color);
-    if (($ts = m3d_changelog_ts((string) ($en['date'] ?? ''))) !== null) $e['timestamp'] = gmdate('c', $ts + 12 * 3600);   // noon of that German day: the same date for readers in the Americas
+    if (($ts = m3d_changelog_ts((string) ($en['date'] ?? ''))) !== null) $e['timestamp'] = gmdate('c', $ts + 12 * 3600);   // noon of that day in site time: the same date for readers in the Americas
     if (m3d_visibility($item) === 'public') {
         $pic = trim((string) ($en['image'] ?? '')) ?: item_pic($kind, $item);
         if ($pic !== '') $e['image'] = ['url' => abs_url(img_small($pic))];

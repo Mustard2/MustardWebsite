@@ -156,6 +156,109 @@ function autoGrow(ta) {
   return ta;
 }
 
+// "#" in a changelog line lists the bug reports, like GitHub: as you type, the number or words of the title narrow it; ↑ ↓ choose,
+// Enter / Tab / a click insert "#6", Esc closes. Right after a "Fix" tag at the start ("Fix #") it inserts "#6: ", the line's usual form.
+// o = {bugs: [{n, t (title), s (status), mine (about this item), a (about name), f (fixed in)}], statuses: {key: [label, colour]}, name: () => item name}
+const CHANGE_TAG_RE = /^\s*(New|Feature|Fix|Bug|Enhancement|Improvement|Optimization|Removal|UI|Outfits?|Physics|Note)(\s*\([^)]*\))?(\s*,?\s*#\d+)*\s*$/i;
+function bugMention(ta, o) {
+  let pop = null, items = [], sel = 0, skip = false;
+  const done = (b) => b.s === 'fixed' || b.s === 'closed';
+  const rank = (a, b) => (b.mine - a.mine) || (done(a) - done(b)) || (b.n - a.n);   // this item first, open first, newest first
+  const token = () => {   // the "#…" just before the caret: [index of the #, what follows it]
+    const pos = ta.selectionStart;
+    if (pos !== ta.selectionEnd) return null;
+    const m = /(^|[\s(,;])#([^\s#,;:()]{0,40})$/.exec(ta.value.slice(0, pos));
+    return m ? [pos - m[2].length - 1, m[2]] : null;
+  };
+  const find = (q) => {   // [[header or null, [bug…]]…]
+    if (q === '') {
+      const mine = o.bugs.filter((b) => b.mine && !done(b)).sort(rank).slice(0, 6);
+      const rest = o.bugs.filter((b) => !mine.includes(b)).sort(rank).slice(0, 8 - mine.length);
+      return mine.length ? [[o.name() + ' · Open', mine], ['Other Reports', rest]] : [[null, rest]];
+    }
+    const num = /^\d+$/.test(q);
+    const words = foldWords(q);
+    const hits = o.bugs.filter((b) => num ? String(b.n).startsWith(q) || words.every((w) => fold(b.t).includes(w)) : words.every((w) => fold(b.t).includes(w)));
+    return [[null, hits.sort((a, b) => (num ? (b.n === Number(q)) - (a.n === Number(q)) : 0) || rank(a, b)).slice(0, 8)]];
+  };
+  const mark = (text, q) => {   // the typed word lit in the title (or number)
+    const i = q ? fold(text).indexOf(fold(q)) : -1;   // fold() keeps the length of plain text; accented titles just go unlit
+    return i < 0 || fold(text).length !== text.length ? [text] : [text.slice(0, i), el('span', { class: 'bm-mark' }, text.slice(i, i + q.length)), text.slice(i + q.length)];
+  };
+  const place = (at) => {   // under the # (a hidden copy of the field finds where it is)
+    const cs = getComputedStyle(ta);
+    const m = el('div', { 'aria-hidden': 'true' });
+    for (const k of ['boxSizing', 'width', 'fontFamily', 'fontSize', 'fontWeight', 'letterSpacing', 'lineHeight', 'paddingTop', 'paddingRight', 'paddingBottom', 'paddingLeft', 'borderTopWidth', 'borderRightWidth', 'borderBottomWidth', 'borderLeftWidth', 'borderStyle', 'textIndent', 'wordSpacing', 'tabSize']) m.style[k] = cs[k];
+    Object.assign(m.style, { position: 'absolute', top: '0', left: '-9999px', visibility: 'hidden', whiteSpace: 'pre-wrap', overflowWrap: 'break-word' });
+    const mk = el('span', {}, '#');
+    m.append(ta.value.slice(0, at), mk);
+    document.body.append(m);
+    const r = ta.getBoundingClientRect();
+    const x = r.left + mk.offsetLeft - ta.scrollLeft - 12, y = r.top + mk.offsetTop + mk.offsetHeight - ta.scrollTop + 8;
+    m.remove();
+    const vw = document.documentElement.clientWidth;
+    pop.style.left = Math.max(12, Math.min(x, vw - pop.offsetWidth - 12)) + scrollX + 'px';
+    pop.style.top = Math.min(y, r.bottom + 6) + scrollY + 'px';
+  };
+  const close = () => { pop?.remove(); pop = null; items = []; };
+  const pick = (b) => {
+    const t = token();
+    if (!t) return close();
+    const pos = ta.selectionStart, before = ta.value.slice(0, t[0]), after = ta.value.slice(pos);
+    const ins = '#' + b.n + (CHANGE_TAG_RE.test(before) && !after.trim() ? ': ' : /^[\s,.;:)]/.test(after) ? '' : ' ');
+    ta.value = before + ins + after;
+    ta.setSelectionRange(before.length + ins.length, before.length + ins.length);
+    close();
+    skip = true;   // "#6" with nothing after it would open the list again
+    ta.dispatchEvent(new Event('input', { bubbles: true }));   // grows the field, marks the editor unsaved
+  };
+  const show = () => {
+    if (!pop) return;
+    pop.querySelectorAll('.bm-row').forEach((r, i) => { r.classList.toggle('on', i === sel); r.setAttribute('aria-selected', String(i === sel)); if (i === sel) r.scrollIntoView({ block: 'nearest' }); });
+  };
+  const update = () => {
+    const t = token();
+    if (!t) return close();
+    const groups = find(t[1]);
+    items = groups.flatMap((g) => g[1]);
+    sel = 0;
+    const q = t[1], num = /^\d+$/.test(q);
+    const row = (b) => {
+      const [label, color] = o.statuses[b.s] || o.statuses.new;
+      const sub = [b.mine ? '' : b.a, b.f ? 'fixed in ' + b.f : ''].filter(Boolean).join(' · ');
+      const r = el('div', { class: 'bm-row', role: 'option' },
+        el('span', { class: 'bm-n' }, '#', mark(String(b.n), num ? q : '')),
+        el('span', { class: 'bm-t' }, el('b', {}, mark(b.t, num ? '' : q)), sub && el('small', {}, sub.charAt(0).toUpperCase() + sub.slice(1))),
+        el('span', { class: 'bm-st', style: '--c:' + color }, label));
+      r.addEventListener('pointerdown', (e) => e.preventDefault());   // keeps the caret in the field
+      r.addEventListener('click', () => pick(b));
+      r.addEventListener('pointermove', () => { if (sel !== items.indexOf(b)) { sel = items.indexOf(b); show(); } });
+      return r;
+    };
+    pop?.remove();
+    pop = el('div', { class: 'bm-pop', role: 'listbox', 'aria-label': 'Bug reports' },
+      items.length ? groups.filter((g) => g[1].length).flatMap(([h, list], i) => [i ? el('div', { class: 'bm-sep' }) : null, h && el('div', { class: 'bm-head' }, h), ...list.map(row)])
+        : el('div', { class: 'bm-none' }, 'No report matches “' + q + '”.'),
+      items.length ? el('div', { class: 'bm-foot' }, el('kbd', {}, '↑'), ' ', el('kbd', {}, '↓'), ' to choose · ', el('kbd', {}, 'Enter'), ' to insert · ', el('kbd', {}, 'Esc'), ' to close') : null);
+    pop.addEventListener('pointerdown', (e) => e.preventDefault());
+    document.body.append(pop);
+    place(t[0]);
+    show();
+  };
+  ta.addEventListener('input', () => { if (skip) { skip = false; return; } update(); });
+  ta.addEventListener('keydown', (e) => {
+    if (!pop) return;
+    const stop = () => { e.preventDefault(); e.stopImmediatePropagation(); };   // before the list's own Enter (new line) and the editor's keys
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { if (items.length) { sel = (sel + (e.key === 'ArrowDown' ? 1 : items.length - 1)) % items.length; show(); } stop(); }
+    else if ((e.key === 'Enter' || e.key === 'Tab') && items.length && !e.shiftKey) { stop(); pick(items[sel]); }
+    else if (e.key === 'Escape') { stop(); close(); }
+  });
+  ta.addEventListener('keyup', (e) => { if (['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(e.key)) { if (token()) update(); else close(); } });
+  ta.addEventListener('click', () => { if (pop && !token()) close(); });
+  ta.addEventListener('blur', close);
+  window.addEventListener('resize', close);
+}
+
 // "Box" menu for the text editors: wraps the selected lines (or a placeholder) in "> [!TYPE]".
 const BOX_TYPES = [['NOTE', 'Note'], ['TIP', 'Tip'], ['IMPORTANT', 'Important'], ['WARNING', 'Warning'], ['CAUTION', 'Caution']];
 function boxMenu(getTextarea, cls = 'tb') {
@@ -887,6 +990,7 @@ if (lib) {
   const count = document.querySelector('[data-lib-count]');
   const empty = document.querySelector('[data-lib-empty]');
   const pager = document.querySelector('[data-lib-pager]');
+  const tabs = [...document.querySelectorAll('[data-lib-tab]')];
   const PER = 60;   // 2 to 6 to a row: full rows on every screen
   let page = Math.max(1, parseInt(new URLSearchParams(location.search).get('page'), 10) || 1);
   let shown = cards;   // every card the search and filters match, on every page (the picture window goes through them)
@@ -930,14 +1034,28 @@ if (lib) {
     renderPager(pages);
     const u = new URL(location.href);
     if (page > 1) u.searchParams.set('page', page); else u.searchParams.delete('page');
+    if (unused.checked) u.searchParams.set('unused', '1'); else u.searchParams.delete('unused');
     history.replaceState(null, '', u);
+    // the tabs count what Unused Only shows, and take it along to the other tabs
+    for (const a of tabs) {
+      const t = new URL(a.href);
+      if (unused.checked) t.searchParams.set('unused', '1'); else t.searchParams.delete('unused');
+      a.href = t;
+      const n = a.querySelector('[data-all]');
+      n.textContent = unused.checked ? n.dataset.unused : n.dataset.all;
+    }
   }
   [search, folder, unused].forEach((x) => x.addEventListener('input', () => apply()));
   // looking at one folder: the upload goes there too
   folder.addEventListener('input', () => { if (folder.value) document.querySelector('[data-upload-folder]')?.fp?.set(folder.value.replace(/:.*/, '')); });   // a docs page / FAQ question: its folder
-  apply(true);   // the first page (or ?page=), and ?unused=1
+  apply(true);   // the first page (or ?page=), and ?unused=1 (kept across the tabs)
   const info = JSON.parse(document.getElementById('lib-info')?.textContent || '{}');
-  const delCard = (card) => { card.remove(); cards.splice(cards.indexOf(card), 1); apply(true); };
+  const delCard = (card) => {   // only unused ones can be deleted: one less in both counts of its tab
+    card.remove(); cards.splice(cards.indexOf(card), 1);
+    const n = document.querySelector('[data-lib-tab][aria-current] [data-all]');
+    if (n) { n.dataset.all = Math.max(0, n.dataset.all - 1); n.dataset.unused = Math.max(0, n.dataset.unused - 1); }
+    apply(true);
+  };
   lib.addEventListener('click', async (e) => {
     const card = e.target.closest('.lib-card');
     if (!card) return;
@@ -1749,6 +1867,7 @@ function initEditor(data) {
       ta.value = value;
       const row = el('div', { class: 'list-row' }, dragHandle(() => row), ta,
         el('div', { class: 'row-btns' }, iconBtn('✕', 'Remove', () => { row.remove(); form.dispatchEvent(new Event('input')); }, 'del')));
+      if (o.mention) o.mention(ta);   // before the keys below: its list takes ↑ ↓ Enter Tab Esc while open
       ta.addEventListener('keydown', (e) => {
         if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); addRow('', row, true); }
         if (e.key === 'Backspace' && ta.value === '' && wrap.children.length > 1) { e.preventDefault(); const prev = row.previousElementSibling; row.remove(); prev?.querySelector('textarea')?.focus(); }
@@ -2054,6 +2173,10 @@ function initEditor(data) {
     // amounts are text fields: a number field drops a typed comma ("7,5" became 75 or nothing); the save checks the value
     fields.requireTier.input.inputMode = 'decimal';
     const tierIn = fields.requireTier.input;
+    // its label goes above the field and the tier buttons together, so both sit on one line
+    const tierLbl = fields.requireTier.node.querySelector('.lbl');
+    tierLbl.remove();
+    tierIn.setAttribute('aria-label', `Minimum tier (${cur} a month)`);
     const tiers = [[0, 'Any Paid Tier'], ...(data.tiers || [])];
     const chips = tiers.map(([c, label]) => el('button', { type: 'button', class: 'chip', 'data-cents': c, onclick: () => {
       tierIn.value = c ? String(c / 100) : ''; tierIn.dispatchEvent(new Event('input', { bubbles: true })); mark();
@@ -2071,7 +2194,7 @@ function initEditor(data) {
     fields.requireTotal.input.inputMode = 'decimal';
     fields.noLimits = toggle('Exclude from Unlock Limits', m.noLimits, 'Downloads of this item never use an unlock and are never refused by the limits.');
 
-    // release dates (Berlin time): patrons from, everyone from; before the patrons date the page is hidden or "Coming soon"
+    // release dates (the site's time zone, Settings → Site → Time Zone): patrons from, everyone from; before the patrons date the page is hidden or "Coming soon"
     const rel = data.release || {};
     fields.releasePatrons = text('Patrons From (Optional)', rel.patrons || '', { type: 'datetime-local' });
     fields.releasePublic = text('Everyone From (Optional)', rel.public || '', { type: 'datetime-local' });
@@ -2112,7 +2235,7 @@ function initEditor(data) {
       const named = (data.tiers || []).find(([c]) => c === cents);
       const money = (v) => { try { return new Intl.NumberFormat('en', { style: 'currency', currency: cur, minimumFractionDigits: 0 }).format(v); } catch { return cur + ' ' + v; } };
       const out = [cents > 0 ? `${named ? named[1] : money(cents / 100)} tier or higher` : 'Any paid tier'];
-      const loyal = [num(fields.requireMonths) > 0 && `${num(fields.requireMonths)} months as a patron`, num(fields.requireTotal) > 0 && `${money(num(fields.requireTotal))} in total`].filter(Boolean);
+      const loyal = [num(fields.requireMonths) > 0 && `${num(fields.requireMonths)} month${num(fields.requireMonths) === 1 ? '' : 's'} as a patron`, num(fields.requireTotal) > 0 && `${money(num(fields.requireTotal))} in total`].filter(Boolean);
       if (loyal.length) out.push(loyal.join(fields.requireMode.get() === 'or' ? ' or ' : ' and '));
       out.push(p || e ? [p && 'Patrons ' + day(p), e && 'Everyone ' + day(e)].filter(Boolean).join(', ') : 'No release dates');
       if (fields.noLimits.get()) out.push('Not counted in unlock limits');
@@ -2125,10 +2248,10 @@ function initEditor(data) {
     const sync = () => (sum.textContent = sumText());
     sec.addEventListener('input', sync);
     sec.addEventListener('change', sync);
-    body.append(part('Release Dates', 'Times are Berlin time. Before “Patrons From” nobody can download it (admins can). From “Everyone From” every patron link works for anyone, with no login. Discord gets a post on each date.',
+    body.append(part('Release Dates', `Times are in the site’s time zone (${(rel.tz || 'Europe/Berlin').replace(/_/g, ' ')}); visitors see them in their own. Before “Patrons From” nobody can download it (admins can). From “Everyone From” every patron link works for anyone, with no login. Discord gets a post on each date.`,
         el('div', { class: 'grid2' }, fields.releasePatrons.node, fields.releasePublic.node), fields.releaseBefore.node, strip),
       part('Tier', `Patrons below it see “You need the … tier or higher” with an Upgrade link. The tier buttons are the tiers seen when patrons log in.`,
-        el('div', { class: 'tier-pick' }, el('div', { class: 'chips' }, chips), fields.requireTier.node)),
+        el('div', { class: 'field tier-pick' }, tierLbl, el('div', { class: 'tier-row' }, fields.requireTier.node, el('div', { class: 'chips' }, chips)))),
       part('Loyalty', '',
         el('div', { class: 'req-grid' }, fields.requireMonths.node, fields.requireMode.node, fields.requireTotal.node)),
       part('Unlock Limits', 'Admin → Access → Unlock Limits. When on, downloading this never uses one of the patron’s unlocks and is never refused by the limits.', fields.noLimits.node));
@@ -2147,16 +2270,30 @@ function initEditor(data) {
     draft: '<path d="M4 20h4L19 9l-4-4L4 16v4zM13.5 6.5l4 4"/>',
   };
   const VIS_SHORT = { public: 'Public', blurred: 'Teaser', 'blurred-patrons': 'Clear for Patrons', password: 'Password', draft: 'Draft' };
-  const visBar = (value, options) => {
-    const name = 'vis-' + Math.random().toString(36).slice(2, 8);
-    const bar = el('div', { class: 'vis-seg', role: 'radiogroup', 'aria-label': 'Visibility' });
-    for (const [k, label] of Object.entries(options)) {
-      const r = el('input', { type: 'radio', name, value: k, checked: k === value });
+  // a model's status: same bar, its own icons (Public = open lock, Preview = eye, Patreon Only = closed lock, In Development = wrench)
+  const STATUS_ICONS = {
+    released: '<rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 7.7-1.5"/>',
+    preview: '<path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/>',
+    'patreon-only': '<rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/>',
+    'in-development': '<path d="M14.7 6.3a4 4 0 0 0-5.4 5.2L3.5 17.3a1.8 1.8 0 0 0 2.5 2.5l5.8-5.8a4 4 0 0 0 5.2-5.4l-2.6 2.6-2.4-.6-.6-2.4z"/>',
+  };
+  // a row of icon buttons (radio inputs, so arrow keys work) instead of a menu; a value not in the list picks the first option, like a menu would
+  const segBar = (value, options, { icons, short = {}, label, cls = '' }) => {
+    const name = 'seg-' + Math.random().toString(36).slice(2, 8);
+    const bar = el('div', { class: 'vis-seg ' + cls, role: 'radiogroup', 'aria-label': label });
+    const keys = Object.keys(options);
+    const pick = keys.includes(value) ? value : keys[0];
+    for (const [k, text] of Object.entries(options)) {
+      const r = el('input', { type: 'radio', name, value: k, checked: k === pick });
       const ic = el('span', { class: 'vis-ic' });
-      ic.innerHTML = `<svg viewBox="0 0 24 24" aria-hidden="true">${VIS_ICONS[k] || ''}</svg>`;
-      bar.append(el('label', { class: 'vis-opt', title: label }, r, ic, el('span', {}, VIS_SHORT[k] || label)));
+      ic.innerHTML = `<svg viewBox="0 0 24 24" aria-hidden="true">${icons[k] || ''}</svg>`;
+      bar.append(el('label', { class: 'vis-opt', title: text }, r, ic, el('span', {}, short[k] || text)));
     }
-    return { node: el('div', { class: 'field' }, bar), get: () => bar.querySelector('input:checked')?.value || 'public' };
+    return { bar, get: () => bar.querySelector('input:checked')?.value || keys[0] };
+  };
+  const visBar = (value, options) => {
+    const s = segBar(value || 'public', options, { icons: VIS_ICONS, short: VIS_SHORT, label: 'Visibility' });
+    return { node: el('div', { class: 'field' }, s.bar), get: s.get };
   };
   // models add their status row (status + featured): the section is then "Visibility & Status"
   const visibilitySection = (statusRow) => {
@@ -2180,6 +2317,7 @@ function initEditor(data) {
   };
 
   const changelogFields = (hintWhat) => {
+    const bugRefs = data.bugs?.length ? { bugs: data.bugs, statuses: data.bugStatuses, name: () => fields.name?.get() || (isOutfit ? 'This Accessory' : 'This Model') } : null;   // "#" in the changes lists them
     fields.changelogNote = text('Text Above the Changelog (Optional)', m.changelogNote, { max: 1000, placeholder: 'If not specified near the version, you do not need to redownload textures.' });
     fields.changelog = repeat({
       items: m.changelog || [],
@@ -2197,7 +2335,9 @@ function initEditor(data) {
         const d = text('Date', en.date, { max: 40, placeholder: 'dd/mm/yyyy' });
         const h = text('Label (Optional)', en.highlight, { max: 120, list: 'highlights', hint: 'Mentions of textures, a first release or the last version for a Blender release become a badge.' });
         const notes = list('Notes (Optional)', en.notes, { max: 5000, addLabel: 'Add Paragraph' });
-        const ch = list('Changes', en.changes, { max: 3000, addLabel: 'Add Change', placeholder: 'Fix: …   /   New: …   /   Enhancement: …', hint: 'New:, Fix:, Bug:, Enhancement:, Improvement:, Optimization:, Removal: or UI: at the start get a coloured tag.' });
+        const ch = list('Changes', en.changes, { max: 3000, addLabel: 'Add Change', placeholder: 'Fix: …   /   New: …   /   Enhancement: …',
+          hint: 'New:, Fix:, Bug:, Enhancement:, Improvement:, Optimization:, Removal: or UI: at the start get a coloured tag.' + (bugRefs ? ' Type # to pick a bug report ("Fix #6: …"): on the site it links to the report, and saving marks the report fixed in this version.' : ''),
+          mention: bugRefs ? (ta) => bugMention(ta, bugRefs) : null });
         const img = image('Image (Optional)', en.image);
         // release stage: Standard / α Alpha / β Beta (one at a time), a coloured badge on the site for alpha and beta
         let stage = ['alpha', 'beta'].includes(en.stage) ? en.stage : 'standard';
@@ -2272,9 +2412,10 @@ function initEditor(data) {
       grid2(fields.name.node, slugNode),
       el('div', { class: 'grid-gen' }, fields.franchise.node, fields.game.node, fields.generation.node, fields.majorVersion.node)));
 
-    fields.status = select('Status', m.status, data.statuses);
+    const status = segBar(m.status, data.statuses, { icons: STATUS_ICONS, label: 'Status', cls: 'st-seg' });
+    fields.status = { get: status.get };
     fields.featured = toggle('Featured', m.featured, 'Shown in the homepage slideshow.');
-    visibilitySection(el('div', { class: 'grid-status' }, fields.status.node, fields.featured.node));
+    visibilitySection(el('div', { class: 'grid-status' }, el('span', { class: 'lbl' }, 'Status'), status.bar, fields.featured.node));
 
     // catalog cards are 4:5 (.cover-card), the model page picture 9:16 (.media .cover-hero): the cropper starts with that shape
     fields.thumb = image('Catalog Image', m.thumb, '', { crop: true, aspect: 4 / 5, note: 'Best: portrait 4:5, at least 800 × 1000 px.' });
@@ -2452,16 +2593,52 @@ function initEditor(data) {
   window.addEventListener('beforeunload', (e) => { if (dirty) { e.preventDefault(); e.returnValue = ''; } });
 })();
 
-// ── Users (exceptions): picking a patron from the download log fills in the name ──
+// ── Users (exceptions): picking a patron from the list ("Anna · 12345678") fills in the name ──
 (() => {
   const id = document.querySelector('[data-ex-id]');
   const name = document.querySelector('[data-ex-name]');
   if (!id || !name) return;
   id.addEventListener('change', () => {
-    const opt = [...(id.list?.options || [])].find((o) => o.value === id.value.trim());
-    if (opt && !name.value.trim()) name.value = opt.textContent;
+    const m = id.value.trim().match(/^(.+?) · [\w-]+$/);
+    if (m && !name.value.trim()) name.value = m[1];
   });
 })();
+
+// ── Users (exceptions): a menu set to Custom shows its line in the Custom box under it; Add Rule / delete for their own unlock rules ──
+document.querySelectorAll('[data-ex]').forEach((formEl) => {
+  const panel = formEl.querySelector('[data-ex-panel]');
+  const tpl = document.querySelector('[data-ex-rule-tpl]');
+  const sync = () => {
+    let any = false;
+    formEl.querySelectorAll('[data-ex-mode]').forEach((sel) => {
+      const on = sel.value === 'custom';
+      sel.classList.toggle('is-custom', on);
+      const line = formEl.querySelector(`[data-ex-custom="${sel.dataset.exMode}"]`);
+      if (line) {
+        line.hidden = !on;
+        // hidden fields aren't sent or checked by the browser (a half-typed value in a hidden line would block the Save without a word)
+        line.querySelectorAll('input, select, button').forEach((el) => (el.disabled = !on));
+      }
+      any ||= on;
+    });
+    if (panel) panel.hidden = !any;
+  };
+  sync();
+  formEl.addEventListener('change', (e) => { if (e.target.matches('[data-ex-mode]')) sync(); });
+  formEl.addEventListener('click', (e) => {
+    const del = e.target.closest('[data-ex-rule-del]');
+    const rules = formEl.querySelector('[data-ex-rules]');
+    if (del) {
+      del.closest('[data-ex-rule]').remove();
+      if (!rules.querySelector('[data-ex-rule]')) formEl.querySelector('[data-ex-rule-add]').click();   // always one row to fill in
+    }
+    const add = e.target.closest('[data-ex-rule-add]');
+    if (add && tpl) {
+      add.before(tpl.content.cloneNode(true));
+      add.previousElementSibling.querySelector('input').focus();
+    }
+  });
+});
 
 // ── Getting started links (Admin → Models / Accessories): add, remove and drag link rows ──
 document.querySelectorAll('[data-rows-form]').forEach((formEl) => {
@@ -3804,4 +3981,311 @@ document.querySelectorAll('[data-log-rows]').forEach((form) => {
   document.addEventListener('pointerdown', (e) => { if (isOpen() && !root.contains(e.target)) close(); });
   root.addEventListener('focusout', (e) => { if (e.relatedTarget && !root.contains(e.relatedTarget)) close(); });
   window.addEventListener('resize', () => { if (isOpen()) { place(); from(); } });
+})();
+
+// ── Admin → Home: Edit Layout (drag the widgets by ⠿ anywhere, their width by the lower right corner, remove them, add hidden ones; Save Layout posts the list) ──
+(() => {
+  const board = document.querySelector('[data-home-board]');
+  const edit = document.querySelector('[data-home-edit]');
+  if (!board || !edit) return;
+  // placement: the board has 12 columns and rows of 2 px; each widget, in order, goes in its own first column (data-col; 0 = the columns where it sits
+  // highest) and as high as those columns are free, spanning as many rows as its height (+ the gap under it): so each keeps its own height, stays
+  // where it was put, and nothing above it moves. Phones and narrow windows: tiles two by two, boxes full width, in the same order.
+  board.classList.add('is-masonry');
+  const SPANS = { tile: [3, 4, 6], box: [4, 6, 8, 12] };
+  const NAME = { 3: '¼', 4: '⅓', 6: '½', 8: '⅔', 12: 'Full' };
+  const widgets = () => [...board.querySelectorAll(':scope > .hm-w')];
+  const shown = () => widgets().filter((w) => !w.hidden);
+  const narrow = () => matchMedia('(max-width: 900px)').matches;
+  const gapPx = () => parseFloat(getComputedStyle(board).columnGap) || 0;
+  const colPx = () => (board.clientWidth - 11 * gapPx()) / 12 + gapPx();   // one column with its gap
+  const spanOf = (w) => (narrow() ? (w.dataset.kind === 'tile' ? 6 : 12) : +w.dataset.span);
+  const clampCol = (c, s) => Math.min(Math.max(c, 1), 13 - s);
+  // where each one goes: items [{s, col, h (rows)}] → [{c, top (row)}]
+  const place = (items) => {
+    const hs = new Array(12).fill(0);
+    const wide = !narrow();
+    if (!wide) {
+      // phones: one after the other, tiles two by two, like the page without the script (admin.css)
+      let row = 0, h = 0, open = false;   // the row being filled, its height, whether its right half is still free
+      return items.map((it) => {
+        if (open && it.s === 6) { open = false; h = Math.max(h, it.h); return { c: 7, top: row }; }
+        row += h; h = it.h; open = it.s === 6;
+        return { c: 1, top: row };
+      });
+    }
+    return items.map((it) => {
+      const topAt = (c) => Math.max(...hs.slice(c - 1, c - 1 + it.s));
+      let c;
+      if (wide && it.col) c = clampCol(it.col, it.s);
+      else {
+        const starts = wide ? Array.from({ length: 13 - it.s }, (_, i) => i + 1) : it.s === 6 ? [1, 7] : [1];
+        c = starts.reduce((a, b) => (topAt(b) < topAt(a) ? b : a));
+      }
+      const top = topAt(c);
+      for (let i = c - 1; i < c - 1 + it.s; i++) hs[i] = top + it.h;
+      return { c, top };
+    });
+  };
+  // a box given a height shows the list rows that fit whole: the ones cut off are hidden
+  const clip = (w) => {
+    const rows = w.querySelectorAll('.hm-top > li, .hm-recent tr');
+    rows.forEach((r) => r.classList.remove('cut'));
+    const box = w.querySelector(':scope > .sec');
+    if (!w.dataset.h || !box || !rows.length) return;
+    const limit = box.getBoundingClientRect().bottom - (parseFloat(getComputedStyle(box).paddingBottom) || 0) + 0.5;
+    let cut = false;
+    rows.forEach((r) => { if (cut || r.getBoundingClientRect().bottom > limit) { cut = true; r.classList.add('cut'); } });
+  };
+  const measure = () => {
+    const vis = shown(), gap = gapPx();
+    // the width first: the height follows it (the rows stay as they are: freeing them would shrink the board for a moment and scroll the page up)
+    vis.forEach((w) => { w.style.gridColumn = 'span ' + spanOf(w); });
+    vis.forEach(clip);
+    return vis.map((w) => ({ w, s: spanOf(w), col: +w.dataset.col || 0, h: Math.ceil((w.offsetHeight + gap) / 2) }));
+  };
+  // phones outside Edit Layout: the page's own order (admin.css), nothing to place
+  const apply = (items, pos) => items.forEach((it, i) => {
+    const flow = narrow() && !board.classList.contains('is-editing');
+    it.w.style.gridColumn = flow ? '' : pos[i].c + ' / span ' + it.s;
+    it.w.style.gridRow = flow ? '' : pos[i].top + 1 + ' / span ' + it.h;
+    it.w.at = pos[i];
+  });
+  // a box's height counts in tiles (1.5–10 in half steps, HOME_LOW / HOME_TALL in index.php): n tiles and the gaps between them, so it ends level with tiles
+  // stacked beside it. While editing the box stays exactly as it will be shown (the same rows), inside its bar and padding (the chrome); nothing else is
+  // added (Pi: an empty space under it that grew with its height was confusing), so there it lines up with the tiles only once saved
+  const TALL = 10, LOW = 1.5;
+  const unit = () => parseFloat(getComputedStyle(board).getPropertyValue('--hm-unit')) || 120;
+  const extra = (w) => { const b = w.querySelector(':scope > .sec, :scope > .stat'); return b ? w.offsetHeight - b.offsetHeight : 0; };
+  const sizeAll = () => {
+    const u = unit(), g = gapPx();
+    shown().forEach((w) => { const n = +w.dataset.h; if (n) w.style.setProperty('--h', n * u + (n - 1) * g + 'px'); });
+  };
+  let dragging = null;
+  // while editing the board never gets shorter: a widget made shorter or moved up near the bottom of the page would scroll the page under the pointer
+  const hold = () => { if (board.classList.contains('is-editing')) board.style.minHeight = Math.max(parseFloat(board.style.minHeight) || 0, board.offsetHeight) + 'px'; };
+  const layout = () => { if (!dragging) { hold(); sizeAll(); const items = measure(); apply(items, place(items)); } };
+  let queued = false;
+  const later = () => { if (!queued) { queued = true; requestAnimationFrame(() => { queued = false; layout(); }); } };
+  if ('ResizeObserver' in window) {
+    const ro = new ResizeObserver(later);
+    widgets().forEach((w) => ro.observe(w));
+  }
+  addEventListener('resize', later);
+  addEventListener('load', later);   // pictures and fonts
+  layout();
+  const view = document.querySelector('[data-home-view]'), tools = document.querySelector('[data-home-tools]');
+  const form = document.getElementById('home-layout');
+
+  const badge = (w) => {
+    const b = w.querySelector('.hm-w-size'), span = +w.dataset.span;
+    if (b) b.textContent = (NAME[span] === 'Full' ? 'Full Width' : NAME[span] + ' Width') + (+w.dataset.h ? ' · ' + w.dataset.h + ' Tiles Tall' : '');
+  };
+  const setSpan = (w, span) => {
+    w.dataset.span = span;
+    w.style.setProperty('--span', span);
+    if (+w.dataset.col) w.dataset.col = clampCol(+w.dataset.col, span);
+    badge(w);
+    layout();
+  };
+  // boxes: a height in tiles, half steps
+  const setHeight = (w, n) => {
+    w.dataset.h = Math.max(LOW, Math.min(TALL, Math.round(n * 2) / 2));
+    w.style.setProperty('--tall', w.dataset.h);
+    badge(w);
+    layout();
+  };
+  // the corner: the width follows the pointer (from where the drag started), snapped to the allowed widths; for boxes the height too, in half tiles;
+  // a double click gives a box back its default height
+  const grip = (w) => {
+    const isBox = w.dataset.kind === 'box';
+    const g = el('button', { type: 'button', class: 'hm-grip', 'aria-label': (isBox ? 'Size of ' : 'Width of ') + w.dataset.title,
+      title: isBox ? 'Drag to change the width and height (or focus and use the arrow keys); double-click for its usual height' : 'Drag to change the width (or focus and use ← →)' });
+    const box = () => w.querySelector(':scope > .sec');
+    // the nearest half tile for a widget this tall (while editing: its box, n tiles and the gaps between, and its chrome)
+    const tallOf = (px) => { const g = gapPx(); return Math.round(2 * (px - extra(w) + g) / (unit() + g)) / 2; };
+    g.innerHTML = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M14 6 6 14M14 11l-3 3"/></svg>';
+    // only the widths that fit between its first column and the right edge: the corner follows the pointer and the widget never jumps left
+    const fits = () => SPANS[w.dataset.kind].filter((s) => narrow() || s <= 13 - (+w.dataset.col || w.at?.c || 1) || s <= +w.dataset.span);
+    const step = (dir) => {
+      const spans = fits();
+      const i = spans.indexOf(+w.dataset.span);
+      setSpan(w, spans[Math.max(0, Math.min(spans.length - 1, (i < 0 ? 0 : i) + dir))]);
+    };
+    g.addEventListener('keydown', (e) => {
+      if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') { e.preventDefault(); step(e.key === 'ArrowRight' ? 1 : -1); }
+      else if (isBox && box() && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) {
+        e.preventDefault();
+        setHeight(w, (+w.dataset.h || LOW) + (e.key === 'ArrowDown' ? 0.5 : -0.5));
+      }
+    });
+    if (isBox) g.addEventListener('dblclick', () => setHeight(w, +w.dataset.def || LOW));
+    g.addEventListener('pointerdown', (e) => {
+      if (e.button !== 0) return;
+      e.preventDefault();
+      const gap = gapPx(), col = colPx(), spans = fits();
+      const x0 = e.clientX, w0 = w.getBoundingClientRect().width, y0 = e.clientY, h0 = isBox && box() ? w.offsetHeight : 0;
+      let tall = false;   // the height changes only once the pointer has moved up or down a little
+      w.classList.add('is-resizing');
+      document.body.classList.add('is-resizing');
+      if (isBox) document.body.classList.add('is-resizing-xy');
+      const move = (ev) => {
+        if (ev.pointerId !== e.pointerId) return;
+        const want = (w0 + ev.clientX - x0 + gap) / col;
+        const best = spans.reduce((a, b) => (Math.abs(b - want) < Math.abs(a - want) ? b : a));
+        if (best !== +w.dataset.span) setSpan(w, best);
+        if (!h0 || (!tall && Math.abs(ev.clientY - y0) < 6)) return;
+        tall = true;
+        const n = Math.max(LOW, Math.min(TALL, tallOf(h0 + ev.clientY - y0)));
+        if (n !== +w.dataset.h) setHeight(w, n);
+      };
+      const end = (ev) => {
+        if (ev.pointerId !== e.pointerId) return;
+        removeEventListener('pointermove', move);
+        removeEventListener('pointerup', end);
+        removeEventListener('pointercancel', end);
+        w.classList.remove('is-resizing');
+        document.body.classList.remove('is-resizing', 'is-resizing-xy');
+      };
+      addEventListener('pointermove', move);
+      addEventListener('pointerup', end);
+      addEventListener('pointercancel', end);
+    });
+    return g;
+  };
+  // ⠿: the widget follows the pointer; where it would land is shown dashed (the column under its left edge, and the place in the order that puts
+  // its top nearest to the pointer's); keyboard: ← → one column, ↑ ↓ above / below the widget next to it in its columns
+  const reorder = (list) => board.prepend(...list);
+  const mover = (w) => {
+    const h = el('button', { type: 'button', class: 'drag-handle drag-sm', title: 'Drag to move (or focus and use the arrow keys)', 'aria-label': 'Move ' + w.dataset.title }, '⠿');
+    h.addEventListener('keydown', (e) => {
+      const k = e.key;
+      if (!['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(k)) return;
+      e.preventDefault();
+      if (k === 'ArrowLeft' || k === 'ArrowRight') {
+        if (narrow()) return;
+        w.dataset.col = clampCol((+w.dataset.col || w.at?.c || 1) + (k === 'ArrowRight' ? 1 : -1), +w.dataset.span);
+      } else {
+        const items = measure(), i = items.findIndex((it) => it.w === w), top0 = place(items)[i].top, up = k === 'ArrowUp';
+        for (let j = up ? i - 1 : i + 1; j >= 0 && j < items.length; j += up ? -1 : 1) {
+          const list = items.filter((it) => it.w !== w);
+          list.splice(j, 0, items[i]);
+          const t = place(list)[j].top;
+          if (up ? t < top0 : t > top0) { reorder(list.map((it) => it.w)); break; }
+        }
+      }
+      layout();
+      h.focus();
+      w.scrollIntoView({ block: 'nearest' });
+    });
+    h.addEventListener('pointerdown', (e) => {
+      if (e.button !== 0) return;
+      e.preventDefault();
+      const r = w.getBoundingClientRect();
+      const dx = e.clientX - r.left, dy = e.clientY - r.top;
+      const items = measure(), me = items.find((it) => it.w === w), others = items.filter((it) => it !== me);
+      let at = items.indexOf(me), col = me.col || w.at?.c || 1, last = e;
+      const ph = el('div', { class: 'hm-ph', 'aria-hidden': 'true' });
+      ph.style.height = w.offsetHeight + 'px';
+      board.append(ph);
+      dragging = w;
+      w.classList.add('dragging');
+      document.body.classList.add('is-dragging');
+      const show = (ev) => {
+        const b = board.getBoundingClientRect();
+        const x = ev.clientX - dx - b.left, y = ev.clientY - dy - b.top;
+        if (!narrow()) col = clampCol(Math.round(x / colPx()) + 1, me.s);
+        const trial = (i) => { const list = others.slice(); list.splice(i, 0, { ...me, col }); return [list, place(list)]; };
+        let best = null;
+        for (let i = 0; i <= others.length; i++) {
+          const [list, pos] = trial(i), d = Math.abs(pos[i].top * 2 - y);
+          if (!best || d < best.d || (d === best.d && Math.abs(i - at) < Math.abs(best.i - at))) best = { d, i, list, pos };
+        }
+        at = best.i;
+        hold();
+        apply(best.list, best.pos);
+        ph.style.gridColumn = w.style.gridColumn;
+        ph.style.gridRow = w.style.gridRow;
+        w.style.transform = 'translate(' + (x - w.offsetLeft) + 'px, ' + (y - w.offsetTop) + 'px)';
+      };
+      // near the top or bottom of the window the page scrolls by itself
+      let raf = 0;
+      const edgeScroll = () => {
+        raf = 0;
+        const v = last.clientY < 60 ? -14 : last.clientY > innerHeight - 60 ? 14 : 0;
+        if (!v || !dragging) return;
+        scrollBy(0, v);
+        show(last);
+        raf = requestAnimationFrame(edgeScroll);
+      };
+      const move = (ev) => {
+        if (ev.pointerId !== e.pointerId) return;
+        last = ev;
+        show(ev);
+        if (!raf) raf = requestAnimationFrame(edgeScroll);
+      };
+      const end = (ev) => {
+        if (ev.pointerId !== e.pointerId) return;
+        removeEventListener('pointermove', move);
+        removeEventListener('pointerup', end);
+        removeEventListener('pointercancel', end);
+        cancelAnimationFrame(raf);
+        dragging = null;
+        ph.remove();
+        w.style.transform = '';
+        w.classList.remove('dragging');
+        document.body.classList.remove('is-dragging');
+        const list = others.slice();
+        list.splice(at, 0, me);
+        reorder(list.map((it) => it.w));
+        if (!narrow()) w.dataset.col = col;
+        layout();
+      };
+      addEventListener('pointermove', move);
+      addEventListener('pointerup', end);
+      addEventListener('pointercancel', end);
+    });
+    return h;
+  };
+  const chrome = (w) => {
+    w.prepend(el('div', { class: 'hm-w-bar' },
+      mover(w),
+      el('span', { class: 'nm' }, w.dataset.title),
+      el('button', { type: 'button', class: 'hm-w-x', title: 'Remove', 'aria-label': 'Remove ' + w.dataset.title, onclick: () => { w.hidden = true; board.append(w); layout(); } }, '✕')));
+    for (const c of w.children) if (!c.classList.contains('hm-w-bar')) c.inert = true;   // its links can't be clicked or tabbed to meanwhile
+    w.append(grip(w), el('span', { class: 'hm-w-size', 'aria-hidden': 'true' }));
+  };
+  // leaving the page with changes not saved asks first (Save Layout and Cancel don't)
+  const now = () => JSON.stringify(shown().map((w) => [w.dataset.w, +w.dataset.span, +w.dataset.col || 0, +w.dataset.h || 0]));
+  let start = null;
+  addEventListener('beforeunload', (e) => { if (start !== null && now() !== start) { e.preventDefault(); e.returnValue = ''; } });
+  // while editing every widget keeps the column it is shown in (on wide screens), so moving one never moves the others sideways
+  const pin = () => { if (!narrow()) shown().forEach((w) => { if (w.at) w.dataset.col = w.at.c; }); };
+  edit.addEventListener('click', () => {
+    board.classList.add('is-editing');
+    view.hidden = true; tools.hidden = false;
+    widgets().forEach(chrome);
+    widgets().forEach((w) => setSpan(w, +w.dataset.span));
+    layout();
+    pin();
+    start = now();
+  });
+  document.querySelector('[data-home-cancel]').addEventListener('click', () => { start = null; location.reload(); });
+  form.addEventListener('submit', () => { form.elements.layout.value = now(); start = null; });
+  document.getElementById('home-reset')?.addEventListener('submit', (e) => { if (!e.defaultPrevented) start = null; });
+  document.querySelector('[data-home-add]').addEventListener('click', () => {
+    const hidden = widgets().filter((w) => w.hidden);
+    const dlg = el('dialog', { class: 'lc-dlg', 'aria-label': 'Add Widget' });
+    const close = () => { dlg.close(); dlg.remove(); };
+    dlg.append(el('div', { class: 'lc-dlg-body' },
+      el('h2', {}, 'Add Widget'),
+      hidden.length ? el('ul', { class: 'hm-add-list' }, hidden.map((w) => el('li', {},
+        el('span', { class: 'txt' }, el('b', {}, w.dataset.title), el('span', {}, w.dataset.desc)),
+        el('button', { type: 'button', class: 'btn btn-primary btn-sm', onclick: () => { reorder([...shown(), w]); w.hidden = false; w.dataset.col = 0; layout(); pin(); close(); w.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); } }, 'Add'))))
+        : el('p', { class: 'muted' }, 'Every widget is already on the page.'),
+      el('div', { class: 'form-actions' }, el('button', { type: 'button', class: 'btn btn-ghost btn-sm', onclick: close }, 'Close'))));
+    dlg.addEventListener('cancel', (e) => { e.preventDefault(); close(); });
+    document.body.append(dlg);
+    dlg.showModal();
+  });
 })();

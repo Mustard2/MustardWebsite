@@ -81,6 +81,28 @@ function m3d_welcome_due(?array $p): bool
     return true;
 }
 
+/** What some rules allow, in plain words, per kind: ['models' => ["1 new model every 7 days"], 'outfits' => […]] (empty = no limit). */
+function m3d_welcome_rule_texts(array $rules): array
+{
+    $out = ['models' => [], 'outfits' => []];
+    foreach (array_keys($out) as $kind) {
+        foreach ($rules as $r) {
+            if (!in_array($kind, m3d_rule_kinds($r), true)) continue;
+            $max = max(1, (int) ($r['max'] ?? 1));
+            $per = m3d_rule_period($r)[1];
+            $out[$kind][] = (($r['what'] ?? 'models') === 'all' ? m3d_plural($max, 'new download') . ' (models and accessories)'
+                : $max . ' new ' . DL_WHAT[$kind][$max === 1 ? 0 : 1]) . ' every ' . $per;
+        }
+    }
+    return $out;
+}
+
+/** The one row of a patron with their own unlock rules (Admin → Access: Unlock Limits "Custom"), like m3d_welcome_rule_rows()'s; [] = none. */
+function m3d_welcome_own_rows(array $rules): array
+{
+    return $rules ? [['tier' => null, 'label' => 'Just for You', 'from' => 0, 'to' => null] + m3d_welcome_rule_texts($rules)] : [];
+}
+
 /**
  * The download rules in plain words, one row per tier with rules of its own (Admin → Access → Unlock Limits: Tier) and stretch of
  * "months as a patron" (the rules' from / to), with what each kind allows: [{tier (cents, null = the tiers without rules of their
@@ -114,17 +136,7 @@ function m3d_welcome_rule_rows(): array
         foreach ($cuts as $i => $from) {
             $to = $cuts[$i + 1] ?? null;
             $row = ['tier' => $tier, 'label' => $label($from, $to, $tier), 'from' => $from, 'to' => $to];
-            $mine = m3d_rules_pick($rules, $from, $tier);
-            foreach (['models', 'outfits'] as $kind) {
-                $row[$kind] = [];
-                foreach ($mine as $r) {
-                    if (!in_array($kind, m3d_rule_kinds($r), true)) continue;
-                    $max = max(1, (int) ($r['max'] ?? 1));
-                    $per = m3d_rule_period($r)[1];
-                    $row[$kind][] = (($r['what'] ?? 'models') === 'all' ? m3d_plural($max, 'new download') . ' (models and accessories)'
-                        : $max . ' new ' . DL_WHAT[$kind][$max === 1 ? 0 : 1]) . ' every ' . $per;
-                }
-            }
+            $row += m3d_welcome_rule_texts(m3d_rules_pick($rules, $from, $tier));
             // two stretches in a row that allow the same: one row ("Under 3 months" + "3+ months" of a tier = "Every Patron")
             $prev = $tierRows ? $tierRows[count($tierRows) - 1] : null;
             if ($prev && $prev['models'] === $row['models'] && $prev['outfits'] === $row['outfits']) {

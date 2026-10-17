@@ -6,6 +6,9 @@
 // A link can also be written short, `s4:<file>` (e.g. s4:model.zip or s4:folder/file.zip): the file in the bucket of the
 // "Bucket Address" setting (m3d_s4_resolve()). Settings: private/s4.php {key, secret, minutes, region, bucket, test}: a PHP file like
 // patreon.php (never readable over the web, never in backups). Signing is AWS Signature Version 4 with the query string (the only version S4 accepts: github.com/meganz/s4-specs).
+// Download Domain (`domain`, optional): the site's own address for downloads (files.example.com), a Cloudflare Worker that passes the
+// signed address on to the bucket's host unchanged. The address is still signed for the bucket's host (the Worker's request to S4 carries
+// that Host), only the host the visitor sees changes: m3d_s4_domain_url(), for files in the Bucket Address's bucket only.
 declare(strict_types=1);
 
 const S4_MINUTES = 360;        // default link lifetime (6 hours)
@@ -17,7 +20,7 @@ const S4_REGIONS = ['us-east-1', 'host'];   // what the signature names as regio
 // the older s3.eu-central-1.s4.mega.io endpoints too
 const S4_HOST_RE = '/^(?:([a-z0-9][a-z0-9.-]{1,61}[a-z0-9])\.)?(s3\.([a-z0-9-]+)\.(?:megas4\.com|s4\.mega\.io))$/';
 
-/** The saved S4 settings: {on, key, secret, minutes, region, bucket (https://<host>/<bucket>/ or ''), test}; key / secret empty when not set; on = the main switch (absent = on). */
+/** The saved S4 settings: {on, key, secret, minutes, region, bucket (https://<host>/<bucket>/ or ''), domain (host or ''), test}; key / secret empty when not set; on = the main switch (absent = on). */
 function m3d_s4(bool $fresh = false): array
 {
     static $cache = null;   // read once per request (Link Check asks for every link); m3d_s4_save() refreshes it
@@ -32,6 +35,7 @@ function m3d_s4(bool $fresh = false): array
         'minutes' => max(S4_MINUTES_MIN, min(S4_MINUTES_MAX, (int) ($d['minutes'] ?? (isset($d['hours']) ? (int) $d['hours'] * 60 : S4_MINUTES)))),   // 'hours': saved before minutes
         'region' => in_array($d['region'] ?? '', S4_REGIONS, true) ? $d['region'] : S4_REGIONS[0],
         'bucket' => $str('bucket'),
+        'domain' => $str('domain'),
         'test' => $str('test'),
     ];
 }
@@ -63,7 +67,7 @@ function m3d_s4_save(array $s): bool
     $f = M3D_PRIVATE . '/s4.php';
     if (($s['key'] ?? '') === '' || ($s['secret'] ?? '') === '') { $ok = !is_file($f) || @unlink($f); m3d_s4(true); return $ok; }
     $keep = ['on' => (bool) ($s['on'] ?? true), 'key' => (string) $s['key'], 'secret' => (string) $s['secret'], 'minutes' => (int) ($s['minutes'] ?? S4_MINUTES),
-             'region' => (string) ($s['region'] ?? S4_REGIONS[0]), 'bucket' => (string) ($s['bucket'] ?? ''), 'test' => (string) ($s['test'] ?? '')];
+             'region' => (string) ($s['region'] ?? S4_REGIONS[0]), 'bucket' => (string) ($s['bucket'] ?? ''), 'domain' => (string) ($s['domain'] ?? ''), 'test' => (string) ($s['test'] ?? '')];
     $php = "<?php\n// MEGA S4 keys saved in Admin → Settings → Features → MEGA S4. Delete this file to stop signing S4 links.\nreturn " . var_export($keep, true) . ";\n";
     $tmp = $f . '.tmp-' . bin2hex(random_bytes(4));
     if (@file_put_contents($tmp, $php, LOCK_EX) === false) return false;
@@ -98,6 +102,29 @@ function m3d_s4_bucket_clean(string $url): string
     if ($url === '') return '';
     $p = m3d_s4_parse(rtrim($url, '/') . '/x', '');   // a file in it, to read host and bucket the same way as a link
     return $p ? 'https://' . $p[0] . '/' . $p[1] . '/' : '';
+}
+
+/** A Download Domain typed in Settings ("files.example.com", with or without https:// and a final /) → the host, lowercase; '' when it isn't one (an S4 host isn't). */
+function m3d_s4_domain_clean(string $d): string
+{
+    $d = strtolower(trim($d));
+    if (preg_match('#^https://([^/?\#]+)/?$#', $d, $m)) $d = $m[1];
+    if (!preg_match('/^(?=.{4,253}$)([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/', $d)) return '';
+    return preg_match(S4_HOST_RE, $d) ? '' : $d;
+}
+
+/**
+ * A pre-signed S4 address as the visitor gets it: on the Download Domain when one is saved and the file is in the Bucket Address's
+ * bucket (the Worker passes /<bucket>/… on to the bucket's host), else unchanged. $s: the settings (default: the saved ones).
+ */
+function m3d_s4_domain_url(string $signed, ?array $s = null): string
+{
+    $s ??= m3d_s4();
+    $domain = (string) ($s['domain'] ?? '');
+    $b = $domain !== '' && ($s['bucket'] ?? '') !== '' ? m3d_s4_parse($s['bucket'] . 'x', $s['bucket']) : null;
+    if (!$b) return $signed;
+    $host = 'https://' . $b[0];
+    return str_starts_with($signed, $host . '/' . rawurlencode($b[1]) . '/') ? 'https://' . $domain . substr($signed, strlen($host)) : $signed;
 }
 
 /**
@@ -163,18 +190,24 @@ function m3d_download_url(string $url): ?string
 {
     if (!m3d_s4()['on']) return m3d_s4_short($url) ? null : $url;   // switched off: "s4:" links have nowhere to go, full addresses go as they are
     $signed = m3d_s4_presign($url);
-    if ($signed !== null) return $signed;
+    if ($signed !== null) return m3d_s4_domain_url($signed);
     return m3d_s4_short($url) ? (m3d_s4_resolve($url) ?: null) : $url;
 }
 
 /**
  * Asks S4 for the first byte of a file (one signed GET with Range: nothing else is downloaded):
  * ['ok' => bool, 'code' => HTTP code (0 = no answer), 'size' => bytes, 'err' => S4's error code or curl's message].
+ * $viaDomain: through the Download Domain (the Worker) instead; 'err' => 'not via domain' when the file isn't served there.
  */
-function m3d_s4_probe(string $url, ?string $region = null, ?array $keys = null): array
+function m3d_s4_probe(string $url, ?string $region = null, ?array $keys = null, bool $viaDomain = false): array
 {
     $signed = m3d_s4_presign($url, 'GET', 300, $region, $keys);
     if ($signed === null) return ['ok' => false, 'code' => 0, 'size' => 0, 'err' => m3d_s4_parse($url, ($keys ?? m3d_s4())['bucket'] ?? null) ? 'no keys' : (m3d_s4_short($url) ? 'no bucket' : 'not an S4 address')];
+    if ($viaDomain) {
+        $via = m3d_s4_domain_url($signed, $keys);
+        if ($via === $signed) return ['ok' => false, 'code' => 0, 'size' => 0, 'err' => 'not via domain'];
+        $signed = $via;
+    }
     $ch = curl_init($signed);
     $body = '';
     curl_setopt_array($ch, [
