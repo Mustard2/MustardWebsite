@@ -13,7 +13,7 @@ $versions = m3d_model_versions($d);
 $vSlugs = array_column($versions, 'slug');
 $newest = $versions && $versions[0]['slug'] !== $d['slug'] ? $versions[0] : null;
 $otherVersions = array_values(array_filter($versions, fn($m) => $m['slug'] !== $d['slug']));
-$related = array_slice(array_values(array_filter(m3d_listed_items('models'), fn($m) => $m['slug'] !== $d['slug'] && !in_array($m['slug'], $vSlugs, true) && ($m['franchise'] ?? '') === ($d['franchise'] ?? ''))), 0, 4);
+$related = array_values(array_filter(m3d_listed_items('models'), fn($m) => $m['slug'] !== $d['slug'] && !in_array($m['slug'], $vSlugs, true) && ($m['franchise'] ?? '') === ($d['franchise'] ?? '')));
 $comingSoon = ($d['status'] ?? '') === 'in-development';
 $gallery = array_values(array_filter(array_map('as_image', $d['gallery'] ?? []), fn($g) => $g['src'] !== ''));
 $notes = array_map('as_note', $d['notes'] ?? []);
@@ -136,18 +136,20 @@ layout_start($gen !== null ? "$title (Gen $gen)" : $title, "{$d['name']} from {$
     <?php endif ?>
 
     <?php if ($otherVersions): ?>
-      <section class="section" id="versions">
+      <section class="section rel-sec" id="versions">
         <h2 class="h2 rel-title">Other Versions</h2>
-        <div class="grid"><?php foreach ($otherVersions as $m) echo model_card($m) ?></div>
+        <?= like_strip(array_map('model_card', $otherVersions), 'models', 'rel-strip') ?>
       </section>
     <?php endif ?>
 
     <?php if ($related): ?>
-      <section class="section">
+      <section class="section rel-sec">
         <h2 class="h2 rel-title">More from <?= e($d['franchise'] ?? '') ?></h2>
-        <div class="grid"><?php foreach ($related as $m) echo model_card($m) ?></div>
+        <?= like_strip(array_map('model_card', $related), 'models', 'rel-strip') ?>
       </section>
     <?php endif ?>
+
+    <?= comments_block('models', $d['slug'], $d, 'model') ?>
   </div>
 
 <?php layout_end();

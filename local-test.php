@@ -66,6 +66,8 @@ if (preg_match('#^/setup/?$#', $path)) return $route('setup.php');
 if (preg_match('#^/accessories/?$#', $path)) return $route('outfits.php');
 if (preg_match('#^/accessories/([a-z0-9-]+)/?$#', $path, $m)) return $route('outfit.php', ['slug' => $m[1]]);
 if (preg_match('#^/gallery/?$#', $path)) return $route('gallery.php');
+if (preg_match('#^/blog/?$#', $path)) return $route('blog.php');
+if (preg_match('#^/blog/([a-z0-9-]+)/?$#', $path, $m)) return $route('blog.php', ['slug' => $m[1]]);
 if (preg_match('#^/get/still/([a-f0-9]{8})/?$#', $path, $m)) return $route('auth/get-still.php', ['id' => $m[1]]);
 if (preg_match('#^/get/outfit/([a-z0-9-]+)/([0-9]+)/?$#', $path, $m)) return $route('auth/get.php', ['type' => 'outfit', 'model' => $m[1], 'n' => $m[2]]);
 if (preg_match('#^/get/([a-z0-9-]+)/([0-9]+)/?$#', $path, $m)) return $route('auth/get.php', ['model' => $m[1], 'n' => $m[2]]);

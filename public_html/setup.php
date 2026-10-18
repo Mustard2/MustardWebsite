@@ -4,8 +4,19 @@
 //   2. the Patreon client (Client ID, Client secret; the redirect address to register is shown)
 //   3. log in with Patreon: that account becomes the owner (settings.json → owners; auth/callback.php), the campaign id is read too
 //   4. the basics: name, tagline, colour, who runs the site (privacy page), support email
+//   5. features: the on/off switches of Settings → Features (all off on a fresh site; Discord and S4 need keys, so only named there)
 // Afterwards (settings.json → setup_done) this address leads to the admin; everything stays editable in Admin → Settings.
 require __DIR__ . '/admin/_admin.php';   // the core, plus tip() and no-store / noindex headers
+
+// Step 5: settings.json key => [title, what it does]; the same switches as Settings → Features
+const SETUP_FEATURES = [
+    'blog'      => ['Blog', 'News, works in progress and tutorials at /blog/, written in Admin → Blog.'],
+    'bugs'      => ['Bug Reports', 'Visitors report problems with your models at /bugs/, and you mark them fixed.'],
+    'comments'  => ['Comments', 'Logged-in patrons comment under model, accessory and blog post pages.'],
+    'welcome'   => ['Welcome Page', 'A short tour shown once to new patrons, right after their first login.'],
+    'mustardui' => ['MustardUI Page', FEATURE_SWITCHES['mustardui'][1]],
+    'smutbase'  => ['SmutBase Import', FEATURE_SWITCHES['smutbase'][1]],
+];
 
 $needed = m3d_setup_needed();
 if (!$needed && (!m3d_is_admin($M3D) || !empty(m3d_settings()['setup_done']))) m3d_redirect(m3d_is_admin($M3D) ? '/admin/' : '/');
@@ -71,19 +82,35 @@ if ($post && ($_POST['do'] ?? '') === 'basics' && !$needed && m3d_is_admin($M3D)
         $address = mb_substr(trim(str_replace("\r\n", "\n", (string) ($_POST['legal_address'] ?? ''))), 0, 300);
         if ($campaign !== '') m3d_patreon_save(array_merge(m3d_patreon_saved(), ['campaign_id' => $campaign]));
         $ok = m3d_save_settings(['identity' => array_intersect_key($id, IDENTITY_DEFAULTS),
-            'legal' => ['name' => $one('legal_name', 120), 'address' => $address, 'email' => $email], 'support_email' => $support, 'setup_done' => gmdate('c')]);
-        if ($ok) m3d_redirect('/admin/');
+            'legal' => ['name' => $one('legal_name', 120), 'address' => $address, 'email' => $email], 'support_email' => $support]);
+        if ($ok) m3d_redirect('/setup/?step=features');
         $error = m3d_write_error();
     }
+}
+
+// ── step 5: features ──
+if ($post && ($_POST['do'] ?? '') === 'features' && !$needed && m3d_is_admin($M3D)) {
+    $all = m3d_settings(true);
+    $changes = ['setup_done' => gmdate('c')];
+    foreach (array_keys(SETUP_FEATURES) as $k) {
+        $on = !empty($_POST['f_' . $k]);
+        $cur = is_array($all[$k] ?? null) ? $all[$k] : [];
+        if ($on === !empty($cur['on'])) continue;
+        $changes[$k] = array_merge($cur, ['on' => $on]);
+        if ($k === 'welcome' && $on) $changes[$k]['since'] = time();   // as in Settings: patrons who downloaded before count as old
+    }
+    if (m3d_save_settings($changes)) m3d_redirect('/admin/');
+    $error = m3d_write_error();
 }
 if (!$post && ($_GET['skip'] ?? '') === '1' && !$needed && m3d_is_admin($M3D)) {
     m3d_save_settings(['setup_done' => gmdate('c')]);
     m3d_redirect('/admin/');
 }
 
-$step = !$codeOk ? 1 : ($needed ? ($real('client_id') && $real('client_secret') && ($_GET['edit'] ?? '') !== 'keys' ? 3 : 2) : 4);
+$step = !$codeOk ? 1 : ($needed ? ($real('client_id') && $real('client_secret') && ($_GET['edit'] ?? '') !== 'keys' ? 3 : 2)
+    : (($_GET['step'] ?? '') === 'features' || ($_POST['do'] ?? '') === 'features' ? 5 : 4));
 $csrf = e(m3d_csrf());
-$steps = [1 => 'Your Server', 2 => 'Patreon', 3 => 'Log In', 4 => 'The Basics'];
+$steps = [1 => 'Your Server', 2 => 'Patreon', 3 => 'Log In', 4 => 'The Basics', 5 => 'Features'];
 $id = m3d_identity();
 $legal = m3d_legal();
 header('Content-Type: text/html; charset=utf-8');
@@ -112,7 +139,7 @@ header('Content-Type: text/html; charset=utf-8');
 <?php if ($step === 1): ?>
       <h2 class="small-h">Show That This Is Your Server</h2>
       <p>To make sure nobody else can take over a freshly installed site, a code has been written into a file on your server. Open it with your host’s
-        file manager (on Hostinger: hPanel → Files → File Manager):</p>
+        file manager (in your hosting control panel):</p>
       <p class="setup-path"><code><?= e(basename(M3D_PRIVATE)) ?>/setup-code.txt</code> <span class="muted small">in the private folder, next to the site folder</span></p>
       <form method="post" class="setup-form">
         <input type="hidden" name="csrf" value="<?= $csrf ?>" /><input type="hidden" name="do" value="code" />
@@ -140,7 +167,7 @@ header('Content-Type: text/html; charset=utf-8');
         (the creator account), so the campaign is found too.</p>
       <p class="muted small">Client ID: <code><?= e((string) $keys['client_id']) ?></code> · <a href="/setup/?edit=keys">Change the keys</a></p>
       <div class="row-btns"><a class="btn btn-patreon" href="/auth/login.php?return=%2Fsetup%2F">Log In with Patreon</a></div>
-<?php else: ?>
+<?php elseif ($step === 4): ?>
       <h2 class="small-h">The Basics</h2>
       <p>You are the owner now<?= $real('campaign_id') ? '' : ' (the campaign could not be read: enter its ID below)' ?>. A few details, all editable later in Admin → Settings:</p>
       <form method="post" class="setup-form">
@@ -159,6 +186,19 @@ header('Content-Type: text/html; charset=utf-8');
           <label class="field id-wide"><span class="lbl">Postal Address</span><textarea class="input" name="legal_address" rows="3" maxlength="300"><?= e($legal['address']) ?></textarea></label>
           <label class="field id-wide"><span class="lbl">Support Email<?= tip('Optional. Shown on the Contacts page for legal matters about the website’s content (copyright, privacy).') ?></span><input class="input" type="email" name="support_email" value="<?= e(m3d_support_email()) ?>" maxlength="120" /></label>
         </div>
+        <div class="row-btns"><button class="btn btn-primary">Continue</button><a class="btn btn-ghost" href="/setup/?step=features">Skip for Now</a></div>
+      </form>
+<?php else: ?>
+      <h2 class="small-h">Features</h2>
+      <p>Turn on what your site needs. Everything else stays off, and you can change it any time in Admin → Settings → Features.</p>
+      <form method="post" class="setup-form">
+        <input type="hidden" name="csrf" value="<?= $csrf ?>" /><input type="hidden" name="do" value="features" />
+        <div class="setup-feats">
+          <?php $all = m3d_settings(); foreach (SETUP_FEATURES as $k => [$title, $what]): ?>
+            <label class="toggle setup-feat"><input type="checkbox" class="switch" name="f_<?= $k ?>" value="1" <?= !empty($all[$k]['on']) ? 'checked' : '' ?> /><span><?= e($title) ?><small><?= e($what) ?></small></span></label>
+          <?php endforeach ?>
+        </div>
+        <p class="muted small">Discord announcements and MEGA S4 downloads need keys from those services: set them up in Settings → Features when you need them.</p>
         <div class="row-btns"><button class="btn btn-primary">Finish and Open the Admin</button><a class="btn btn-ghost" href="/setup/?skip=1">Skip for Now</a></div>
       </form>
 <?php endif ?>

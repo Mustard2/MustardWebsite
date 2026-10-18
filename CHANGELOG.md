@@ -1,5 +1,108 @@
 # Changelog
 
+## 2026.10.18-4 · 18 Oct 2026
+
+- Change: The admin's View Page buttons open the page in the same tab.
+- Fix: The green "Saved" message at the bottom no longer looks see-through while it appears or goes away.
+- New: Blog at /blog/ with posts, topics, search and a big first post, switched on in Settings → Features → Blog.
+- New: Patrons can like blog posts.
+- New: Patrons Only posts show their first paragraph to everyone and the rest to paying patrons.
+- New: Admin → Blog editor with cover picture, topics, linked models and accessories, scheduled dates and pinning.
+- New: New blog posts can be announced on Discord.
+- Fix: a download pressed again within 10 minutes is remembered per Patreon account, so another account in the same browser (or a preview) uses its own unlock and the daily cap
+- Fix: the welcome page says the general rules apply when the patron's tier has no rules of its own
+- Fix: the privacy page mentions that the login remembers downloaded links for 10 minutes
+- Fix: "Add New Version" dates the version today in site time, not by the admin's computer clock
+- Fix: visitors in the site's own time zone no longer see times rewritten when their browser spells the zone differently (Asia/Calcutta, Europe/Kiev)
+- Fix: a patron's "since" day no longer shows one day off in Downloads and Personal Data
+- Fix: changing the site time zone works out the Discord release timer again, so a version's day isn't posted late
+- Fix: after "Delete All Their Data" the page no longer shows the person's likes or the Delete button
+- Fix: Personal Data offers Delete only when there is something it deletes (a bug-report block stays)
+- Fix: the "Patreon ID or name" search finds people by older names and bug-report names too
+- Fix: a "#6" inside code or a link in a changelog line no longer marks report #6 as Fixed
+- Fix: removing a changelog "#6" gives a closed report back its reason and duplicate number
+- Fix: removing a changelog "#6" undoes the Fixed status even after the report's About changed or the item was re-addressed by an import
+- Fix: followers no longer get an empty "New since your last visit" from a "Fixed in" line that doesn't show
+- Fix: the editor's "#" list adds ": " after a second number, replaces the whole word under the caret, and treats tags the way the site does ("Fix", not "fix")
+- Fix: saving the Home layout keeps Bugs This Week and Gallery Downloads while they can't show
+- Fix: Home tiles keep their one-line height, so widgets no longer move when the page loads
+- Fix: the Logins tile says when counting started instead of comparing with days that weren't counted
+- Fix: a tier's own unlock rule no longer removes an "Any Tier" rule that also counts what it doesn't (a tier rule for models keeps the Any Tier rule for models and accessories together)
+- Change: Pages load faster for logged-in visitors while bug reports are on.
+- New: A "--- Patreon ---" line in a blog post keeps the rest of the post for patrons; other readers see the text above it fade out into the lock box.
+- Change: Admin → Blog starts empty when there are no posts; a post is created only with + New Post.
+- Fix: The Features list on model pages has no more gaps under short items; items read down each column.
+- Fix: Discord Announcements warns when a role is written as plain text (@Notifications) in the intro message and explains how to get the role's code, so the post really pings the role.
+- New: Comments under models, accessories and blog posts (off by default, Settings → Features → Comments)
+- New: Replies to comments, two levels deep
+- New: An "Allow Comments" switch on each model, accessory and blog post
+- New: Comment counts on model, accessory and blog cards, and a Comments column in the admin lists
+- New: Delete All Comments button in the Comments settings
+- New: Personal Data finds, exports and deletes a person's comments
+- Change: The privacy page explains comments while they are on or stored
+- Change: Comments are now the last section of model, accessory and blog post pages, full width
+- Change: Less space between the sections of model and accessory pages
+- Change: "More from", "Other Versions" and "More Accessories for the Same Models" list every item in one row with ‹ › arrows, instead of the first 4.
+- Change: the ‹ › arrows of every picture and card row go round: past the last item they go back to the first.
+- New: Latest Comments widget on Admin Home, with the comments waiting for approval tagged and a link to approve them
+- New: A bell in the admin header and on the site (only for you) lists new comments, bug reports, bug comments and things that need a look, with one number
+- New: Publish waiting comments right from the bell
+- New: Settings → Notifications: choose per event whether it shows in the bell, goes to a private Discord channel, or both, with one webhook and a test message
+- New: Comments on bug reports, newly dead links, site problems and new updates can be posted to your private Discord channel
+- Change: The Discord switches and webhooks of Bug Reports and Comments moved to Settings → Notifications
+- Change: The number next to Bugs is now in the bell for the creator (patrons keep their Following number)
+- Change: The Welcome Page box in Settings → Features now sits below Discord Announcements
+- Fix: The bell and the site's pages no longer break for the creator while an update is waiting
+- Fix: No more wide gaps around the notification bell in the header
+- New: the first-use setup has a Features step to turn on the blog, bug reports, comments, the welcome page, the MustardUI page and the SmutBase import.
+- Fix: The picture window's Upload Into shows "Blog" with a capital B.
+- Fix: Less space between the comment count and the likes on model, accessory and blog cards
+- Change: The account buttons sit closer to the search button and the bell in the header
+- New: like models and accessories straight from My Models on My account, with a heart to the left of each one.
+- Fix: New Likes This Week on Admin → Home no longer counts a like twice when a patron removes it and likes again
+- Fix: the rows of the blog editor's post list line up with their picture.
+- Fix: the FAQ line at the top of the Contacts page no longer breaks onto a second line early.
+- New: Drag pictures onto an admin text (docs, blog posts, FAQ, model and accessory texts, changelog notes, Accessories page and welcome texts), or paste a copied picture, to upload it and add it on its own line
+- New: a Quick Add "+" button in the creator's header for a new model, accessory, blog post or changelog version
+- Fix: the admin menu fits on one row again next to the Quick Add button
+- Fix: the patrons-only part of a blog post no longer shows to everyone when the post has an unclosed code block or a tab after its Patreon line
+- Fix: restoring a backup, or an older version of the blog posts, no longer announces posts on Discord again
+- Fix: a Patrons Only post's cover no longer goes into link previews or the Discord post
+- Fix: long words in a post's summary, the blog intro or the Older / Newer titles no longer make the page scroll sideways
+- Fix: link previews of a post without a summary show plain text instead of the format's marks
+- Fix: a reply to a reply whose comment was deleted now goes under that reply
+- Fix: a comment published on its own page or in Settings is marked read in the bell
+- Fix: the bottom of the bell's list stays on screen on phones
+- Fix: Mark All as Read no longer marks bug reports seen when the bell doesn't show bug reports
+- Fix: the creator's own bug reports no longer show in the bell
+- Fix: visitors' names in the creator's Discord posts can't become links
+- Fix: a damaged update check file no longer breaks the creator's pages
+- Fix: ‹ › arrows show once pictures that load late make a row wider
+- Fix: restoring a backup brings comment settings (on / off, blocked people) back together with the comments
+- Fix: restoring Content from a backup made before the first blog post or Gallery picture empties them, like the FAQ and Docs
+- Fix: a like removed and given again on a later day counts once in New Likes This Week
+- Fix: the logo no longer changes size between the admin and the site
+- Change: pictures in texts (descriptions, notes, docs, FAQ, blog posts) are centred in the column.
+- Change: the privacy page, the setup page and the admin's help and error texts no longer name the hosting or CDN company
+- Change: Settings → Tools no longer has the "Cloudflare Cache" row
+- New: Stats page in the admin for the whole site, all models, all accessories or one model / accessory, over 30 / 90 days, 12 months or all time
+- New: Stats buttons in the model / accessory editor and on each row of the Models and Accessories lists
+- Change: Downloads shows only the patron log; the totals per model and accessory moved to Stats
+- Change: logins and new likes per day are kept for a year instead of 60 days
+- Fix: the admin menu fits on one row again on wide screens
+- Change: Gallery pictures on Stats are taller
+- New: Each changelog version has its own link (#v4) with a copy button; What's New, Discord posts and bug reports link to the exact version
+- New: The download waiting page shows what's new since your last download, or what's in this version
+- New: Duplicate a model or accessory as a draft from its editor
+- New: History of a model or accessory in its editor, with Load This Version to bring back an earlier one
+- New: Add or remove characters on many Gallery pictures at once
+- Fix: rows in the Models and Accessories lists are all the same height
+- Fix: the Versions table on Stats has evenly placed columns
+- Change: Featured shows as a ★ badge in the Models list
+- Change: the Downloads, Likes and Comments columns of the Models and Accessories lists have icon titles, and the row buttons sit closer together
+- Change: comments waiting for approval show as a small clock with their number in the lists
+- Fix: Badges next to a name in the Models and Accessories lists are no longer cut short when there is room for them.
+
 ## 2026.10.17-5 · 17 Oct 2026
 
 - Fix: Admin → Home's 7-day tile now says it counts downloads, and shows the plain difference instead of a huge % when the week before had few downloads.

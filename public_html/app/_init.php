@@ -29,3 +29,6 @@ require_once __DIR__ . '/links.php';
 require_once __DIR__ . '/s4.php';
 require_once __DIR__ . '/model3d.php';
 require_once __DIR__ . '/welcome.php';
+require_once __DIR__ . '/blog.php';
+require_once __DIR__ . '/comments.php';
+require_once __DIR__ . '/notify.php';

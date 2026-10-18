@@ -1,8 +1,9 @@
 <?php
-// /search/?q=…  (rewritten here by .htaccess): one search over models, accessories, docs pages and FAQ questions.
+// /search/?q=…  (rewritten here by .htaccess): one search over models, accessories, blog posts, docs pages and FAQ questions.
 //   ?index=1  the list the header search box (site.js, [data-hsearch]) searches as you type: the same for every visitor
 //             (cacheable), so only what any visitor may see: listed items (no drafts, no unlisted password items), docs pages
-//             that aren't drafts, FAQ questions; pictures only for fully public items (like link previews).
+//             that aren't drafts, FAQ questions, blog posts that are out (Patrons Only ones too: their title and summary are public);
+//             pictures only for fully public items and Public posts (like link previews).
 //   ?q=       the full results page (also what the box opens on Enter, and the search without JavaScript).
 // Matching (same in site.js): lower case, accents ignored, every word must be found in the title or the extra words.
 require __DIR__ . '/app/_init.php';
@@ -25,6 +26,14 @@ function search_index(): array
         $out[] = ['g' => 'outfits', 'k' => m3d_accessory_type($o), 't' => (string) $o['name'], 's' => $for ? 'For ' . implode(', ', array_slice($for, 0, 3)) . (count($for) > 3 ? '…' : '') : 'Accessory',
                   'u' => m3d_item_url('outfits', (string) $o['slug']), 'p' => $pic !== '' ? img_thumb($pic) : '',
                   'x' => implode(' ', array_merge(['accessory', (string) ($o['slug'] ?? '')], $for)), 'ref' => 'outfits:' . $o['slug']];
+    }
+    if (m3d_blog_on()) {
+        foreach (m3d_blog()['posts'] as $p) {
+            if (m3d_post_state($p) !== 'live') continue;
+            $pic = ($p['visibility'] ?? 'public') === 'public' ? (string) ($p['cover'] ?? '') : '';
+            $out[] = ['g' => 'blog', 'k' => 'Blog', 't' => (string) $p['title'], 's' => m3d_site_time(m3d_post_ts($p), 'j M Y') . (!empty($p['topics']) ? ' · ' . implode(', ', $p['topics']) : ''),
+                      'u' => m3d_post_url($p), 'p' => str_starts_with($pic, '/media/') ? img_thumb($pic) : '', 'x' => (string) ($p['summary'] ?? ''), 'ref' => 'blog:' . $p['id']];
+        }
     }
     if (m3d_has_docs()) {
         $home = m3d_docs_home();
@@ -76,10 +85,10 @@ $q = mb_substr(trim(m3d_get_text('q')), 0, 100);
 $hits = $q !== '' ? search_run(search_index(), $q) : [];
 $byRef = [];
 foreach (['models', 'outfits'] as $kind) foreach (m3d_listed_items($kind) as $it) $byRef[$kind . ':' . $it['slug']] = $it;
-$groups = ['models' => [], 'outfits' => [], 'help' => []];
+$groups = ['models' => [], 'outfits' => [], 'blog' => [], 'help' => []];
 foreach ($hits as $h) $groups[$h['g']][] = $h;
 
-layout_start($q !== '' ? 'Search: ' . $q : 'Search', 'Search the models, accessories and help pages of ' . site_name() . '.', 'page-search');
+layout_start($q !== '' ? 'Search: ' . $q : 'Search', 'Search the models, accessories, posts and help pages of ' . site_name() . '.', 'page-search');
 ?>
   <div class="wrap search-page">
     <p class="eyebrow">Search</p>
@@ -101,6 +110,12 @@ layout_start($q !== '' ? 'Search: ' . $q : 'Search', 'Search the models, accesso
       <section class="search-sec">
         <h2 class="block-title">Accessories <span class="count"><?= count($groups['outfits']) ?></span></h2>
         <div class="ogrid ogrid-lg"><?php foreach ($groups['outfits'] as $h) if (isset($byRef[$h['ref']])) echo outfit_card($byRef[$h['ref']]) ?></div>
+      </section>
+    <?php endif ?>
+    <?php if ($groups['blog']): ?>
+      <section class="search-sec">
+        <h2 class="block-title">Blog <span class="count"><?= count($groups['blog']) ?></span></h2>
+        <div class="bl-grid"><?php foreach ($groups['blog'] as $h) if ($p = m3d_post(substr($h['ref'], 5))) echo blog_card($p) ?></div>
       </section>
     <?php endif ?>
     <?php if ($groups['help']): ?>

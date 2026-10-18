@@ -72,7 +72,7 @@ layout_start("What's New", 'New models, accessories and versions on ' . site_nam
       // the whole entry is one link: links inside the changes become plain text (a link inside a link breaks the page)
       $changes = $open ? array_values(array_filter(array_map(fn($c) => trim((string) $c), (array) ($en['changes'] ?? [])), fn($c) => $c !== '')) : [];
       $what = $kind === 'outfits' ? m3d_accessory_type($it) : trim('Model · ' . ($it['franchise'] ?? ''), ' ·'); ?>
-      <a class="wn-item" href="<?= e(m3d_item_url($kind, (string) $it['slug'])) ?>#changelog">
+      <a class="wn-item" href="<?= e(m3d_version_url($kind, $it, m3d_version_label($en))) ?>">
         <span class="wn-pic<?= $hidden ? ' is-blurred' : '' ?>"><?= card_img($src, (string) $it['name']) ?></span>
         <span class="wn-body">
           <span class="wn-top"><span class="recent-tag <?= $x['new'] ? 'is-new' : 'is-upd' ?>"><?= $x['new'] ? 'New' : 'Updated' ?></span><span><?= e($what) ?> · <?= e($at($x['ts'], 'j M')) ?></span></span>

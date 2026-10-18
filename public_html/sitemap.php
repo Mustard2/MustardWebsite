@@ -1,6 +1,6 @@
 <?php
 // /sitemap.xml  (rewritten here by .htaccess): the public pages for search engines. Models and accessories that are public or
-// blurred (never password or draft ones), the docs pages that aren't drafts, and the fixed pages. The same for every visitor,
+// blurred (never password or draft ones), the docs pages that aren't drafts, blog posts that are out, and the fixed pages. The same for every visitor,
 // so it never depends on the login. lastmod = the date of the latest changelog version, when it can be read.
 require __DIR__ . '/app/_init.php';
 header('Content-Type: application/xml; charset=utf-8');
@@ -18,6 +18,11 @@ foreach (['models' => '/models/', 'outfits' => '/accessories/'] as $kind => $bas
 }
 // the gallery, once a visitor can see one of its pictures
 if (m3d_has_gallery()) $urls['/gallery/'] = null;
+// the blog and its posts that are out (Patrons Only ones too: their first paragraph is public); lastmod = the post's date
+if (m3d_has_blog()) {
+    $urls['/blog/'] = null;
+    foreach (m3d_blog()['posts'] as $p) if (m3d_post_state($p) === 'live') $urls[m3d_post_url($p)] = m3d_site_time(m3d_post_ts($p), 'Y-m-d');
+}
 $home = m3d_docs_home();
 foreach (m3d_doc_pages(true) as $pg) if ($pg['slug'] !== $home) $urls['/docs/' . $pg['slug'] . '/'] = null;
 

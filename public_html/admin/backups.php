@@ -7,7 +7,7 @@ require_once __DIR__ . '/_backup.php';
 admin_require($M3D);
 
 const DATA_LABELS = ['models' => 'Models', 'outfits' => 'Accessories', 'faq' => 'FAQ', 'docs' => 'Docs', 'settings' => 'Settings'];
-const PART_LABELS = ['code' => 'Code', 'content' => 'Content', 'counters' => 'Download Counts & Likes', 'bugs' => 'Bug Reports', 'log' => 'Download Log', 'media' => 'Images'];
+const PART_LABELS = ['code' => 'Code', 'content' => 'Content', 'counters' => 'Download Counts, Likes & Comments', 'bugs' => 'Bug Reports', 'log' => 'Download Log', 'media' => 'Images'];
 
 // ── Download ─────────────────────────────────────────────────────────────────
 if (isset($_GET['download'])) {

@@ -9,7 +9,7 @@ RewriteRule (^|/)\.(?!well-known/) - [F,L]
 RewriteRule \.(upd|upd-old|tmp)-[0-9a-f]+$ - [F,L]
 RewriteRule (\.(bak|backup|old|orig|save|swp|swo|sql|sqlite|db|log|ini|zip|tar|gz|tgz|7z|rar)|~)$ - [F,NC,L]
 
-# Force HTTPS (also when behind Cloudflare, which may reach the server over plain HTTP)
+# Force HTTPS (also when behind a proxy / CDN, which may reach the server over plain HTTP)
 RewriteCond %{HTTPS} off
 RewriteCond %{HTTP:X-Forwarded-Proto} !https
 RewriteRule ^ https://%{HTTP_HOST}%{REQUEST_URI} [L,R=301]
@@ -40,6 +40,9 @@ RewriteRule ^accessories/?$ outfits.php [L,QSA]
 RewriteRule ^accessories/([a-z0-9-]+)$ /accessories/$1/ [R=301,L]
 RewriteRule ^accessories/([a-z0-9-]+)/$ outfit.php?slug=$1 [L,QSA]
 RewriteRule ^gallery/?$ gallery.php [L,QSA]
+RewriteRule ^blog/?$ blog.php [L,QSA]
+RewriteRule ^blog/([a-z0-9-]+)$ /blog/$1/ [R=301,L]
+RewriteRule ^blog/([a-z0-9-]+)/$ blog.php?slug=$1 [L,QSA]
 
 # Downloads (patron links are checked against Patreon first)
 RewriteRule ^get/still/([a-f0-9]{8})/?$ auth/get-still.php?id=$1 [L,QSA]

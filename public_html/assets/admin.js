@@ -99,7 +99,7 @@ function sendFile(endpoint, file, model, onProgress, retried = false) {
   return new Promise((resolve, reject) => {
     const x = new XMLHttpRequest();   // not fetch: only XHR tells how much of the file has gone
     x.open('POST', endpoint);
-    // at 100% the server (through Cloudflare) still receives, checks and saves the file: shown as busy, not as a bar stuck at 100%
+    // at 100% the server (through any proxy) still receives, checks and saves the file: shown as busy, not as a bar stuck at 100%
     x.upload.onprogress = (e) => { if (e.lengthComputable) onProgress?.(file.size * e.loaded / e.total, e.loaded >= e.total); };
     x.upload.onload = () => onProgress?.(file.size, true);
     x.onload = () => {
@@ -108,7 +108,7 @@ function sendFile(endpoint, file, model, onProgress, retried = false) {
       if (x.status >= 200 && x.status < 300 && data?.ok) resolve(data);
       // a new login in another tab changed the token: send once more with the new one (like post())
       else if (x.status === 403 && !retried) freshCsrf().then((ok) => (ok ? sendFile(endpoint, file, model, onProgress, true).then(resolve, reject) : reject(new Error(data?.error || 'Upload failed (403)'))));
-      else reject(new Error(data?.error || (x.status === 413 ? 'The file is larger than the server or Cloudflare accepts (Cloudflare: 100 MB).' : `Upload failed (${x.status})`)));
+      else reject(new Error(data?.error || (x.status === 413 ? 'The file is larger than the server or a proxy in front of it accepts (often 100 MB).' : `Upload failed (${x.status})`)));
     };
     x.onerror = () => reject(new Error('Upload failed: the connection was interrupted.'));
     x.send(fd);
@@ -149,6 +149,125 @@ function uploadProgress() {
   return { node, run, finish, hide: () => { node.hidden = true; } };
 }
 
+// ── Pictures dropped on (or pasted into) a text in the md_html() format: each file is uploaded (upload.php, into `folder`) and
+// written in as "![](/media/…)" on a line of its own with a blank line around it, which md_html() needs to show a picture.
+// Where: the caret (pasted) or the point under the pointer (dropped; the caret follows the pointer while dragging); at the start of
+// a line or on an empty line it goes there, anywhere else at the end of that line. Several files = consecutive lines = a gallery.
+// While a file uploads its line reads "![Uploading name…]()"; the address replaces it, a failure takes the line out (and says why).
+// folder: a media folder name, or a function returning it (the model editor's folder follows the address); onEdit: called after
+// every change it makes (the editors mark themselves unsaved; the textarea also gets an input event).
+const DROP_IMG_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];   // what upload.php takes
+let dropQueue = Promise.resolve();   // one upload at a time, across every text of the page
+function imageDrop(ta, folder = 'misc', onEdit = () => {}) {
+  const changed = () => { ta.dispatchEvent(new Event('input', { bubbles: true })); onEdit(); };
+  // where a picture goes for a caret at i: [start, end] of the text it replaces (an empty line's spaces) — see above
+  const spot = (i) => {
+    const v = ta.value;
+    const a = v.lastIndexOf('\n', i - 1) + 1;
+    let b = v.indexOf('\n', i);
+    if (b < 0) b = v.length;
+    if (v.slice(a, b).trim() === '') return [a, b];
+    return i === a ? [a, a] : [b, b];
+  };
+  // the caret index under a point: a hidden copy of the textarea with the text up to i and a marker after it; a binary search
+  // finds the last i whose marker is before the point (browsers have no reliable way to ask this of a textarea)
+  const indexAt = (x, y) => {
+    const cs = getComputedStyle(ta);
+    const m = el('div', { 'aria-hidden': 'true' });
+    for (const p of ['fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'letterSpacing', 'wordSpacing', 'lineHeight', 'textTransform', 'textIndent', 'tabSize', 'paddingTop', 'paddingRight', 'paddingBottom', 'paddingLeft', 'wordBreak']) m.style[p] = cs[p];
+    Object.assign(m.style, { position: 'absolute', top: '0', left: '-10000px', visibility: 'hidden', boxSizing: 'content-box', border: '0', whiteSpace: 'pre-wrap', overflowWrap: 'break-word',
+      width: Math.max(0, ta.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight)) + 'px' });
+    const txt = document.createTextNode('');
+    const mark = el('span', {}, '\u200b');
+    m.append(txt, mark);
+    document.body.append(m);
+    const r = ta.getBoundingClientRect();
+    const px = x - r.left - ta.clientLeft + ta.scrollLeft, py = y - r.top - ta.clientTop + ta.scrollTop;
+    const v = ta.value;
+    const before = (i) => { txt.data = v.slice(0, i); const t = mark.offsetTop; return t + mark.offsetHeight <= py || (t <= py && mark.offsetLeft <= px); };
+    let lo = 0, hi = v.length;
+    while (lo < hi) { const mid = (lo + hi + 1) >> 1; if (before(mid)) lo = mid; else hi = mid - 1; }
+    m.remove();
+    return lo;
+  };
+  const insert = (files, i) => {
+    const [a, b] = spot(i);
+    const v = ta.value;
+    const pre = a === 0 || v.slice(0, a).endsWith('\n\n') ? '' : v.slice(0, a).endsWith('\n') ? '\n' : '\n\n';
+    const after = v.slice(b);
+    const post = after === '' || after.startsWith('\n\n') ? '' : after.startsWith('\n') ? '\n' : '\n\n';
+    const marks = [];   // each one unique, so it is found again even when the text changed meanwhile
+    for (const f of files) {
+      const name = (f.name || 'picture').replace(/[\[\]()\n\r]/g, ' ').trim().slice(0, 80) || 'picture';
+      let ph = `![Uploading ${name}…]()`;
+      for (let n = 2; v.includes(ph) || marks.includes(ph); n++) ph = `![Uploading ${name} (${n})…]()`;
+      marks.push(ph);
+    }
+    const text = marks.join('\n');
+    ta.setRangeText(pre + text + post, a, b, 'end');
+    ta.setSelectionRange(a + pre.length + text.length, a + pre.length + text.length);
+    changed();
+    files.forEach((f, k) => {
+      const ph = marks[k];
+      const swap = (text) => {   // the placeholder (wherever it is now) becomes text; '' = its line goes
+        const at = ta.value.indexOf(ph);
+        if (at < 0) return;   // removed meanwhile: the picture stays in the Images library only
+        let s = at, e = at + ph.length;
+        if (text === '') {   // the line goes with the line breaks around it, leaving the wider of the two gaps (none at the ends)
+          const v = ta.value;
+          while (s > 0 && v[s - 1] === '\n') s--;
+          while (e < v.length && v[e] === '\n') e++;
+          text = s === 0 || e === v.length ? '' : '\n'.repeat(Math.max(at - s, e - at - ph.length));
+        }
+        ta.setRangeText(text, s, e, 'preserve');
+        changed();
+      };
+      dropQueue = dropQueue.then(() => upload(f, typeof folder === 'function' ? folder() : folder)
+        .then((url) => swap(`![](${url})`), (err) => { swap(''); toast(`${f.name}: ${err.message}`, 'err'); }))
+        .catch(() => {});   // never a rejected queue: the next files still go
+    });
+  };
+  const hasFiles = (e) => [...(e.dataTransfer?.types || [])].includes('Files');
+  let raf = 0, lastXY = '';
+  ta.addEventListener('dragover', (e) => {
+    if (!hasFiles(e) || ta.disabled || ta.readOnly) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'copy';
+    ta.classList.add('img-drop-on');
+    const xy = `${Math.round(e.clientX / 4)},${Math.round(e.clientY / 4)}`;   // the caret follows the pointer (not on every pixel)
+    if (raf || xy === lastXY) return;
+    lastXY = xy;
+    const { clientX: x, clientY: y } = e;
+    raf = requestAnimationFrame(() => {
+      raf = 0;
+      const [a] = spot(indexAt(x, y));
+      ta.focus({ preventScroll: true });
+      ta.setSelectionRange(a, a);
+    });
+  });
+  const off = () => { ta.classList.remove('img-drop-on'); lastXY = ''; };
+  ta.addEventListener('dragleave', off);
+  ta.addEventListener('drop', (e) => {
+    if (!hasFiles(e) || ta.disabled || ta.readOnly) return;
+    e.preventDefault();
+    off();
+    const files = [...e.dataTransfer.files];
+    const pics = files.filter((f) => DROP_IMG_TYPES.includes(f.type));
+    if (pics.length < files.length) toast('Only pictures (JPG, PNG, WebP, GIF) can be added to the text.', 'err');
+    if (pics.length) insert(pics, indexAt(e.clientX, e.clientY));
+  });
+  ta.addEventListener('paste', (e) => {
+    const cd = e.clipboardData;
+    // a copied picture; not when text comes with it (Word, web pages: the text is what's wanted, the picture is a render of it)
+    if (!cd || cd.types.includes('text/plain') || ta.disabled || ta.readOnly) return;
+    const pics = [...cd.files].filter((f) => DROP_IMG_TYPES.includes(f.type));
+    if (!pics.length) return;
+    e.preventDefault();
+    insert(pics, ta.selectionStart);
+  });
+  return ta;
+}
+
 function autoGrow(ta) {
   const fit = () => { ta.style.height = 'auto'; ta.style.height = ta.scrollHeight + 2 + 'px'; };
   ta.addEventListener('input', fit);
@@ -159,7 +278,7 @@ function autoGrow(ta) {
 // "#" in a changelog line lists the bug reports, like GitHub: as you type, the number or words of the title narrow it; ↑ ↓ choose,
 // Enter / Tab / a click insert "#6", Esc closes. Right after a "Fix" tag at the start ("Fix #") it inserts "#6: ", the line's usual form.
 // o = {bugs: [{n, t (title), s (status), mine (about this item), a (about name), f (fixed in)}], statuses: {key: [label, colour]}, name: () => item name}
-const CHANGE_TAG_RE = /^\s*(New|Feature|Fix|Bug|Enhancement|Improvement|Optimization|Removal|UI|Outfits?|Physics|Note)(\s*\([^)]*\))?(\s*,?\s*#\d+)*\s*$/i;
+const CHANGE_TAG_RE = /^\s*(New|Feature|Fix|Bug|Enhancement|Improvement|Optimization|Removal|UI|Outfits?|Physics|Note)(\s*\([^)]*\))?(\s*,?\s*#\d+)*\s*,?\s*$/;   // case-sensitive, like change_line()
 function bugMention(ta, o) {
   let pop = null, items = [], sel = 0, skip = false;
   const done = (b) => b.s === 'fixed' || b.s === 'closed';
@@ -204,7 +323,7 @@ function bugMention(ta, o) {
   const pick = (b) => {
     const t = token();
     if (!t) return close();
-    const pos = ta.selectionStart, before = ta.value.slice(0, t[0]), after = ta.value.slice(pos);
+    const pos = ta.selectionStart, before = ta.value.slice(0, t[0]), after = ta.value.slice(pos).replace(/^[^\s#,;:()]*/, '');   // the rest of a word the caret is in goes too
     const ins = '#' + b.n + (CHANGE_TAG_RE.test(before) && !after.trim() ? ': ' : /^[\s,.;:)]/.test(after) ? '' : ' ');
     ta.value = before + ins + after;
     ta.setSelectionRange(before.length + ins.length, before.length + ins.length);
@@ -1227,7 +1346,83 @@ if (form) {
   const data = JSON.parse(document.getElementById('editor-data').textContent);
   if (data.kind === 'faq') initFaqEditor(data);
   else if (data.kind === 'docs') initDocsEditor(data);
+  else if (data.kind === 'blog') initBlogEditor(data);
   else initEditor(data);
+}
+
+// ── A long text in the md_html() format (Docs pages, blog posts): Write / Preview tabs, the formatting toolbar, Ctrl+B / I / K ──
+// body = its textarea; folder = where the toolbar's Image button uploads; onEdit = called after the toolbar changed the text
+function mdTools(body, { folder = 'misc', imgTitle = 'Pictures', onEdit = () => {}, paywall = false } = {}) {
+  const replaceSel = (ta, fn) => {
+    const a = ta.selectionStart, b = ta.selectionEnd;
+    const [text, selA, selB] = fn(ta.value.slice(a, b));
+    ta.setRangeText(text, a, b, 'end');
+    if (selA !== undefined) ta.setSelectionRange(a + selA, a + selB);
+    ta.focus();
+    ta.dispatchEvent(new Event('input', { bubbles: true }));
+  };
+  const wrap = (ta, left, right, ph) => replaceSel(ta, (t) => [left + (t || ph) + right, left.length, left.length + (t || ph).length]);
+  const lines = (ta, fn) => {
+    // extend the selection to whole lines
+    const v = ta.value;
+    ta.selectionStart = v.lastIndexOf('\n', ta.selectionStart - 1) + 1;
+    const e = v.indexOf('\n', ta.selectionEnd);
+    ta.selectionEnd = e < 0 ? v.length : e;
+    replaceSel(ta, (t) => { const out = t.split('\n').map(fn).join('\n'); return [out, 0, out.length]; });
+  };
+  const block = (ta, text) => {
+    const before = ta.value.slice(0, ta.selectionStart);
+    const pre = before === '' || before.endsWith('\n\n') ? '' : before.endsWith('\n') ? '\n' : '\n\n';
+    replaceSel(ta, () => [pre + text + '\n\n']);
+  };
+  imageDrop(body, folder, onEdit);   // pictures dropped on or pasted into the text
+  const link = () => { const url = prompt('Link address (https://… or a site page like /docs/requirements/):'); if (url) wrap(body, '[', `](${url.trim()})`, 'link text'); };
+  body.addEventListener('keydown', (e) => {
+    if (!(e.ctrlKey || e.metaKey)) return;
+    if (e.key === 'b') { e.preventDefault(); wrap(body, '**', '**', 'bold text'); }
+    if (e.key === 'i') { e.preventDefault(); wrap(body, '*', '*', 'italic text'); }
+    if (e.key === 'k') { e.preventDefault(); link(); }
+  });
+  const imgBtn = el('button', { type: 'button', class: 'tb', title: 'Pictures from the Images library or uploaded (several = side-by-side gallery); pictures can also be dropped on or pasted into the text', onclick: async () => {
+    const urls = await pickImages({ multiple: true, folder, title: imgTitle });
+    if (urls.length) { block(body, urls.map((u) => `![](${u})`).join('\n')); onEdit(); }
+  } }, 'Image');
+  const tb = (label, title, fn) => el('button', { type: 'button', class: 'tb', title, onclick: fn }, label);
+  const toolbar = el('div', { class: 'dp-toolbar', role: 'toolbar', 'aria-label': 'Formatting' },
+    tb('B', 'Bold (Ctrl+B)', () => wrap(body, '**', '**', 'bold text')),
+    tb('I', 'Italic (Ctrl+I)', () => wrap(body, '*', '*', 'italic text')),
+    tb('Link', 'Link (Ctrl+K)', link),
+    tb('H2', 'Heading', () => lines(body, (l) => '## ' + l.replace(/^#+\s*/, ''))),
+    tb('H3', 'Smaller heading', () => lines(body, (l) => '### ' + l.replace(/^#+\s*/, ''))),
+    tb('• List', 'Bullet list', () => lines(body, (l) => '- ' + l.replace(/^(-|\d+\.)\s+/, ''))),
+    tb('1. Steps', 'Numbered steps', () => { let n = 0; lines(body, (l) => `${++n}. ` + l.replace(/^(-|\d+\.)\s+/, '')); }),
+    boxMenu(() => body),
+    tb('Code', 'Code block', () => replaceSel(body, (t) => ['\n```\n' + (t || 'code') + '\n```\n'])),
+    tb('Table', 'Table', () => block(body, '| Column | Column |\n|---|---|\n| Text | Text |')),
+    tb('Tabs', 'Tabs: two or more ways to do the same steps (the selected text goes in the first tab)', () => {
+      const t = body.value.slice(body.selectionStart, body.selectionEnd).trim();
+      block(body, `=== Manual\n${t || '1. First step'}\n=== With MustardUI\n1. First step\n===`);
+    }),
+    imgBtn,
+    paywall ? tb('Patreon', 'Patrons only from here: everyone reads the text above this line, patrons the rest', () => {
+      if (/^[ ]{0,3}-{3,}[ ]*patreon[ ]*-{3,}[ ]*$/im.test(body.value)) return toast('The post already has a Patreon line: the patrons’ part starts there.', 'err');
+      block(body, '--- Patreon ---');
+    }) : null);
+
+  const preview = el('div', { class: 'md docs-body dp-preview', hidden: true });
+  const tabWrite = el('button', { type: 'button', class: 'dp-tab active' }, 'Write');
+  const tabPrev = el('button', { type: 'button', class: 'dp-tab' }, 'Preview');
+  const show = async (prev) => {
+    tabWrite.classList.toggle('active', !prev); tabPrev.classList.toggle('active', prev);
+    body.hidden = prev; toolbar.hidden = prev; preview.hidden = !prev;
+    if (prev) {
+      preview.textContent = 'Loading…';
+      try { preview.innerHTML = (await post('/admin/preview.php', { text: body.value, paywall })).html || '<p class="muted">Nothing written yet.</p>'; } catch (e) { preview.textContent = e.message; }
+    }
+  };
+  tabWrite.addEventListener('click', () => show(false));
+  tabPrev.addEventListener('click', () => show(true));
+  return { tabs: el('div', { class: 'dp-tabs' }, tabWrite, tabPrev), toolbar, preview };
 }
 
 // ── Docs editor: sections and pages on the left, the selected page on the right ──
@@ -1318,30 +1513,6 @@ function initDocsEditor(data) {
       el('button', { type: 'button', class: 'btn btn-ghost btn-sm add dt-add-sec', onclick: addSec }, '+ Section'));
   }
 
-  // Text helpers for the toolbar
-  const replaceSel = (ta, fn) => {
-    const a = ta.selectionStart, b = ta.selectionEnd;
-    const [text, selA, selB] = fn(ta.value.slice(a, b));
-    ta.setRangeText(text, a, b, 'end');
-    if (selA !== undefined) ta.setSelectionRange(a + selA, a + selB);
-    ta.focus();
-    ta.dispatchEvent(new Event('input', { bubbles: true }));
-  };
-  const wrap = (ta, left, right, ph) => replaceSel(ta, (t) => [left + (t || ph) + right, left.length, left.length + (t || ph).length]);
-  const lines = (ta, fn) => {
-    // extend the selection to whole lines
-    const v = ta.value;
-    ta.selectionStart = v.lastIndexOf('\n', ta.selectionStart - 1) + 1;
-    const e = v.indexOf('\n', ta.selectionEnd);
-    ta.selectionEnd = e < 0 ? v.length : e;
-    replaceSel(ta, (t) => { const out = t.split('\n').map(fn).join('\n'); return [out, 0, out.length]; });
-  };
-  const block = (ta, text) => {
-    const before = ta.value.slice(0, ta.selectionStart);
-    const pre = before === '' || before.endsWith('\n\n') ? '' : before.endsWith('\n') ? '\n' : '\n\n';
-    replaceSel(ta, () => [pre + text + '\n\n']);
-  };
-
   function renderPane() {
     const page = currentPage();
     if (!page) {
@@ -1376,51 +1547,7 @@ function initDocsEditor(data) {
     const body = el('textarea', { class: 'input dp-body', spellcheck: 'true', maxlength: 200000, placeholder: 'Write the page here. See "How to format pages" above.' });
     body.value = page.body || '';
     body.addEventListener('input', () => (page.body = body.value));
-    body.addEventListener('keydown', (e) => {
-      if (!(e.ctrlKey || e.metaKey)) return;
-      if (e.key === 'b') { e.preventDefault(); wrap(body, '**', '**', 'bold text'); }
-      if (e.key === 'i') { e.preventDefault(); wrap(body, '*', '*', 'italic text'); }
-      if (e.key === 'k') { e.preventDefault(); tools.link(); }
-    });
-
-    const imgBtn = el('button', { type: 'button', class: 'tb', title: 'Pictures from the Images library or uploaded (several = side-by-side gallery)', onclick: async () => {
-      const urls = await pickImages({ multiple: true, folder: 'docs', title: 'Pictures for This Page' });
-      if (urls.length) { block(body, urls.map((u) => `![](${u})`).join('\n')); mark(); }
-    } }, 'Image');
-    const tools = {
-      link: () => { const url = prompt('Link address (https://… or a site page like /docs/requirements/):'); if (url) wrap(body, '[', `](${url.trim()})`, 'link text'); },
-    };
-    const tb = (label, title, fn) => el('button', { type: 'button', class: 'tb', title, onclick: fn }, label);
-    const toolbar = el('div', { class: 'dp-toolbar', role: 'toolbar', 'aria-label': 'Formatting' },
-      tb('B', 'Bold (Ctrl+B)', () => wrap(body, '**', '**', 'bold text')),
-      tb('I', 'Italic (Ctrl+I)', () => wrap(body, '*', '*', 'italic text')),
-      tb('Link', 'Link (Ctrl+K)', tools.link),
-      tb('H2', 'Heading', () => lines(body, (l) => '## ' + l.replace(/^#+\s*/, ''))),
-      tb('H3', 'Smaller heading', () => lines(body, (l) => '### ' + l.replace(/^#+\s*/, ''))),
-      tb('• List', 'Bullet list', () => lines(body, (l) => '- ' + l.replace(/^(-|\d+\.)\s+/, ''))),
-      tb('1. Steps', 'Numbered steps', () => { let n = 0; lines(body, (l) => `${++n}. ` + l.replace(/^(-|\d+\.)\s+/, '')); }),
-      boxMenu(() => body),
-      tb('Code', 'Code block', () => replaceSel(body, (t) => ['\n```\n' + (t || 'code') + '\n```\n'])),
-      tb('Table', 'Table', () => block(body, '| Column | Column |\n|---|---|\n| Text | Text |')),
-      tb('Tabs', 'Tabs: two or more ways to do the same steps (the selected text goes in the first tab)', () => {
-        const t = body.value.slice(body.selectionStart, body.selectionEnd).trim();
-        block(body, `=== Manual\n${t || '1. First step'}\n=== With MustardUI\n1. First step\n===`);
-      }),
-      imgBtn);
-
-    const preview = el('div', { class: 'md docs-body dp-preview', hidden: true });
-    const tabWrite = el('button', { type: 'button', class: 'dp-tab active' }, 'Write');
-    const tabPrev = el('button', { type: 'button', class: 'dp-tab' }, 'Preview');
-    const show = async (prev) => {
-      tabWrite.classList.toggle('active', !prev); tabPrev.classList.toggle('active', prev);
-      body.hidden = prev; toolbar.hidden = prev; preview.hidden = !prev;
-      if (prev) {
-        preview.textContent = 'Loading…';
-        try { preview.innerHTML = (await post('/admin/preview.php', { text: body.value })).html || '<p class="muted">Empty page.</p>'; } catch (e) { preview.textContent = e.message; }
-      }
-    };
-    tabWrite.addEventListener('click', () => show(false));
-    tabPrev.addEventListener('click', () => show(true));
+    const { tabs, toolbar, preview } = mdTools(body, { folder: 'docs', imgTitle: 'Pictures for This Page', onEdit: mark });
 
     const isHome = homePage() === page;
     pane.replaceChildren(
@@ -1430,8 +1557,7 @@ function initDocsEditor(data) {
         el('label', { class: 'field' }, lbl('Address', isHome ? 'The first non-draft page: shown at /docs/.' : ''), el('span', { class: 'prefixed' }, el('span', { class: 'muted' }, '/docs/'), slug, el('span', { class: 'muted' }, '/'))),
         el('label', { class: 'field check dp-draft' }, draft, lbl('Draft', 'Only admins see it.')),
         el('label', { class: 'field dp-wide' }, el('span', { class: 'lbl' }, 'Summary'), sum)),
-      el('div', { class: 'dp-tabs' }, tabWrite, tabPrev),
-      toolbar, body, preview,
+      tabs, toolbar, body, preview,
       el('div', { class: 'dp-foot' },
         el('button', { type: 'button', class: 'btn btn-ghost btn-sm dp-del', onclick: () => {
           if (!confirm(`Delete the page "${page.title}"? It is removed when you save.`)) return;
@@ -1472,6 +1598,293 @@ function initDocsEditor(data) {
   renderTree(); renderPane();
 }
 
+// ── Blog editor: the posts on the left (newest first), the open post on the right. Each post is saved on its own (save.php
+// kind "blog" with the post's revision); rules in app/blog.php, checks in clean_post() (_admin.php): keep the maxlengths in step.
+function initBlogEditor(data) {
+  const BLOG_VIS = { public: 'Public', patrons: 'Patrons Only', draft: 'Draft' };
+  const BLOG_ICONS = {
+    public: '<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/>',
+    patrons: '<rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/>',
+    draft: '<path d="M4 20h4L19 9l-4-4L4 16v4zM13.5 6.5l4 4"/>',
+  };
+  const BLOG_HINT = {
+    public: 'Everyone can read it (up to a “--- Patreon ---” line, if the text has one).',
+    patrons: 'Everyone sees the title, summary, cover and first paragraph (or the text above a “--- Patreon ---” line); patrons on a paid tier read the rest.',
+    draft: 'Only admins can see it.',
+  };
+  const itemBy = Object.fromEntries(data.items.map((it) => [it.ref, it]));
+  const loaded = Date.now();
+  // now in site time, as the date field writes it ("2026-10-20T18:05"): the server's clock when the page was made + the time since
+  const siteNow = () => new Date(Date.parse(data.now + ':00Z') + Date.now() - loaded).toISOString().slice(0, 16);
+  const viewLink = document.querySelector('[data-view-page]');
+  const saveBtn = document.querySelector('[data-save]');
+  let cur = null;     // the open post: a copy being edited (id '' = not saved yet)
+  let dirty = false;
+  let edits = 0;      // a save clears "unsaved" only when nothing changed while it ran
+  const mark = () => { dirty = true; edits++; };
+  let q = '';
+
+  const side = el('nav', { class: 'dt', 'aria-label': 'Posts' });
+  const pane = el('div', { class: 'dp' });
+  form.append(side, pane);
+  const search = el('input', { class: 'input ba-search', type: 'search', placeholder: 'Search posts…', 'aria-label': 'Search posts' });
+  search.addEventListener('input', (e) => { e.stopPropagation(); q = search.value; renderList(); });   // not a change to the post
+  const list = el('ul', { class: 'ba-list' });
+  side.append(el('div', { class: 'dt-sec' },
+    el('button', { type: 'button', class: 'btn btn-primary btn-sm', onclick: () => open(null) }, '+ New Post'), search, list));
+
+  const fresh = () => ({ id: '', slug: '', title: '', local: '', summary: '', cover: '', body: '', topics: [], items: [], visibility: 'draft', pinned: false, discord: !!data.discord, state: 'draft', isNew: true });
+  const copy = (p) => ({ ...fresh(), visibility: 'public', discord: false, ...structuredClone(p), isNew: false });   // what a saved post leaves out = its default
+  const pills = (p) => [
+    p.state === 'draft' ? el('i', { class: 'ba-pill' }, 'Draft') : null,
+    p.state === 'scheduled' ? el('i', { class: 'ba-pill sched' }, 'Scheduled') : null,
+    p.visibility === 'patrons' ? el('i', { class: 'ba-pill lock' }, 'Patrons') : null,
+    p.pinned ? el('i', { class: 'ba-pill pin' }, 'Pinned') : null].filter(Boolean);
+  const fmt = (local) => { const d = local ? new Date(local + ':00Z') : null; return d && !isNaN(d) ? d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' }) : ''; };
+  const thumb = (p) => (p.thumb ? el('img', { src: p.thumb, alt: '', loading: 'lazy' }) : el('span', { class: 'ba-noimg', 'aria-hidden': 'true' }));
+
+  function renderList() {
+    const words = foldWords(q);
+    const rows = data.posts.filter((p) => words.every((w) => fold([p.title, p.slug, ...(p.topics || [])].join(' ')).includes(w)))
+      .map((p) => el('li', {}, el('button', { type: 'button', class: 'ba-item' + (cur && cur.id === p.id ? ' active' : ''), onclick: () => open(p.id) },
+        thumb(p), el('span', {}, el('b', {}, p.title || 'Untitled Post'), el('span', {}, ...pills(p), fmt(p.local))))));
+    if (cur && !cur.id) rows.unshift(el('li', {}, el('button', { type: 'button', class: 'ba-item active' }, el('span', { class: 'ba-noimg' }),
+      el('span', {}, el('b', {}, cur.title || 'New Post'), el('span', {}, el('i', { class: 'ba-pill' }, 'Not Saved'))))));
+    list.replaceChildren(...rows);
+    if (!rows.length) list.append(el('li', { class: 'muted small dt-empty' }, data.posts.length ? 'No posts found.' : 'No posts yet.'));
+  }
+
+  function open(id) {
+    if (dirty && !confirm('Leave this post? Your changes to it are not saved.')) return;
+    const p = id ? data.posts.find((x) => x.id === id) : null;
+    cur = p ? copy(p) : fresh();
+    dirty = false;
+    history.replaceState(null, '', p ? `?post=${encodeURIComponent(p.id)}` : location.pathname);
+    renderList(); renderPane();
+    if (innerWidth < 1000 && id !== undefined) pane.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    if (!p) pane.querySelector('input')?.focus();
+  }
+  function close() {   // no post open: the pane only says how to write one
+    cur = null; dirty = false;
+    history.replaceState(null, '', location.pathname);
+    renderList(); renderPane();
+  }
+
+  // chips with suggestions (Topics, Models and Accessories): list = the values, options() = [{v, label, sub, pic}]
+  function chipField({ list, max, options, label, allowNew = false, placeholder, maxlength = 40 }) {
+    const chips = el('span', { class: 'g-chips' });
+    const input = el('input', { class: 'g-chips-in', type: 'text', placeholder, 'aria-label': placeholder, autocomplete: 'off', maxlength });
+    const sugg = el('div', { class: 'g-sugg', hidden: true });
+    const box = el('div', { class: 'input g-chips-box', onclick: () => input.focus() }, chips, input);
+    let act = 0;
+    const draw = () => chips.replaceChildren(...list.map((v, i) => {
+      const o = options().find((x) => x.v === v);
+      return el('span', { class: 'g-chip' + (o?.pic ? '' : ' no-pic') }, o?.pic ? el('img', { class: 'ga-av', src: o.pic, alt: '' }) : null, label(v),
+        el('button', { type: 'button', 'aria-label': 'Remove ' + label(v), onclick: (e) => { e.stopPropagation(); list.splice(i, 1); draw(); mark(); } }, '×'));
+    }));
+    const add = (v) => {
+      if (v && list.length >= max) { toast(`${max} at most.`, 'err'); return; }
+      if (v && !list.some((x) => fold(x) === fold(v))) { list.push(v); mark(); }
+      input.value = ''; draw(); suggest(); input.focus();
+    };
+    const suggest = () => {
+      const typed = input.value.trim().replace(/\s+/g, ' ');
+      const words = foldWords(typed);
+      sugg.replaceChildren();
+      const hits = options().filter((o) => !list.some((x) => fold(x) === fold(o.v)) && words.every((w) => fold(o.label + ' ' + (o.sub || '')).includes(w))).slice(0, 8);
+      if (allowNew && typed && !options().some((o) => fold(o.v) === fold(typed)) && !list.some((x) => fold(x) === fold(typed))) hits.push({ v: typed, label: `Add “${typed}”`, isNew: true });
+      if (!hits.length || (!typed && !document.activeElement?.isSameNode(input))) { sugg.hidden = true; return; }
+      hits.forEach((h, i) => sugg.append(el('button', { type: 'button', class: 'g-sugg-row' + (i === 0 ? ' act' : ''), onmousedown: (e) => e.preventDefault(), onclick: () => add(h.v) },
+        h.pic ? el('img', { class: 'ga-av', src: h.pic, alt: '' }) : h.isNew ? el('span', { class: 'ga-av ga-ini' }, '+') : null, el('span', {}, h.label), h.sub ? el('small', { class: 'muted' }, h.sub) : null)));
+      act = 0;
+      sugg.hidden = false;
+    };
+    input.addEventListener('input', (e) => { e.stopPropagation(); suggest(); });   // typing isn't a change until a chip is added
+    input.addEventListener('focus', suggest);
+    input.addEventListener('keydown', (e) => {
+      const rows = [...sugg.children];
+      if ((e.key === 'ArrowDown' || e.key === 'ArrowUp') && rows.length && !sugg.hidden) {
+        e.preventDefault();
+        act = (act + (e.key === 'ArrowDown' ? 1 : rows.length - 1)) % rows.length;
+        rows.forEach((r, i) => r.classList.toggle('act', i === act));
+      } else if (e.key === 'Enter' || (e.key === ',' && allowNew)) { e.preventDefault(); if (!sugg.hidden) rows[act]?.click(); }
+      else if (e.key === 'Backspace' && !input.value && list.length) { list.pop(); draw(); mark(); }
+      else if (e.key === 'Escape') { sugg.hidden = true; }
+    });
+    input.addEventListener('blur', () => setTimeout(() => { sugg.hidden = true; }, 150));
+    draw();
+    return el('div', { class: 'g-chars-field' }, box, sugg);
+  }
+
+  const F = {};   // the open post's fields that a save writes back (address and date made by the server, the delete button)
+  function renderPane() {
+    const p = cur;
+    saveBtn.disabled = !p;
+    viewLink.textContent = p ? 'View Post' : 'View Blog';
+    if (!p) { viewLink.href = '/blog/'; pane.replaceChildren(el('p', { class: 'muted dp-empty' }, data.posts.length ? 'Pick a post on the left, or write one with + New Post.' : 'No posts yet. Write the first one with + New Post.')); return; }
+    viewLink.href = p.id ? `/blog/${p.slug}/` : '/blog/';
+    const field = (label, hint, ...kids) => el('label', { class: 'field' }, lbl(label, hint), ...kids);
+
+    const title = el('input', { class: 'input', type: 'text', value: p.title, maxlength: 160, required: true, placeholder: 'e.g. Lena Version 4 Is Out' });
+    F.slug = el('input', { class: 'input', type: 'text', value: p.slug, maxlength: 80, pattern: '[a-z0-9][a-z0-9\\-]*', spellcheck: 'false', placeholder: 'made from the title' });
+    let slugTouched = !p.isNew;
+    title.addEventListener('input', () => {
+      p.title = title.value;
+      if (!slugTouched) { p.slug = slugify(title.value, 70); F.slug.value = p.slug; }   // only until the first save: then the address stays
+      const b = list.querySelector('.ba-item.active b'); if (b) b.textContent = title.value || (p.id ? 'Untitled Post' : 'New Post');
+    });
+    F.slug.addEventListener('input', () => { slugTouched = true; p.slug = F.slug.value.trim(); });
+    F.slug.addEventListener('change', () => { p.slug = slugify(F.slug.value, 70); F.slug.value = p.slug; });
+
+    F.date = el('input', { class: 'input', type: 'datetime-local', value: p.local || '', step: 60 });
+    F.date.addEventListener('input', () => (p.local = F.date.value));
+
+    const vis = el('div', { class: 'vis-seg ba-vis', role: 'radiogroup', 'aria-label': 'Visibility' });
+    for (const [k, text] of Object.entries(BLOG_VIS)) {
+      const ic = el('span', { class: 'vis-ic' });
+      ic.innerHTML = `<svg viewBox="0 0 24 24" aria-hidden="true">${BLOG_ICONS[k]}</svg>`;
+      vis.append(el('label', { class: 'vis-opt', title: text }, el('input', { type: 'radio', name: 'ba-vis', value: k, checked: k === p.visibility }), ic, el('span', {}, text)));
+    }
+    const hint = el('p', { class: 'hint vis-hint' }, BLOG_HINT[p.visibility]);
+    vis.addEventListener('change', () => {
+      const was = p.visibility;
+      p.visibility = vis.querySelector('input:checked').value;
+      hint.textContent = BLOG_HINT[p.visibility];
+      // a draft made public: its date becomes now (unless it is set later), so it comes first and Discord announces it
+      if (was === 'draft' && p.visibility !== 'draft' && p.state === 'draft' && (!F.date.value || F.date.value < siteNow())) {
+        F.date.value = p.local = siteNow();
+        toast('The date is now: the post is published when you save.', 'info');
+      }
+    });
+    const pinned = el('input', { type: 'checkbox', class: 'switch', checked: !!p.pinned });
+    pinned.addEventListener('change', () => (p.pinned = pinned.checked));
+    const cmt = el('input', { type: 'checkbox', class: 'switch', checked: !p.noComments });
+    cmt.addEventListener('change', () => (p.noComments = !cmt.checked));
+
+    const topicsInUse = () => {
+      const n = {};
+      for (const x of data.posts) for (const t of x.topics || []) { const k = fold(t); n[k] ??= { v: t, label: t, c: 0 }; n[k].c++; }
+      return Object.values(n).sort((a, b) => b.c - a.c).map((o) => ({ ...o, sub: o.c === 1 ? '1 post' : `${o.c} posts` }));
+    };
+    const topics = chipField({ list: p.topics, max: 6, options: topicsInUse, label: (v) => v, allowNew: true, placeholder: 'Add a topic…' });
+    const items = chipField({ list: p.items, max: 12, maxlength: 80, placeholder: 'Add a model or accessory…',
+      options: () => data.items.map((it) => ({ v: it.ref, label: it.name, sub: it.sub, pic: it.pic })), label: (v) => itemBy[v]?.name || v });
+
+    // cover: a picture of the Images library or a new upload (folder "blog"); Crop… makes a new file (16:9 is best)
+    const cover = el('input', { class: 'input', type: 'text', value: p.cover || '', placeholder: '/media/…', maxlength: 1000 });
+    const prev = el('div', { class: 'img-prev' });
+    const show = () => {
+      const v = cover.value.trim();
+      prev.replaceChildren(v ? el('img', { src: v, alt: '' }) : el('span', { class: 'muted small' }, 'No Image'));
+      prev.classList.toggle('is-open', !!v);
+      prev.title = v ? 'Details and crop' : '';
+    };
+    const setCover = (v) => { cover.value = p.cover = v; show(); mark(); };
+    cover.addEventListener('input', () => { p.cover = cover.value.trim(); show(); });
+    const cropBtn = el('button', { type: 'button', class: 'btn btn-ghost btn-sm', onclick: () => crop(false) }, 'Crop…');
+    const crop = async (afterUpload, tab = 'crop') => {
+      const src = cover.value.trim();
+      if (!src) return;
+      if (tab === 'crop' && !src.startsWith('/media/')) return toast('Only images on this site can be cropped: upload it here first.', 'err');
+      const box = await cropImage(src, { aspect: 16 / 9, title: afterUpload ? 'Crop the New Cover' : 'Cover Picture', skip: afterUpload, tab });
+      if (!box || box === 'skip') return;
+      cropBtn.disabled = true; cropBtn.textContent = 'Cropping…';
+      try { setCover((await post('/admin/images.php', { action: 'crop', url: src, ...box })).url); toast('Cropped ✓ Save to keep it.'); }
+      catch (e) { toast(e.message, 'err'); }
+      cropBtn.disabled = false; cropBtn.textContent = 'Crop…';
+    };
+    prev.addEventListener('click', () => { if (cover.value.trim()) crop(false, 'details'); });
+    show();
+    const coverField = el('div', { class: 'field image-field ba-cover' }, lbl('Cover Picture', 'On the cards, at the top of the post and in link previews (Public posts only).'), el('p', { class: 'img-note' }, 'Best at 16:9.'),
+      el('div', { class: 'img-row' }, prev, el('div', { class: 'img-ctl' }, cover, el('div', { class: 'row-btns' },
+        el('button', { type: 'button', class: 'btn btn-ghost btn-sm', onclick: async () => {
+          const picked = await pickImages({ folder: 'blog', title: 'Cover Picture' });
+          if (!picked[0]) return;
+          setCover(picked[0]);
+          if (picked.uploaded && !/\.gif$/i.test(picked[0])) crop(true);
+        } }, 'Choose…'),
+        cropBtn,
+        el('button', { type: 'button', class: 'btn btn-ghost btn-sm', onclick: () => setCover('') }, 'Remove')))));
+
+    const sum = el('input', { class: 'input', type: 'text', value: p.summary || '', maxlength: 300, placeholder: 'One or two lines: on the cards, under the title and in link previews' });
+    sum.addEventListener('input', () => (p.summary = sum.value));
+    const body = el('textarea', { class: 'input dp-body', spellcheck: 'true', maxlength: 200000, placeholder: 'Write the post here. See "How to format posts" above.' });
+    body.value = p.body || '';
+    body.addEventListener('input', () => (p.body = body.value));
+    const { tabs, toolbar, preview } = mdTools(body, { folder: 'blog', imgTitle: 'Pictures for This Post', onEdit: mark, paywall: true });
+
+    const dsc = el('input', { type: 'checkbox', class: 'switch', checked: !!p.discord });
+    dsc.addEventListener('change', () => (p.discord = dsc.checked));
+    const discord = p.announced ? el('p', { class: 'muted small' }, '✓ Announced on Discord.')
+      : data.discord ? el('label', { class: 'toggle' }, dsc, el('span', {}, 'Announce on Discord When Published'), tip('Posted by the Discord webhook once the post is Public or Patrons Only and its date has come (title, summary, link; the cover only for Public posts).'))
+        : el('p', { class: 'muted small' }, 'Discord announcements are off. ', el('a', { href: data.discordUrl }, 'Turn them on'), ' to post new blog posts there too.');
+
+    pane.replaceChildren(
+      el('div', { class: 'dp-fields ba-fields' },
+        el('label', { class: 'field dp-wide' }, el('span', { class: 'lbl' }, 'Title'), title),
+        el('label', { class: 'field' }, lbl('Address', 'Keep it once the post is out: links to the old address stop working.'), el('span', { class: 'prefixed' }, el('span', { class: 'muted' }, '/blog/'), F.slug, el('span', { class: 'muted' }, '/'))),
+        field('Date', `Site time (${data.tz}). A later date publishes the post then; empty = when you save.`, F.date),
+        el('div', { class: 'field dp-wide' }, el('span', { class: 'lbl' }, 'Visibility'), el('div', { class: 'ba-vis-row' }, vis,
+          el('label', { class: 'toggle' }, pinned, el('span', {}, 'Pinned'), tip('Shown big at the top of the blog, before newer posts.')),
+          data.comments ? el('label', { class: 'toggle' }, cmt, el('span', {}, 'Allow Comments'), tip('Comments under the post. Off: none are shown and nobody can write one (existing ones are kept).')) : null)), el('div', { class: 'dp-wide' }, hint),
+        el('div', { class: 'field dp-wide' }, lbl('Topics', 'Up to 6. Visitors can show one topic at a time.'), topics),
+        el('div', { class: 'dp-wide' }, coverField),
+        el('label', { class: 'field dp-wide' }, el('span', { class: 'lbl' }, 'Summary'), sum)),
+      tabs, toolbar, body, preview,
+      el('div', { class: 'field ba-items' }, lbl('Models and Accessories in This Post', 'Shown as cards under the post (only the ones visitors can see).'), items),
+      el('div', { class: 'ba-discord' }, discord),
+      el('div', { class: 'dp-foot' }, F.del = el('button', { type: 'button', class: 'btn btn-ghost btn-sm dp-del', onclick: del }, p.id ? 'Delete Post' : 'Discard')));
+  }
+
+  async function del() {
+    if (!cur.id) { dirty = false; const first = data.posts[0]; first ? open(first.id) : close(); return; }
+    if (!confirm(`Delete the post "${cur.title}"? This can’t be undone (its likes go too).`)) return;
+    try {
+      data.posts = (await post('/admin/save.php', { kind: 'blog', action: 'delete', id: cur.id, rev: cur.rev })).posts;
+      dirty = false;
+      toast('Deleted ✓');
+      data.posts[0] ? open(data.posts[0].id) : close();
+    } catch (e) { toast(e.message, 'err'); }
+  }
+
+  form.addEventListener('input', mark);
+  form.addEventListener('submit', (e) => e.preventDefault());
+  window.addEventListener('beforeunload', (e) => { if (dirty) { e.preventDefault(); e.returnValue = ''; } });
+  const save = async () => {
+    if (saveBtn.disabled || !cur) return;
+    if (!cur.title.trim()) { toast('The post needs a title.', 'err'); pane.querySelector('input').focus(); return; }
+    saveBtn.disabled = true; saveBtn.textContent = 'Saving…';
+    const p = cur;
+    try {
+      const at = edits;
+      const out = { title: p.title.trim(), slug: p.slug, date: p.local || '', summary: (p.summary || '').trim(), cover: (p.cover || '').trim(), body: p.body || '',
+        topics: p.topics, items: p.items, visibility: p.visibility, pinned: !!p.pinned, discord: !!p.discord, comments: !p.noComments };
+      const r = await post('/admin/save.php', { kind: 'blog', id: p.id, rev: p.rev, post: out });
+      data.posts = r.posts;
+      const saved = data.posts.find((x) => x.id === r.id);
+      if (cur === p && saved) {
+        // the server may have made the address or the date: write them back, keep what was typed meanwhile
+        Object.assign(p, { id: saved.id, rev: saved.rev, state: saved.state, slug: saved.slug, local: saved.local, announced: saved.announced, thumb: saved.thumb, isNew: false });
+        F.slug.value = saved.slug; F.date.value = saved.local; F.del.textContent = 'Delete Post';
+        viewLink.href = `/blog/${saved.slug}/`;
+        history.replaceState(null, '', `?post=${encodeURIComponent(saved.id)}`);
+        if (edits === at) dirty = false;
+      }
+      renderList();
+      toast(saved?.state === 'draft' ? 'Saved ✓ Still a draft: only admins see it.' : saved?.state === 'scheduled' ? 'Saved ✓ Scheduled: it shows on its date.' : 'Saved ✓ The post is live.');
+    } catch (e) { toast(e.message, 'err'); }
+    saveBtn.disabled = false; saveBtn.textContent = 'Save';
+  };
+  saveBtn.addEventListener('click', save);
+  document.addEventListener('keydown', (e) => { if ((e.ctrlKey || e.metaKey) && e.key === 's') { e.preventDefault(); save(); } });
+
+  // ?post=<id> opens that post, otherwise the newest; no posts = nothing open until + New Post; ?new=1 (Quick Add, the header's "+") = a new post
+  const start = data.posts.find((p) => p.id === data.post) || data.posts[0];
+  cur = start ? copy(start) : null;
+  renderList(); renderPane();
+  if (new URLSearchParams(location.search).get('new') === '1') open(null);   // open() also takes ?new out of the address
+}
+
 // ── FAQ editor: topics → questions (answer in simple text formatting) ─────────
 function initFaqEditor(data) {
   let dirty = false;
@@ -1492,8 +1905,8 @@ function initFaqEditor(data) {
   };
   const question = (it = {}) => {
     const q = el('input', { class: 'input', type: 'text', value: it.q || '', placeholder: 'The question', maxlength: 300 });
-    const a = growArea(it.a, 4, 'The answer…', 20000);
-    const imgBtn = el('button', { type: 'button', class: 'btn btn-ghost btn-sm', title: 'Pictures from the Images library or uploaded (several = side-by-side gallery)', onclick: async () => {
+    const a = imageDrop(growArea(it.a, 4, 'The answer…', 20000), 'faq');
+    const imgBtn = el('button', { type: 'button', class: 'btn btn-ghost btn-sm', title: 'Pictures from the Images library or uploaded (several = side-by-side gallery); pictures can also be dropped on or pasted into the answer', onclick: async () => {
       const urls = await pickImages({ multiple: true, folder: 'faq', title: 'Pictures for This Answer' });
       if (urls.length) insertAt(a, '\n\n' + urls.map((u) => `![](${u})`).join('\n') + '\n\n');
     } }, 'Add Image');
@@ -1523,7 +1936,7 @@ function initFaqEditor(data) {
     return node;
   };
 
-  const intro = growArea(data.faq.intro, 2, 'Short text under the page title (optional)', 2000);
+  const intro = imageDrop(growArea(data.faq.intro, 2, 'Short text under the page title (optional)', 2000), 'faq');
   const topics = el('div', { class: 'repeat' }, (data.faq.sections || []).map((s) => topic(s)));
   const addTopic = el('button', { type: 'button', class: 'btn btn-ghost btn-sm add', onclick: () => { const n = topic({}, true); topics.append(n); n.querySelector('input').focus(); mark(); } }, '+ Add Topic');
   form.append(
@@ -1744,6 +2157,7 @@ function initEditor(data) {
   const area = (label, value, o = {}) => {
     const ta = autoGrow(el('textarea', { class: 'input', rows: o.rows || 3, placeholder: o.placeholder, maxlength: o.max }));
     ta.value = value ?? '';
+    if (o.img) imageDrop(ta, slugNow);   // a text in the md_html() format: pictures dropped or pasted go in as ![](…)
     return { node: el('label', { class: 'field ' + (o.cls || '') }, lbl(label, o.hint), ta), get: () => ta.value.trim() };
   };
   const select = (label, value, options, o = {}) => {
@@ -1867,6 +2281,7 @@ function initEditor(data) {
       ta.value = value;
       const row = el('div', { class: 'list-row' }, dragHandle(() => row), ta,
         el('div', { class: 'row-btns' }, iconBtn('✕', 'Remove', () => { row.remove(); form.dispatchEvent(new Event('input')); }, 'del')));
+      if (o.img) imageDrop(ta, slugNow);
       if (o.mention) o.mention(ta);   // before the keys below: its list takes ↑ ↓ Enter Tab Esc while open
       ta.addEventListener('keydown', (e) => {
         if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); addRow('', row, true); }
@@ -2313,7 +2728,9 @@ function initEditor(data) {
     const sync = () => { const v = fields.visibility.get(); hint.textContent = hints[v] || ''; pwBox.hidden = v !== 'password'; };
     fields.visibility.node.addEventListener('change', sync);
     sync();
-    form.append(section(statusRow ? 'Visibility & Status' : 'Visibility', null, fields.visibility.node, hint, pwBox, statusRow));
+    // comments under the page (app/comments.php): the switch only while they are on for this kind; otherwise the stored choice stays
+    fields.comments = data.comments ? toggle('Allow Comments', !m.noComments, 'Comments under the page. Off: none are shown and nobody can write one (existing ones are kept).') : { get: () => !m.noComments };
+    form.append(section(statusRow ? 'Visibility & Status' : 'Visibility', null, fields.visibility.node, hint, pwBox, statusRow, data.comments ? el('div', { class: 'ed-comments' }, fields.comments.node) : null));
   };
 
   const changelogFields = (hintWhat) => {
@@ -2328,13 +2745,13 @@ function initEditor(data) {
       blank: () => {   // the next version of the top one (3 → 4, 3.1 → 3.2, same stage), dated today
         const top = (fields.changelog?.get() || [])[0];
         const ver = top ? String(top.version || '').replace(/\d+(?!.*\d)/, (n) => String(Number(n) + 1)) : '';
-        return { version: ver !== String(top?.version || '') ? ver : '', stage: top?.stage, date: new Date().toLocaleDateString('en-GB'), changes: [] };
+        return { version: ver !== String(top?.version || '') ? ver : '', stage: top?.stage, date: data.today || new Date().toLocaleDateString('en-GB'), changes: [] };   // today in site time
       },
       build: (en) => {
         const v = text('Version', en.version, { max: 60, placeholder: 'e.g. 4 or 3.1' });
         const d = text('Date', en.date, { max: 40, placeholder: 'dd/mm/yyyy' });
         const h = text('Label (Optional)', en.highlight, { max: 120, list: 'highlights', hint: 'Mentions of textures, a first release or the last version for a Blender release become a badge.' });
-        const notes = list('Notes (Optional)', en.notes, { max: 5000, addLabel: 'Add Paragraph' });
+        const notes = list('Notes (Optional)', en.notes, { max: 5000, addLabel: 'Add Paragraph', img: true });
         const ch = list('Changes', en.changes, { max: 3000, addLabel: 'Add Change', placeholder: 'Fix: …   /   New: …   /   Enhancement: …',
           hint: 'New:, Fix:, Bug:, Enhancement:, Improvement:, Optimization:, Removal: or UI: at the start get a coloured tag.' + (bugRefs ? ' Type # to pick a bug report ("Fix #6: …"): on the site it links to the report, and saving marks the report fixed in this version.' : ''),
           mention: bugRefs ? (ta) => bugMention(ta, bugRefs) : null });
@@ -2396,7 +2813,7 @@ function initEditor(data) {
     form.append(section('Images', null, fields.images.node, fields.model3d.node));
     fields.models = modelPicker(m.models);
     form.append(section('Optimized For', null, fields.models.node));
-    fields.description = area('Description (Optional)', m.description, { rows: 2, max: 5000 });
+    fields.description = area('Description (Optional)', m.description, { rows: 2, max: 5000, img: true });
     form.append(section('Description', null, fields.description.node));
     fields.addons = addonList(m.addons);
     form.append(section('Requirements', null, fields.addons.node));
@@ -2426,7 +2843,7 @@ function initEditor(data) {
     form.append(section('Images', null, grid2(fields.thumb.node, fields.cover.node), fields.gallery.node, fields.model3d.node));
 
     // the rest follows the model page from top to bottom: facts and description, download box, features, notes, changelog, sidebar
-    fields.description = area('Short Description (Optional)', m.description, { rows: 2, max: 5000 });
+    fields.description = area('Short Description (Optional)', m.description, { rows: 2, max: 5000, img: true });
     fields.note = text('Rig Note (Optional)', m.note, { max: 120, placeholder: 'e.g. ARP based model' });
     form.append(section('Description', null, fields.description.node, grid2(fields.note.node)));
 
@@ -2445,7 +2862,7 @@ function initEditor(data) {
       addLabel: 'Add Note',
       openFirst: 0,   // folded to their first line; a newly added one opens
       build: (n) => {
-        const t = area('Text', n.text, { rows: 2, max: 5000 });
+        const t = area('Text', n.text, { rows: 2, max: 5000, img: true });
         const img = image('Image (Optional)', n.image);
         return { body: el('div', { class: 'rep-body' }, t.node, img.node), get: () => ({ text: t.get(), image: img.get() }), title: () => (t.get().split('\n')[0] || 'New Note').slice(0, 80) };
       },
@@ -2537,6 +2954,43 @@ function initEditor(data) {
   saveBtn.addEventListener('click', save);
   document.addEventListener('keydown', (e) => { if ((e.ctrlKey || e.metaKey) && e.key === 's') { e.preventDefault(); save(); } });
   if (new URLSearchParams(location.search).has('saved')) toast(`${isOutfit ? 'Accessory' : 'Model'} created ✓`);
+  // Quick Add → Add Changelog Version (the header's "+", bell.js): ?add=version adds the next version on top, opens it and scrolls
+  // to it (below the header that stays on top). The address loses ?add, so a reload doesn't add another
+  const here = new URL(location.href);
+  if (here.searchParams.get('add') === 'version') {
+    here.searchParams.delete('add');
+    history.replaceState(null, '', here);
+    if (!data.isNew) {
+      fields.changelog.add();
+      const it = fields.changelog.node.querySelector('.rep-item');
+      // the lowest edge of what stays on top once scrolled: the site header, and the editor's header where it is sticky
+      const cover = Math.max(0, ...[...document.querySelectorAll('.site-header, .sticky-head')].map((h) => {
+        const cs = getComputedStyle(h);
+        return cs.position === 'sticky' ? (parseFloat(cs.top) || 0) + h.offsetHeight : 0;
+      }));
+      if (it) window.scrollTo({ top: it.getBoundingClientRect().top + window.scrollY - cover - 16 });
+    }
+  }
+
+  // Duplicate (edit.php?copy=…): a new item filled from another one, as a draft; its address follows the name like any new item's
+  if (data.copyOf) {
+    fields.slug.input.value = slugify(fields.name.get());
+    dirty = true;
+    toast(`A copy of ${data.copyOf}, as a draft. Nothing is saved until you press Save.`, 'info');
+  }
+  // History → Load This Version (edit.php?from=…): the form holds that version; the address goes back to the item's own, so a reload
+  // shows it as it is now
+  if (data.loaded) {
+    dirty = true;
+    here.searchParams.delete('from');
+    history.replaceState(null, '', here);
+    toast(`The version from before the save of ${data.loaded} is in the editor. Press Save to put it back, or leave without saving.`, 'info');
+  }
+  document.querySelector('[data-history]')?.addEventListener('click', () => historyWindow(data.kind, m.slug, m.name, () => {
+    if (dirty && !confirm('You have unsaved changes. Replace them with this version?')) return false;
+    dirty = false;   // asked once: the page's own "leave?" question doesn't come again
+    return true;
+  }));
 
   document.querySelector('[data-delete]')?.addEventListener('click', async () => {
     const answer = prompt(`To delete "${m.name}", type its name:`);
@@ -2545,6 +2999,45 @@ function initEditor(data) {
     try { await post('/admin/save.php', { kind: data.kind, action: 'delete', slug: m.slug }); dirty = false; location.href = listUrl; }
     catch (e) { toast(e.message, 'err'); }
   });
+}
+
+// ── The editor's History window: the saves that changed this item (admin/history.php, _history.php), each with what differs from the
+// item now; "Load This Version" opens the editor on it (edit.php?from=…), saved only when the admin presses Save ──
+async function historyWindow(kind, slug, name, leaveOk) {
+  const list = el('div', { class: 'h-list' }, el('p', { class: 'muted' }, 'Loading…'));
+  const close = () => { dlg.close(); dlg.remove(); };
+  const dlg = el('dialog', { class: 'lc-dlg hist-dlg', 'aria-label': 'History' }, el('div', { class: 'lc-dlg-body' },
+    el('h2', null, `Earlier Versions of ${name}`),
+    el('p', { class: 'muted h-lead' }, 'From the last 50 saves of the ' + (kind === 'outfits' ? 'accessories' : 'models') + ': only the ones that changed this one, each compared with it as it is now. Loading one puts it in the editor; the site doesn’t change until you press Save.'),
+    list,
+    el('div', { class: 'form-actions' }, el('button', { type: 'button', class: 'btn btn-ghost', onclick: close }, 'Close'))));
+  dlg.addEventListener('close', () => dlg.remove());
+  dlg.addEventListener('click', (e) => { if (e.target === dlg) close(); });
+  document.body.append(dlg);
+  dlg.showModal();
+  let rows;
+  try {
+    const r = await fetch(`/admin/history.php?kind=${kind}&slug=${encodeURIComponent(slug)}`, { credentials: 'same-origin', cache: 'no-store' });
+    rows = (await r.json()).rows;
+    if (!Array.isArray(rows)) throw new Error();
+  } catch { list.replaceChildren(el('p', { class: 'muted' }, 'The history couldn’t be read. Try again in a moment.')); return; }
+  if (!rows.length) { list.replaceChildren(el('p', { class: 'muted' }, 'No earlier versions: it hasn’t changed since the oldest save kept (the last 50 of the ' + (kind === 'outfits' ? 'accessories' : 'models') + ').')); return; }
+  const lines = (cls, arr) => arr.map((t) => el('span', { class: cls }, t));
+  list.replaceChildren(...rows.map((r) => {
+    const diff = el('div', { class: 'h-diff', hidden: true }, r.diff.length ? r.diff.map((d) => el('div', null, el('b', null, d.label),
+      d.note ? el('span', { class: 'h-note' }, d.note) : null, ...lines('h-old', d.then), ...lines('h-new', d.now))) : el('span', { class: 'muted' }, 'The same as now.'));
+    const load = el('a', { class: 'btn btn-ghost btn-sm', href: `/admin/edit.php?kind=${kind}&slug=${encodeURIComponent(slug)}&from=${encodeURIComponent(r.file)}`,
+      onclick: (e) => { if (!leaveOk()) e.preventDefault(); } }, 'Load This Version');
+    const show = el('button', { type: 'button', class: 'btn btn-ghost btn-sm h-show', 'aria-expanded': 'false', onclick: () => {
+      diff.hidden = !diff.hidden;
+      show.textContent = diff.hidden ? 'Show Changes' : 'Hide Changes';
+      show.setAttribute('aria-expanded', String(!diff.hidden));
+      load.classList.toggle('btn-primary', !diff.hidden);
+      load.classList.toggle('btn-ghost', diff.hidden);
+    } }, 'Show Changes');
+    return el('div', { class: 'h-row' }, el('div', { class: 'h-top' }, el('span', { class: 'h-when' }, r.when),
+      el('span', { class: 'h-parts' }, r.parts.length ? r.parts.map((p) => el('span', { class: 'h-part' }, p)) : el('span', { class: 'muted small' }, 'Same as now')), show, load), diff);
+  }));
 }
 
 // ── Title that stays on top (editors): its line shows only once the page scrolls under it ──
@@ -2660,16 +3153,6 @@ document.querySelectorAll('[data-rows-form]').forEach((formEl) => {
   formEl.addEventListener('input', () => (dirty = true));
   formEl.addEventListener('submit', () => (dirty = false));
   window.addEventListener('beforeunload', (e) => { if (dirty) { e.preventDefault(); e.returnValue = ''; } });
-});
-
-// ── Settings → Bug reports: the webhook field is only used while "Notify on Discord" is on (read-only otherwise; its value is kept) ──
-document.querySelectorAll('[data-bugs-form]').forEach((form) => {
-  const sw = form.elements.bugs_notify;
-  const hook = form.elements.bugs_webhook;
-  if (!sw || !hook) return;
-  const sync = () => { hook.readOnly = !sw.checked; hook.tabIndex = sw.checked ? 0 : -1; };
-  sw.addEventListener('change', sync);
-  sync();
 });
 
 // ── Import from SmutBase (admin/import.php): find projects (profile address, or pages uploaded / pasted), tick, import one by one ──
@@ -3050,6 +3533,7 @@ function mdTabs(g) {
   show(tabs[0]?.dataset.tab);
 }
 watchAdded('[data-md-tabs]', mdTabs);
+watchAdded('textarea[data-img-drop]', (ta) => imageDrop(ta, ta.dataset.imgDrop || 'misc'));   // texts of the PHP pages (Accessories page text, welcome text)
 
 // ── Settings → Site identity: the preview follows the fields before saving (name, coloured part, tagline, colour, logo) ──
 (() => {
@@ -3112,9 +3596,14 @@ document.querySelector('[data-pt-use]')?.addEventListener('click', (e) => {
     .replace(/@(everyone|here)\b/g, '<span class="dc-ment">@$1</span>')
     .replace(/&lt;@&amp;\d+&gt;/g, '<span class="dc-ment">@role</span>');
   const msg = form.querySelector('[data-dc-message]'), out = form.querySelector('[data-dc-content]');
+  const warn = form.querySelector('[data-dc-ment-warn]');
+  // a role written as plain text ("@Notifications") pings no one: same rule as discord_plain_mention_warning() in _admin.php
+  const plainMention = (t) => [...t.matchAll(/(?:^|[\s(])@([\p{L}\p{N}_.-]*[\p{L}\p{N}_])/gu)].map((m) => m[1]).find((n) => n !== 'everyone' && n !== 'here') || '';
   msg.addEventListener('input', () => {
     out.innerHTML = discordMd(msg.value.trim());
     out.hidden = msg.value.trim() === '';
+    const n = plainMention(msg.value);
+    warn.textContent = n ? `“@${n}” won’t ping anyone: Discord needs the role’s code. Send \\@${n} in any Discord channel and paste here what Discord shows (<@&…>).` : '';
   });
   const hook = form.querySelector('[data-dc-hook]'), state = form.querySelector('[data-dc-hook-state]');
   const re = /^https:\/\/(?:(?:ptb|canary)\.)?discord(?:app)?\.com\/api\/webhooks\/\d{5,30}\/[A-Za-z0-9_-]{20,200}$/;   // DISCORD_WEBHOOK_RE in discord.php
@@ -3127,11 +3616,13 @@ document.querySelector('[data-pt-use]')?.addEventListener('click', (e) => {
   check();
 })();
 
-// ── Downloads → All-time totals: search (accents ignored, every word must match), Models / Accessories, sortable columns.
-// The four tiles above add up the rows shown; the choices stay in the address (tq, tkind, tsort) so a reload keeps them.
+// ── Stats → the list of models and accessories: search (accents ignored, every word must match), Models / Accessories, sortable
+// columns (the first sort is the table's data-tot-default, else "total"). Tiles marked data-sum, if any, add up the rows shown; the
+// choices stay in the address (tq, tkind, tsort) so a reload keeps them.
 (() => {
   const table = document.querySelector('[data-tot-table]');
   if (!table) return;
+  const def = table.dataset.totDefault || 'total';
   const tbody = table.tBodies[0];
   const rows = [...tbody.querySelectorAll('tr[data-kind]')];
   const empty = tbody.querySelector('[data-tot-empty]');
@@ -3142,21 +3633,22 @@ document.querySelector('[data-pt-use]')?.addEventListener('click', (e) => {
   rows.forEach((r, i) => { r.hay = fold(r.dataset.search || r.textContent); r.pos = i; });
   const u0 = new URL(location.href).searchParams;
   let kind = u0.get('tkind') || '';
-  let [key, dir] = (u0.get('tsort') || 'total-desc').split('-');
-  if (!table.querySelector(`[data-tot-sort="${key}"]`)) [key, dir] = ['total', 'desc'];
+  let [key, dir] = (u0.get('tsort') || `${def}-desc`).split('-');
+  if (!table.querySelector(`[data-tot-sort="${key}"]`)) [key, dir] = [def, 'desc'];
+  if (dir !== 'asc') dir = 'desc';
   if (search && u0.get('tq')) search.value = u0.get('tq');
 
   const remember = () => {
     const u = new URL(location.href);
     const q = search ? search.value.trim() : '';
     const set = (k, v, def) => (v && v !== def ? u.searchParams.set(k, v) : u.searchParams.delete(k));
-    set('tq', q); set('tkind', kind); set('tsort', `${key}-${dir}`, 'total-desc');
+    set('tq', q); set('tkind', kind); set('tsort', `${key}-${dir}`, `${def}-desc`);
     history.replaceState(null, '', u);
   };
   const filter = () => {
     const q = search ? search.value.trim() : '';
     const words = foldWords(q);
-    const tot = { total: 0, patrons: 0, public: 0, likes: 0 };
+    const tot = Object.fromEntries(sums.map((b) => [b.dataset.sum, 0]));
     let shown = 0;
     rows.forEach((r) => {
       r.hidden = (kind && r.dataset.kind !== kind) || !words.every((w) => r.hay.includes(w));
@@ -3174,7 +3666,7 @@ document.querySelector('[data-pt-use]')?.addEventListener('click', (e) => {
   const sort = () => {
     const m = dir === 'asc' ? 1 : -1;
     const byName = (a, b) => a.dataset.name.localeCompare(b.dataset.name);
-    rows.sort((a, b) => (key === 'name' ? m * byName(a, b) : m * (a.dataset[key] - b.dataset[key]) || b.dataset.total - a.dataset.total || byName(a, b)));
+    rows.sort((a, b) => (key === 'name' ? m * byName(a, b) : m * (a.dataset[key] - b.dataset[key]) || b.dataset[def] - a.dataset[def] || b.dataset.total - a.dataset.total || byName(a, b)));
     rows.forEach((r) => tbody.insertBefore(r, empty));
     table.querySelectorAll('[data-tot-sort]').forEach((b) => b.closest('th').setAttribute('aria-sort', b.dataset.totSort === key ? (dir === 'asc' ? 'ascending' : 'descending') : 'none'));
     remember();
@@ -3192,6 +3684,45 @@ document.querySelector('[data-pt-use]')?.addEventListener('click', (e) => {
   }
   sort();
   filter();
+})();
+
+// ── Stats → the picker (a <details>: it works without this): typing filters the list (accents ignored, every word must match),
+// ↓ / Enter go to the first match, Esc or a click outside closes it.
+(() => {
+  const pick = document.querySelector('[data-sp-pick]');
+  if (!pick) return;
+  const input = pick.querySelector('[data-sp-search]');
+  const opts = [...pick.querySelectorAll('[data-sp-opts] a')];
+  const groups = [...pick.querySelectorAll('.sp-grp')];
+  const none = pick.querySelector('[data-sp-none]');
+  opts.forEach((a) => { a.hay = fold(a.dataset.search || a.textContent); });
+  const filter = () => {
+    const words = foldWords(input.value);
+    let shown = 0;
+    opts.forEach((a) => { a.hidden = !words.every((w) => a.hay.includes(w)); if (!a.hidden) shown++; });
+    groups.forEach((g) => { g.hidden = !!words.length; });   // the group titles only on the whole list
+    none.hidden = shown > 0;
+  };
+  input.addEventListener('input', filter);
+  input.addEventListener('keydown', (e) => {
+    const first = opts.find((a) => !a.hidden);
+    if (e.key === 'Escape') { e.preventDefault(); if (input.value) { input.value = ''; filter(); } else { pick.open = false; pick.querySelector('summary').focus(); } }
+    else if ((e.key === 'Enter' || e.key === 'ArrowDown') && first) { e.preventDefault(); e.key === 'Enter' ? first.click() : first.focus(); }
+  });
+  pick.querySelector('[data-sp-opts]').addEventListener('keydown', (e) => {
+    const shown = opts.filter((a) => !a.hidden);
+    const i = shown.indexOf(document.activeElement);
+    if (e.key === 'ArrowDown' && i > -1) { e.preventDefault(); shown[Math.min(i + 1, shown.length - 1)].focus(); }
+    else if (e.key === 'ArrowUp' && i > -1) { e.preventDefault(); (i ? shown[i - 1] : input).focus(); }
+    else if (e.key === 'Escape') { pick.open = false; pick.querySelector('summary').focus(); }
+  });
+  pick.addEventListener('toggle', () => {
+    if (!pick.open) return;
+    input.value = ''; filter();
+    if (matchMedia('(hover: hover)').matches) input.focus();   // phones: no keyboard popping up over the list
+    pick.querySelector('[data-sp-opts] a[aria-current]')?.scrollIntoView({ block: 'nearest' });
+  });
+  document.addEventListener('click', (e) => { if (pick.open && !pick.contains(e.target)) pick.open = false; });
 })();
 
 // ── Assets → Link check (admin/links.php): nothing runs by itself. "Check all links" asks the server about one link at a time
@@ -3487,6 +4018,7 @@ document.querySelectorAll('[data-log-rows]').forEach((form) => {
   const ticked = new Set();
   const filt = { q: '', who: '', only: '' };
   let linkBox = null;   // the batch "Set full size link…" box while it is open: its fields (kept between redraws)
+  let charsBox = null;   // the batch "Characters…" box while it is open: {add: names / model slugs to add, drop: Set of characters to remove}
   addEventListener('beforeunload', (e) => { if (dirty) { e.preventDefault(); e.returnValue = ''; } });
   const leaveOk = () => !dirty || confirm('You have unsaved changes. Leave them?');
 
@@ -3632,22 +4164,60 @@ document.querySelectorAll('[data-log-rows]').forEach((form) => {
   }
   function batchBar() {
     const ids = [...ticked].filter((id) => G.stills.some((s) => s.id === id));
-    if (!ids.length) { linkBox = null; return el('div', { hidden: true }); }
+    if (!ids.length) { linkBox = null; charsBox = null; return el('div', { hidden: true }); }
     const vis = el('select', { class: 'input', 'aria-label': 'Set visibility' }, el('option', { value: '' }, 'Set Visibility…'), Object.entries(G.visibility).map(([k, v]) => el('option', { value: k }, v)));
     vis.addEventListener('change', async () => {
       if (!vis.value) return;
       try { await save({ action: 'visibility', ids, value: vis.value }, `${ids.length} ${ids.length === 1 ? 'picture' : 'pictures'}: ${G.visibility[vis.value]} ✓`); }
       catch (e) { toast(e.message, 'err'); vis.value = ''; }
     });
-    const linkBtn = el('button', { type: 'button', class: 'btn btn-ghost btn-sm', 'aria-expanded': String(!!linkBox), onclick: () => { linkBox = linkBox ? null : linkFields(ids); render(); } }, 'Set Full Size Link…');
-    return el('div', { class: 'batch-bar g-batch' }, el('b', {}, `${ids.length} selected`), vis, linkBtn,
+    const linkBtn = el('button', { type: 'button', class: 'btn btn-ghost btn-sm', 'aria-expanded': String(!!linkBox), onclick: () => { linkBox = linkBox ? null : linkFields(ids); charsBox = null; render(); } }, 'Set Full Size Link…');
+    const charsBtn = el('button', { type: 'button', class: 'btn btn-ghost btn-sm', 'aria-expanded': String(!!charsBox), onclick: () => { charsBox = charsBox ? null : { add: [], drop: new Set() }; linkBox = null; render(); } }, 'Characters…');
+    return el('div', { class: 'batch-bar g-batch' }, el('b', {}, `${ids.length} selected`), vis, charsBtn, linkBtn,
       el('button', { type: 'button', class: 'btn btn-danger btn-sm', onclick: async () => {
         if (!confirm(`Remove ${ids.length === 1 ? 'this picture' : `these ${ids.length} pictures`} from the gallery? The pictures stay in the Images library.`)) return;
         try { await save({ action: 'delete', ids }, 'Removed from the gallery ✓'); ids.forEach((id) => ticked.delete(id)); render(); }
         catch (e) { toast(e.message, 'err'); }
       } }, 'Remove from Gallery'),
       el('button', { type: 'button', class: 'btn btn-ghost btn-sm', onclick: () => { ticked.clear(); linkBox = null; render(); } }, 'Clear'),
-      linkBox ? linkPanel(ids) : null);
+      linkBox ? linkPanel(ids) : null, charsBox ? charsPanel(ids) : null);
+  }
+  // the characters of the ticked pictures: who is on them (✕ takes one off all of them, ↺ keeps it after all) and who to add to all
+  function charsPanel(ids) {
+    const n = ids.length, Pics = n === 1 ? 'Picture' : 'Pictures';
+    const on = new Map();   // the characters on the ticked pictures: folded name → {c: as stored, n: on how many}
+    for (const id of ids) for (const c of G.stills.find((x) => x.id === id)?.chars || []) {
+      const k = fold(c);
+      on.set(k, { c: on.get(k)?.c ?? c, n: (on.get(k)?.n || 0) + 1 });
+    }
+    const label = (c) => (modelBy(c) ? charName(modelBy(c)) : c);
+    const apply = el('button', { type: 'submit', class: 'btn btn-primary btn-sm' }, `Apply to ${n} ${Pics}`);
+    const sync = () => { apply.disabled = !charsBox.add.length && !charsBox.drop.size; };
+    const chips = el('div', { class: 'gbc-chips' });
+    const drawOn = () => chips.replaceChildren(...[...on.values()].sort((a, b) => b.n - a.n || label(a.c).localeCompare(label(b.c))).map(({ c, n: k }) => {
+      const gone = charsBox.drop.has(c);
+      return el('span', { class: 'g-chip' + (gone ? ' is-drop' : '') }, avatar({ model: modelBy(c) ? c : null, name: modelBy(c)?.name || c }), el('span', { class: 'gbc-name' }, label(c)),
+        el('small', {}, gone ? 'removed' : `on ${k} of ${n}`),
+        el('button', { type: 'button', title: gone ? 'Keep' : 'Remove from these pictures', 'aria-label': (gone ? 'Keep ' : 'Remove ') + label(c),
+          onclick: () => { if (gone) charsBox.drop.delete(c); else charsBox.drop.add(c); drawOn(); sync(); } }, gone ? '↺' : '×'));
+    }));
+    drawOn();
+    sync();
+    const f = el('form', { class: 'g-batch-link g-batch-chars' },
+      el('b', {}, `Characters for ${n} ${Pics}`),
+      on.size ? el('div', { class: 'gbc-row' }, el('span', { class: 'lbl' }, 'On These Pictures'), chips) : el('p', { class: 'muted small' }, n === 1 ? 'No character on this picture yet.' : 'No character on these pictures yet.'),
+      el('div', { class: 'gbc-row' }, el('span', { class: 'lbl' }, n === 1 ? 'Add' : `Add to All ${n}`), charsField(charsBox.add, sync)),
+      el('div', { class: 'form-actions' }, apply));
+    f.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      if (apply.disabled) return;
+      apply.disabled = true;
+      try {
+        await save({ action: 'chars', ids, add: charsBox.add, remove: [...charsBox.drop] }, `${n} ${n === 1 ? 'picture' : 'pictures'}: characters changed ✓`);
+        charsBox = null; render();
+      } catch (err) { toast(err.message, 'err'); apply.disabled = false; }
+    });
+    return f;
   }
   // one full size link for every ticked picture (often one file per character); starts with their link when they all share one
   function linkFields(ids) {

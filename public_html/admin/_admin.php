@@ -40,7 +40,7 @@ function admin_uploaded_file(): array
     $f = $_FILES['file'] ?? null;
     if ($f && is_uploaded_file($f['tmp_name'] ?? '')) return $f;
     $msg = in_array($f['error'] ?? UPLOAD_ERR_NO_FILE, [UPLOAD_ERR_INI_SIZE, UPLOAD_ERR_FORM_SIZE], true)
-        ? 'The file is larger than the server allows (now ' . ini_get('upload_max_filesize') . '; upload_max_filesize and post_max_size in hPanel → PHP Configuration).'
+        ? 'The file is larger than the server allows (now ' . ini_get('upload_max_filesize') . '; raise upload_max_filesize and post_max_size in your host’s PHP settings).'
         : 'No file received.';
     admin_json(['ok' => false, 'error' => $msg], 400);
 }
@@ -62,7 +62,7 @@ function admin_post_guard(array $cfg): void
     if (($_SERVER['REQUEST_METHOD'] ?? '') !== 'POST') admin_json(['ok' => false, 'error' => 'POST only'], 405);
     // A file bigger than the server's limit arrives as an empty request: say so instead of "session expired"
     if (str_starts_with((string) ($_SERVER['CONTENT_TYPE'] ?? ''), 'multipart/') && !$_POST && !$_FILES && (int) ($_SERVER['CONTENT_LENGTH'] ?? 0) > 0) {
-        admin_json(['ok' => false, 'error' => 'This file is larger than the server accepts (' . ini_get('post_max_size') . '). Raise "post_max_size" and "upload_max_filesize" in hPanel → PHP Configuration → PHP options, or upload a smaller file.'], 413);
+        admin_json(['ok' => false, 'error' => 'This file is larger than the server accepts (' . ini_get('post_max_size') . '). Raise "post_max_size" and "upload_max_filesize" in your host’s PHP settings, or upload a smaller file.'], 413);
     }
     $token = $_SERVER['HTTP_X_CSRF_TOKEN'] ?? ($_POST['csrf'] ?? null);
     if (!m3d_check_csrf($token)) admin_json(['ok' => false, 'error' => 'Session expired. Reload the page and try again.'], 403);
@@ -155,13 +155,24 @@ function admin_release_badge(array $item): string
     };
 }
 
+/** A number column's title in the Models / Accessories lists as an icon (the name on hover and for screen readers), so the numbers take less room. */
+const ADMIN_COL_ICONS = [
+    'Downloads' => '<path d="M12 4v11"/><path d="m7 10 5 5 5-5"/><path d="M5 20h14"/>',
+    'Likes'     => '<path d="M12 20s-7.5-4.6-7.5-10.2A4.2 4.2 0 0 1 12 7.3a4.2 4.2 0 0 1 7.5 2.5C19.5 15.4 12 20 12 20z"/>',
+    'Comments'  => '<path d="M5 5h14a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1H10l-4.5 3.5V16H5a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1z"/>',
+];
+function admin_icon_th(string $label): string
+{
+    return '<th class="c-num c-ico" title="' . e($label) . '"><svg viewBox="0 0 24 24" aria-hidden="true">' . ADMIN_COL_ICONS[$label] . '</svg><span class="sr-only">' . e($label) . '</span></th>';
+}
+
 /** The 🔒 badge of the admin lists: an item's extra download requirements in short ("€10+ tier · 6 months"), '' when none. */
 function admin_req_badge(array $item): string
 {
     $rq = m3d_requirements($item);
     $mt = implode($rq['mode'] === 'or' ? ' or ' : ' · ', array_filter([$rq['months'] ? m3d_plural($rq['months'], 'month') : '', $rq['total_cents'] ? m3d_money($rq['total_cents']) : '']));
     $txt = implode(' · ', array_filter([$rq['tier_cents'] ? m3d_money($rq['tier_cents']) . '+ tier' : '', $rq['tier_cents'] && $rq['mode'] === 'or' && $mt !== '' ? "($mt)" : $mt]));
-    return $txt === '' ? '' : ' <span class="badge tone-sky" title="Extra download requirements on top of a paid tier">🔒 ' . e($txt) . '</span>';
+    return $txt === '' ? '' : ' <span class="badge tone-sky" title="' . e('Extra download requirements on top of a paid tier: ' . $txt) . '">🔒 ' . e($txt) . '</span>';
 }
 
 /** Extra download requirements (on top of the paid tier): minimum tier, months as a patron, total support (amounts typed in currency units). */
@@ -342,6 +353,70 @@ function clean_docs(array $in): array
     return ['sections' => $sections];
 }
 
+// ── Blog (admin/blog.php, save.php kind "blog") ──────────────────────────────
+/** One post from the editor ($old = the stored post, null for a new one; $posts = every stored post, for the unique address). */
+function clean_post(array $in, ?array $old, array $posts): array
+{
+    $title = clean_text($in['title'] ?? '', 160);
+    if ($title === '') throw new InvalidArgumentException('The post needs a title.');
+    $slug = strtolower(clean_text($in['slug'] ?? '', 80));
+    if ($slug === '') $slug = substr(trim((string) preg_replace('/[^a-z0-9]+/', '-', m3d_fold($title)), '-'), 0, 70) ?: 'post';   // like slugify() in admin.js
+    if (!preg_match('/^[a-z0-9][a-z0-9-]{0,79}$/', $slug)) throw new InvalidArgumentException('The address may only contain lowercase letters, numbers and dashes.');
+    foreach ($posts as $p) if ($p['slug'] === $slug && $p['id'] !== ($old['id'] ?? '')) throw new InvalidArgumentException('Another post uses the address "' . $slug . '": “' . $p['title'] . '”. Change one of them.');
+    $id = $old['id'] ?? '';   // never changes: likes are kept under it
+    while ($id === '') { $id = bin2hex(random_bytes(4)); if (in_array($id, array_column($posts, 'id'), true)) $id = ''; }
+    // the date as typed in the editor (site time, "2026-10-20T18:00"); empty = now
+    $when = clean_text($in['date'] ?? '', 16);
+    if ($when === '') $ts = time();
+    else {
+        $d = DateTimeImmutable::createFromFormat('!Y-m-d\TH:i', $when, m3d_tz());
+        if (!$d || $d->format('Y-m-d\TH:i') !== $when) throw new InvalidArgumentException('The date isn’t a real day and time.');
+        $ts = $d->getTimestamp();
+    }
+    $post = ['id' => $id, 'slug' => $slug, 'title' => $title, 'date' => gmdate('Y-m-d\TH:i:s\Z', $ts)];
+    $sum = clean_text(preg_replace('/\s+/u', ' ', (string) ($in['summary'] ?? '')), 300);
+    if ($sum !== '') $post['summary'] = $sum;
+    $cover = clean_url($in['cover'] ?? '');
+    if ($cover !== '') $post['cover'] = $cover;
+    $post['body'] = clean_text($in['body'] ?? '', 200000);
+    $topics = [];
+    foreach (clean_list($in['topics'] ?? [], 40, 20) as $t) {
+        $t = preg_replace('/\s+/u', ' ', $t);
+        if (!in_array(m3d_fold($t), array_map('m3d_fold', $topics), true)) $topics[] = $t;
+    }
+    if (count($topics) > 6) throw new InvalidArgumentException('6 topics at most.');
+    if ($topics) $post['topics'] = $topics;
+    $items = [];
+    foreach (clean_list($in['items'] ?? [], 120, 30) as $ref) {
+        [$kind, $s] = explode(':', $ref, 2) + [1 => ''];
+        if (in_array($kind, ['models', 'outfits'], true) && m3d_item($kind, $s) && !in_array($ref, $items, true)) $items[] = $ref;
+    }
+    if (count($items) > 12) throw new InvalidArgumentException('12 models and accessories at most.');
+    if ($items) $post['items'] = $items;
+    $v = (string) ($in['visibility'] ?? 'public');
+    if (!isset(BLOG_VISIBILITY[$v])) throw new InvalidArgumentException('Unknown visibility.');
+    if ($v !== 'public') $post['visibility'] = $v;
+    if (!empty($in['pinned'])) $post['pinned'] = true;
+    if (!empty($in['discord'])) $post['discord'] = true;
+    if (array_key_exists('comments', $in) ? empty($in['comments']) : !empty($old['noComments'])) $post['noComments'] = true;   // "Allow Comments" off (app/comments.php)
+    foreach (['announced', 'tries'] as $k) if (isset($old[$k])) $post[$k] = $old[$k];   // Discord's own marks (m3d_blog_discord_run())
+    return $post;
+}
+
+/** A post's revision for the editor: what the editor shows (not Discord's marks, which change without it). */
+function admin_post_rev(array $p): string
+{
+    unset($p['announced'], $p['tries']);
+    return md5((string) json_encode($p, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE));
+}
+
+/** The posts as the editor gets them: each with its revision, its date in site time ("2026-10-20T18:00"), state and list picture. */
+function admin_blog_posts(): array
+{
+    return array_map(fn($p) => $p + ['rev' => admin_post_rev($p), 'local' => m3d_site_time(m3d_post_ts($p), 'Y-m-d\TH:i'), 'state' => m3d_post_state($p),
+        'thumb' => str_starts_with((string) ($p['cover'] ?? ''), '/media/') ? img_thumb((string) $p['cover']) : ''], m3d_blog(true)['posts']);
+}
+
 function clean_faq(array $in): array
 {
     $sections = [];
@@ -388,6 +463,7 @@ function clean_item_base(array $in, ?array $existing): array
         if ($light !== 100) $it['model3dLight'] = max(M3D_LIGHT_RANGE[0], min(M3D_LIGHT_RANGE[1], $light));
     }
     if ($addons = clean_addons($in['addons'] ?? [])) $it['addons'] = $addons;
+    if (array_key_exists('comments', $in) ? empty($in['comments']) : !empty($existing['noComments'])) $it['noComments'] = true;   // "Allow Comments" off (app/comments.php)
     clean_requirements($in, $it);
     clean_release($in, $it);
     $note = clean_text($in['changelogNote'] ?? '', 1000);
@@ -462,6 +538,7 @@ const FORMAT_EXAMPLES = [
     'heading' => ['Headings', "## Heading\n\n### Smaller heading"],
     'small-h' => ['Small Heading', "### Small heading"],
     'list'    => ['Bullet List', "- First item\n- Second item\n  - indented: a sub-item\n    - indented more: one level deeper"],
+    'paywall' => ['Patrons Only from Here', "Everyone reads this.\n\n--- Patreon ---\n\nOnly patrons read this."],
     'steps'   => ['Numbered Steps', "1. Open Blender\n2. Press N\n  Two spaces continue the step."],
     'box'     => ['Box', "> [!TIP] Faster posing\n> Use the pose library.\n\n> [!WARNING]\n> Save your file first."],
     'table'   => ['Table', "| Generation | Blender |\n|---|---|\n| 4 | 4.2 or newer |"],
@@ -477,8 +554,8 @@ function format_help(string $title, array $keys, string $intro = '', bool $docs 
     foreach ($keys as $k) {
         [$label, $src] = FORMAT_EXAMPLES[$k];
         $out = $k === 'image'
-            ? '<p class="muted small">On its own line. Several lines together make a gallery.</p>'
-            : md_html($src, ['docs' => $docs]);
+            ? '<p class="muted small">On its own line. Several lines together make a gallery. Drop or paste a picture into the text to upload it.</p>'
+            : md_html($src, ['docs' => $docs, 'paywall' => true]);
         $rows .= '<div class="fmt-row"><div class="fmt-label">' . e($label) . '</div><pre class="fmt-src"><code>' . e($src) . '</code></pre><div class="fmt-out md">' . $out . '</div></div>';
     }
     return '<details class="sec format-help"><summary><b>' . e($title) . '</b></summary>'
@@ -582,6 +659,16 @@ function discord_md(string $text): string
     $h = preg_replace('#`([^`\n]+)`#', '<code>$1</code>', $h);
     $h = preg_replace(['#@(everyone|here)\b#', '#&lt;@&amp;\d+&gt;#'], ['<span class="dc-ment">@$1</span>', '<span class="dc-ment">@role</span>'], $h);
     return nl2br($h, false);
+}
+
+/** A role written as plain text ("@Notifications") pings no one in a webhook post: Discord needs <@&role id>. The warning under the
+ *  Intro Message field, '' when there is none. Same rule in admin.js (plainMention). */
+function discord_plain_mention_warning(string $text): string
+{
+    preg_match_all('#(?:^|[\s(])@([\p{L}\p{N}_.-]*[\p{L}\p{N}_])#u', $text, $m);
+    $name = array_values(array_diff($m[1], ['everyone', 'here']))[0] ?? '';
+    if ($name === '') return '';
+    return "“@{$name}” won’t ping anyone: Discord needs the role’s code. Send \\@{$name} in any Discord channel and paste here what Discord shows (<@&…>).";
 }
 
 /** What a post looks like in Discord (Settings → Discord announcements): the message line (admin.js keeps it in step with the field) and the embed of the newest version. */
@@ -722,6 +809,8 @@ function admin_forget_items(string $kind, array $gone, array $vis = []): void
             return [$bugs, $next, null];
         });
     }
+    foreach ($slugs as $s) m3d_blog_rename_item($kind, $s, '');   // posts showing it leave it out
+    m3d_comments_forget($kind, $slugs);
     $dc = m3d_settings(true)['discord'] ?? null;
     if (is_array($dc)) {
         $mine = fn($c) => is_string($c) && in_array(preg_replace('/@.*$/s', '', $c), array_map(fn($s) => "$kind:$s", $slugs), true);
@@ -841,7 +930,7 @@ function media_deletable(string $url): ?string
     return $p && is_file($p) ? $p : null;
 }
 
-/** url => [ editKey => name, ... ] for every image (and 3D file: `model3d`) address used by a model, an outfit, a FAQ answer, a docs page or the gallery. */
+/** url => [ editKey => name, ... ] for every image (and 3D file: `model3d`) address used by a model, an outfit, a FAQ answer, a docs page, a blog post or the gallery. */
 function usage_map(array $models, ?array $outfits = null): array
 {
     $use = [];
@@ -850,9 +939,10 @@ function usage_map(array $models, ?array $outfits = null): array
             foreach (media_in($v) as $u) $use[$u]['models:' . $m['slug']] = admin_item_label('models', $m);
         });
     }
-    foreach (m3d_texts() as $t) {   // FAQ answers and docs pages
+    foreach (m3d_texts() as $t) {   // FAQ answers, docs pages, blog posts
         foreach (media_in($t['text']) as $u) $use[$u][$t['key']] = $t['name'];
     }
+    foreach (m3d_blog()['posts'] as $p) foreach (media_in((string) ($p['cover'] ?? '')) as $u) $use[$u]['blog:' . $p['id']] = 'Blog: ' . $p['title'];
     foreach ($outfits ?? m3d_outfits() as $o) {
         array_walk_recursive($o, function ($v) use (&$use, $o) {
             foreach (media_in($v) as $u) $use[$u]['outfits:' . $o['slug']] = admin_item_label('outfits', $o);
@@ -880,7 +970,7 @@ function media_mentioned(): array
 {
     static $any = null;
     if ($any !== null) return $any;
-    $all = json_encode([m3d_models(), m3d_outfits(), m3d_faq(), m3d_docs(), m3d_gallery(), outfits_intro(), m3d_welcome()['text']], JSON_UNESCAPED_SLASHES);
+    $all = json_encode([m3d_models(), m3d_outfits(), m3d_faq(), m3d_docs(), m3d_blog(), m3d_gallery(), outfits_intro(), m3d_welcome()['text']], JSON_UNESCAPED_SLASHES);
     preg_match_all('#/media/[A-Za-z0-9/_.-]+#', (string) $all, $mm);
     $any = [];
     foreach ($mm[0] as $u) { $any[$u] = $any[img_large($u)] = true; foreach (img_versions($u) as $v) $any[$v] = true; }   // a text using only "-sm" keeps the large file too
@@ -935,10 +1025,10 @@ function admin_folder_picks(array $models): array
         $names['outfit-' . $o['slug']] = admin_item_label('outfits', $o);
         $pick['outfit-' . $o['slug']] = ['kind' => 'outfit', 'name' => $o['name'], 'sub' => m3d_accessory_type($o), 'thumb' => $picUrl(outfit_preview($o)), 'icon' => accessory_icon_paths(m3d_accessory_type($o))];
     }
-    $names += ['gallery' => 'Gallery', 'docs' => 'Docs', 'faq' => 'FAQ', 'misc' => 'Other (misc)'];
-    foreach (m3d_texts() as $t) {   // docs pages and FAQ questions, listed under their docs section / FAQ topic
+    $names += ['gallery' => 'Gallery', 'docs' => 'Docs', 'faq' => 'FAQ', 'blog' => 'Blog', 'misc' => 'Other (misc)'];
+    foreach (m3d_texts() as $t) {   // docs pages, FAQ questions and blog posts, listed under their docs section / FAQ topic / "Blog"
         $names[$t['key']] = $t['name'];
-        $pick[$t['key']] = ['kind' => $t['folder'] === 'docs' ? 'doc' : 'faq', 'name' => $t['title'], 'sub' => $t['section']];
+        $pick[$t['key']] = ['kind' => $t['folder'] === 'faq' ? 'faq' : 'doc', 'name' => $t['title'], 'sub' => $t['section']];
     }
     return [$pick, $names];
 }
@@ -1013,13 +1103,26 @@ function admin_gallery_payload(): array
     return ['stills' => $stills, 'chars' => $chars, 'models' => $models, 'visibility' => GALLERY_VISIBILITY, 'today' => m3d_today()];
 }
 
+// Features that are only switched on or off (settings.json → <key>.on): title, its help, switch label, link shown while on, messages (on, off)
+const FEATURE_SWITCHES = [
+    'mustardui' => ['MustardUI', 'Ready-made page about MustardUI, the free Blender add-on: features, download, guides and bug reports. Turn on if your models use it.',
+        'Enable MustardUI Page',
+        ['/mustardui/', 'View the Page ↗', true],
+        'The MustardUI page is on: it is in the menu and the footer.', 'The MustardUI page is off: no menu item, and /mustardui/ shows “not found”.'],
+    'smutbase'  => ['SmutBase Import', 'Imports the models of a SmutBase profile as draft models (texts, changelog, pictures). Only useful if you publish on SmutBase.',
+        'Enable SmutBase Import',
+        ['/admin/import.php', 'Open the Import', false],
+        'SmutBase import is on: the button is on Admin → Models.', 'SmutBase import is off.'],
+];
+
 /**
  * Settings tabs (settings.php?tab=…): key => [label, its sections' ids], in the order shown. Update (update.php) is the last tab.
  * Section ids that aren't on this site yet are harmless: they only send old #addresses to the right tab (admin.js).
  */
 const SETTINGS_TABS = [
     'site' => ['Site', ['identity', 'social', 'homepage', 'notice', 'timezone']],
-    'features' => ['Features', ['welcome', 'bugs', 'discord', 's4', 'mustardui', 'smutbase']],
+    'notify' => ['Notifications', ['notify']],
+    'features' => ['Features', ['blog', 'bugs', 'comments', 'discord', 'welcome', 's4', 'mustardui', 'smutbase']],
     'patreon' => ['Patreon', ['patreon', 'logins']],
     'maintenance' => ['Maintenance', ['maintenance', 'problems', 'tools', 'system']],
     'privacy' => ['Privacy', ['legal', 'personal-data']],   // last, after Update: rarely used
@@ -1030,6 +1133,18 @@ function settings_tab(): string
 {
     $t = m3d_get_text('tab');
     return isset(SETTINGS_TABS[$t]) ? $t : 'site';
+}
+
+/** A group in a feature's Settings box (Bug Reports, Comments): where its notifications go, set in Settings → Notifications. */
+function notify_group(string ...$events): string
+{
+    $s = m3d_notify_settings();
+    $h = '<div class="set-grp nt-grp"><h3>Notifications</h3><ul class="nt-grp-list">';
+    foreach ($events as $ev) {
+        $to = array_filter(['Bell' => $s['bell'][$ev], 'Discord' => $s['discord'][$ev]]);
+        $h .= '<li><span>' . e(NOTIFY_EVENTS[$ev][0]) . '</span><span class="muted">' . ($to ? implode(' · ', array_keys($to)) : 'Off') . '</span></li>';
+    }
+    return $h . '</ul><a class="btn btn-ghost btn-sm" href="' . e(settings_url('notify')) . '">Change in Notifications</a></div>';
 }
 
 /** Address of a Settings section: its tab, scrolled to the section (e.g. settings_url('maintenance')). */
@@ -1109,6 +1224,7 @@ function admin_start(string $title, string $active = ''): void
 {
     $autoBackup = admin_auto_backup();
     m3d_discord_stills_tick();   // new Gallery pictures waiting for their Discord post (also while only the admin is on the site)
+    m3d_blog_discord_tick();   // a blog post went out: its Discord post
     lc_auto_tick();   // Link check's automatic check, when on
     m3d_session_release();   // the page only reads the login from here: a slow page (big lists, the Images library) holds up nothing else
     header('Content-Type: text/html; charset=utf-8');
@@ -1131,12 +1247,14 @@ function admin_start(string $title, string $active = ''): void
       <nav class="nav admin-nav" aria-label="Admin">
         <a href="/admin/models.php" <?= in_array($active, ['models', 'outfits'], true) ? 'aria-current="page"' : '' ?>>Assets</a>
         <a href="/admin/gallery.php" <?= $active === 'gallery' ? 'aria-current="page"' : '' ?>>Gallery</a>
-        <a href="/admin/docs.php" <?= $active === 'docs' ? 'aria-current="page"' : '' ?>>Docs</a>
+<?php if (m3d_blog_on() || $active === 'blog'): ?>        <a href="/admin/blog.php" <?= $active === 'blog' ? 'aria-current="page"' : '' ?>>Blog</a>
+<?php endif ?>        <a href="/admin/docs.php" <?= $active === 'docs' ? 'aria-current="page"' : '' ?>>Docs</a>
         <a href="/admin/faq.php" <?= $active === 'faq' ? 'aria-current="page"' : '' ?>>FAQ</a>
         <a href="/admin/log.php" <?= $active === 'log' ? 'aria-current="page"' : '' ?>>Downloads</a>
         <a href="/admin/users.php" <?= $active === 'users' ? 'aria-current="page"' : '' ?>>Access</a>
         <a href="/admin/images.php" <?= $active === 'images' ? 'aria-current="page"' : '' ?>>Images</a>
         <a href="/admin/backups.php" <?= $active === 'backups' ? 'aria-current="page"' : '' ?>>Backups</a>
+        <a href="/admin/stats.php" <?= $active === 'stats' ? 'aria-current="page"' : '' ?>>Stats</a>
         <a href="/admin/settings.php" <?= $active === 'settings' || $active === 'update' ? 'aria-current="page"' : '' ?>>Settings</a>
       </nav>
 <?php $icon = '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>' ?>
@@ -1145,7 +1263,7 @@ function admin_start(string $title, string $active = ''): void
         <div class="hsearch-panel" data-jump-panel hidden><div class="hs-bar" role="search"><label class="hs-field"><?= $icon ?><input type="search" placeholder="Jump to a model, accessory, page or setting…" aria-label="Jump to" autocomplete="off" spellcheck="false" enterkeyhint="go" role="combobox" aria-expanded="false" aria-controls="jump-list" aria-autocomplete="list" data-jump-input /></label><button type="button" class="hsearch-btn hs-close" aria-label="Close" title="Close (Esc)" data-jump-close><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg></button></div></div>
         <ul class="hsearch-list" id="jump-list" role="listbox" aria-label="Results" data-jump-list></ul>
       </div>
-      <div class="account">
+<?= quick_add() ?><?= notify_bell() ?>      <div class="account">
         <form method="post" action="/admin/patron-preview.php" class="pv-start" title="See the site as a patron: pick the membership, months and total support in the bar on top. Nothing is downloaded or logged.">
           <?= form_keys() ?><input type="hidden" name="return" value="/" />
           <?php if (!m3d_preview()): ?><input type="hidden" name="tier" value="ok" /><input type="hidden" name="months" value="1" /><input type="hidden" name="total" value="5" /><?php endif ?>
@@ -1171,4 +1289,20 @@ function admin_end(): void
 </body>
 </html>
 <?php
+}
+
+/** The Comments column of Admin → Models / Accessories: the shown comments (a link to them on the page), the ones waiting, or Off. */
+function admin_comments_cell(string $kind, array $it): string
+{
+    static $n = null;
+    $n ??= m3d_comment_admin_counts();
+    $c = $n[$kind . ':' . $it['slug']] ?? [];
+    [$shown, $wait] = [(int) ($c[0] ?? 0), (int) ($c[1] ?? 0)];
+    if (!m3d_comments_open($kind, $it)) {
+        return '<span class="muted" title="' . e(!m3d_comments_on($kind) ? 'Comments are off for all ' . ($kind === 'outfits' ? 'accessories' : 'models') . ' (Settings → Comments)' : 'Allow Comments is off in its editor') . '">Off</span>'
+            . ($shown + $wait ? '<div class="muted">' . ($shown + $wait) . ' kept</div>' : '');
+    }
+    $h = $shown ? '<a class="num cm-num" href="' . e(m3d_item_url($kind, (string) $it['slug'])) . '#comments" title="' . e(m3d_plural($shown, 'comment')) . '">' . bug_icon('comment') . $shown . '</a>' : '<span class="muted">0</span>';
+    if ($wait) $h .= '<a class="cm-wait" href="' . e(settings_url('comments')) . '" title="' . e($wait . ' waiting for approval') . '" aria-label="' . e($wait . ' waiting for approval') . '"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/></svg>' . $wait . '</a>';   // a clock + the number under the count
+    return $h;
 }

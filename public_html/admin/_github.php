@@ -8,6 +8,7 @@
 // from another one's backup keeps its own channel). The last check is cached in private/cache/ (CHECK_TTL).
 declare(strict_types=1);
 defined('M3D_PRIVATE') or exit;
+require_once dirname(__DIR__) . '/app/version.php';   // gh_newer(): the bell asks from any page, not only Settings
 
 const GH_API = 'https://api.github.com';
 /** channel => [name, repository (config.php → update_repos can change it), needs a key] */
@@ -127,7 +128,7 @@ function gh_check(string $channel, bool $fresh = false): array
     $cache = gh_cache_file($channel);
     if (!$fresh && is_file($cache)) {
         $c = json_decode((string) @file_get_contents($cache), true);
-        if (is_array($c) && ($c['at'] ?? 0) > time() - (($c['error'] ?? '') === '' ? CHECK_TTL : 60)) return $c;
+        if (is_array($c) && is_array($c['releases'] ?? null) && ($c['at'] ?? 0) > time() - (($c['error'] ?? '') === '' ? CHECK_TTL : 60)) return $c;
     }
     $save = function (array $out) use ($cache): array {
         if (!is_dir(dirname($cache))) @mkdir(dirname($cache), 0700, true);
@@ -177,9 +178,11 @@ function gh_newer(array $check): array
 function gh_check_cached(string $channel): ?array
 {
     $c = json_decode((string) @file_get_contents(gh_cache_file($channel)), true);
-    $c = is_array($c) && isset($c['releases']) ? $c : null;
+    $c = is_array($c) && is_array($c['releases'] ?? null) ? $c : null;
     if (!$c || ($c['at'] ?? 0) <= time() - CHECK_TTL) {
-        m3d_after_response(fn() => gh_check($channel, true));
+        // one request at a time (every admin page asks, for the bell); gh_check() without $fresh reuses a check another one just made.
+        // A new version is told on Discord once (Settings → Notifications)
+        m3d_after_response(fn() => m3d_with_lock('.update-check-lock', fn() => m3d_notify_update(gh_check($channel))));
     }
     return $c;
 }

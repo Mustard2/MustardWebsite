@@ -1,6 +1,7 @@
 <?php
 // POST JSON { kind: "models" | "outfits", action: save | delete | reorder | batch, … }, { kind: "faq", faq }, { kind: "docs", docs },
-// { kind: "gallery", action: add | save | delete | order | visibility | link, … } (answers with the whole gallery: admin_gallery_payload())
+// { kind: "gallery", action: add | save | delete | order | visibility | link | chars, … } (answers with the whole gallery: admin_gallery_payload()),
+// { kind: "blog", action: save | delete, id ('' = a new post), rev, post } (answers with every post: admin_blog_posts())
 require __DIR__ . '/_admin.php';
 admin_post_guard($M3D);
 
@@ -17,6 +18,30 @@ try {
         $ok = $k === 'docs' ? m3d_save_docs(clean_docs((array) ($in['docs'] ?? []))) : m3d_save_faq(clean_faq((array) ($in['faq'] ?? [])));
         if (!$ok) throw new RuntimeException(m3d_write_error('data'));
         admin_json(['ok' => true, 'rev' => admin_text_rev($k)]);
+    }
+    if (($in['kind'] ?? '') === 'blog') {
+        $posts = m3d_blog(true)['posts'];
+        $id = (string) ($in['id'] ?? '');
+        $at = $id !== '' ? array_search($id, array_column($posts, 'id'), true) : false;
+        if ($id !== '' && $at === false) throw new InvalidArgumentException('This post no longer exists (deleted in another tab?). Reload the page.');
+        $old = $at === false ? null : $posts[$at];
+        // an editor left open must not put an old version back (another tab, an Images job that changed picture addresses)
+        if ($old && isset($in['rev']) && !hash_equals(admin_post_rev($old), (string) $in['rev'])) {
+            admin_json(['ok' => false, 'error' => 'This post was changed in another tab or by an Images job: reload this page (your changes here are not saved).'], 409);
+        }
+        if (($in['action'] ?? 'save') === 'delete') {
+            if (!$old) throw new InvalidArgumentException('Not found.');
+            array_splice($posts, $at, 1);
+            if (!m3d_save_blog($posts)) throw new RuntimeException(m3d_write_error('data'));
+            m3d_blog_forget_likes([$old['id']]);
+            m3d_comments_forget('posts', [$old['id']]);
+            admin_json(['ok' => true, 'posts' => admin_blog_posts()]);
+        }
+        $post = clean_post((array) ($in['post'] ?? []), $old, $posts);
+        if ($old) $posts[$at] = $post; else $posts[] = $post;
+        if (!m3d_save_blog($posts)) throw new RuntimeException(m3d_write_error('data'));
+        m3d_blog_discord_tick();   // published now (or a date already past): its Discord post after this answer
+        admin_json(['ok' => true, 'id' => $post['id'], 'posts' => admin_blog_posts()]);
     }
     if (($in['kind'] ?? '') === 'gallery') {
         $g = m3d_gallery(true);
@@ -73,6 +98,17 @@ try {
             foreach ($g['stills'] as &$s) {
                 if (!in_array($s['id'], $ids, true)) continue;
                 if ($link) $s['link'] = $link; else unset($s['link']);
+            }
+            unset($s);
+        } elseif ($action === 'chars') {
+            // characters for several pictures at once: the ones named in remove go (any case), the ones in add join (20 at most, like clean_still())
+            $add = clean_list($in['add'] ?? [], 80, 20);
+            $drop = array_map('mb_strtolower', clean_list($in['remove'] ?? [], 80, 200));
+            foreach ($g['stills'] as &$s) {
+                if (!in_array($s['id'], $ids, true)) continue;
+                $chars = array_values(array_filter((array) ($s['chars'] ?? []), fn($c) => !in_array(mb_strtolower((string) $c), $drop, true)));
+                foreach ($add as $c) if (count($chars) < 20 && !in_array(mb_strtolower($c), array_map(fn($x) => mb_strtolower((string) $x), $chars), true)) $chars[] = $c;
+                $s['chars'] = $chars;
             }
             unset($s);
         } else {

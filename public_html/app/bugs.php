@@ -8,10 +8,11 @@
 //   pics [/media/bugs/…webp] (only while uploads are on), by (Patreon id), name, at / act (reported / last activity, unix),
 //   status (BUG_STATUSES), fixed (version label), reason (BUG_REASONS) + dup (bug number), tags [tag ids], metoo [like codes],
 //   pin, hidden, pending (waits for the admin when "check new reports" is on), locked (no new comments), seen (admin opened it),
+//   seen_at (it was opened, then got a visitor's comment: when; unset when opened again, see app/notify.php),
 //   fol {like code: time last opened} (who follows it, see "Following"),
 //   log [{t: 'c', by, name, at, text, admin} comment | {t: 's', at, status, fixed?, reason?, dup?} status | {t: 'tag', at, add []}]
-// settings.json → bugs: {on, who: any|paying, host (where to upload screenshots), uploads, moderate, notify, webhook, per_day,
-//   blocked [Patreon ids], tags [{id, name, color}]}
+// settings.json → bugs: {on, who: any|paying, host (where to upload screenshots), uploads, moderate, per_day, blocked [Patreon ids],
+//   tags [{id, name, color}], notify + webhook (old: read by m3d_notify_settings() until Settings → Notifications is saved)}
 declare(strict_types=1);
 defined('M3D_PRIVATE') or exit;
 
@@ -110,6 +111,8 @@ function m3d_bugs_update(callable $fn): mixed
         $bugs = array_values(array_filter((array) ($d['bugs'] ?? []), 'is_array'));
         $next = max((int) ($d['next'] ?? 1), 1 + max([0, ...array_map(fn($b) => (int) ($b['n'] ?? 0), $bugs)]));
         [$bugs, $next, $res] = $fn($bugs, $next);
+        foreach ($bugs as &$b) if (!empty($b['seen'])) unset($b['seen_at']);   // opened again: nothing new any more (app/notify.php)
+        unset($b);
         return [['version' => 1, 'next' => $next, 'bugs' => array_values($bugs)], $res];
     });
     m3d_bugs(true);
@@ -143,7 +146,10 @@ function m3d_bugs_rename_item(string $kind, string $old, string $new): void
 {
     if ($old === $new || !is_file(M3D_PRIVATE . '/data/bugs.json')) return;
     m3d_bugs_update(function (array $bugs, int $next) use ($kind, $old, $new) {
-        foreach ($bugs as &$b) if (($b['about'] ?? '') === "$kind:$old") $b['about'] = "$kind:$new";
+        foreach ($bugs as &$b) {
+            if (($b['about'] ?? '') === "$kind:$old") $b['about'] = "$kind:$new";
+            foreach ((array) ($b['log'] ?? []) as $i => $x) if (($x['t'] ?? '') === 'ref' && ($x['item'] ?? '') === "$kind:$old") $b['log'][$i]['item'] = "$kind:$new";   // its "Fixed in" line too
+        }
         unset($b);
         return [$bugs, $next, null];
     });
@@ -267,7 +273,38 @@ function m3d_bug_sent_today(string $patronId): int
 /** Reports the admin hasn't opened yet (the count in the admin menu). */
 function m3d_bugs_unseen(): int
 {
-    return count(array_filter(m3d_bugs(), fn($b) => empty($b['seen'])));
+    return m3d_bug_summary()['unseen'];
+}
+
+/**
+ * What the header needs on every page, without reading every report (see m3d_data_summary()): unseen = the reports the creator hasn't
+ * opened, unseen_c = those of them opened before and with new comments since (`seen_at`, the bell's "commented on"); news = the follower
+ * codes with a followed report that has something new for them (then m3d_bug_news_count() looks closer).
+ */
+function m3d_bug_summary(): array
+{
+    $make = function () {
+        $unseen = $unseenC = 0;
+        $news = [];
+        $codeOf = [];   // Patreon id => its like code, worked out once per commenter
+        foreach (m3d_bugs(true) as $b) {
+            if (empty($b['seen'])) { $unseen++; if (isset($b['seen_at'])) $unseenC++; }
+            if (!empty($b['hidden'])) continue;
+            foreach (m3d_bug_followers($b) as $code => $seen) {
+                if (isset($news[$code])) continue;
+                foreach ((array) ($b['log'] ?? []) as $x) {
+                    if ((int) ($x['at'] ?? 0) <= $seen) continue;
+                    $t = $x['t'] ?? '';
+                    $by = (string) ($x['by'] ?? '');
+                    if (in_array($t, ['s', 'ref'], true) || ($t === 'c' && (!empty($x['admin']) || ($codeOf[$by] ??= m3d_like_code($by)) !== $code))) { $news[$code] = 1; break; }
+                }
+            }
+        }
+        return ['unseen' => $unseen, 'unseen_c' => $unseenC, 'news' => array_keys($news)];
+    };
+    $s = m3d_data_summary('bugs', $make);
+    if (!array_key_exists('unseen_c', $s)) $s = m3d_data_summary('bugs', $make, true);   // saved before unseen_c existed
+    return $s + ['unseen' => 0, 'unseen_c' => 0, 'news' => []];
 }
 
 /** Pinned and open reports about one item that this visitor sees: ['pinned' => [bugs], 'open' => count]. */
@@ -328,6 +365,7 @@ function m3d_changelog_bug_refs(array $log): array
     foreach (array_values($log) as $i => $en) {
         if (!is_array($en)) continue;
         foreach ((array) ($en['changes'] ?? []) as $c) {
+            $c = preg_replace('/`[^`\n]*`|\[[^\]\n]*\]\([^)\s]*\)/', '', (string) $c);   // not inside code or a link, like bug_refs_html()
             if (preg_match_all(BUG_REF_RE, (string) $c, $m)) foreach ($m[1] as $n) $out[(int) $n] = $i;   // newest first: an older version overwrites
         }
     }
@@ -409,21 +447,26 @@ function m3d_bugs_after_save(string $kind, array $old, array $items): void
     foreach ($now as $slug => $ns) foreach ($ns as $n => $i) if (!isset($was[$slug][$n])) $add["$kind:$slug"][$n] = true;
     foreach ($was as $slug => $ns) if (isset($now[$slug])) foreach ($ns as $n => $i) if (!isset($now[$slug][$n])) $drop["$kind:$slug"][$n] = true;
     $hit = fn(array $b, array $set) => isset($set[(string) ($b['about'] ?? '')][(int) ($b['n'] ?? 0)]);
-    if (!array_filter(m3d_bugs(), fn($b) => $hit($b, $add) || $hit($b, $drop))) return;
+    $dropped = function (array $b) use ($drop): ?string {   // the item whose changelog no longer names it, found by its "Fixed in" line (its About may have changed since)
+        foreach ((array) ($b['log'] ?? []) as $x) if (($x['t'] ?? '') === 'ref' && isset($drop[(string) ($x['item'] ?? '')][(int) ($b['n'] ?? 0)])) return (string) $x['item'];
+        return null;
+    };
+    if (!array_filter(m3d_bugs(), fn($b) => $hit($b, $add) || $dropped($b) !== null)) return;
     $at = time();
-    $ok = m3d_bugs_update(function (array $bugs, int $next) use ($add, $drop, $hit, $at) {
+    $ok = m3d_bugs_update(function (array $bugs, int $next) use ($add, $dropped, $hit, $at) {
         foreach ($bugs as &$b) {
             $about = (string) ($b['about'] ?? '');
-            if ($hit($b, $drop)) $b = m3d_bug_unref($b, $about);
+            if (($gone = $dropped($b)) !== null) $b = m3d_bug_unref($b, $gone);
             if ($hit($b, $add) && !array_filter((array) ($b['log'] ?? []), fn($x) => ($x['t'] ?? '') === 'ref' && ($x['item'] ?? '') === $about)) {
                 $st = (string) ($b['status'] ?? 'new');
                 $ref = ['t' => 'ref', 'at' => $at, 'item' => $about];
                 if ($st !== 'fixed') {
                     $locked = !empty($b['locked']);
                     $log = (array) ($b['log'] ?? []);
+                    $ref += ['was' => $st] + array_filter(['wr' => (string) ($b['reason'] ?? ''), 'wd' => (int) ($b['dup'] ?? 0)]);   // a closed report's reason / duplicate, given back with it
                     $b = m3d_bug_set_status($b, 'fixed', $at);
                     $b['log'] = $log;   // the "Fixed in" line says it, not a "Status set to" one
-                    $ref += ['was' => $st] + (!$locked && !empty($b['locked']) ? ['lock' => true] : []);
+                    if (!$locked && !empty($b['locked'])) $ref['lock'] = true;
                 }
                 $b['log'][] = $ref;
                 $b['act'] = $at;
@@ -446,6 +489,8 @@ function m3d_bug_unref(array $b, string $about): array
         if ($i === $last && ($b['status'] ?? '') === 'fixed' && isset($x['was'])) {
             $b['status'] = (string) $x['was'];
             unset($b['fixed']);
+            if (!empty($x['wr'])) $b['reason'] = (string) $x['wr'];
+            if (!empty($x['wd'])) $b['dup'] = (int) $x['wd'];
             if (!empty($x['lock'])) unset($b['locked']);
         }
         unset($log[$i]);
@@ -482,11 +527,12 @@ function m3d_bug_follow(array $b, array $p, int $now): array
     return $b;
 }
 
-/** Log entries of a bug that are new for someone who last opened it at $seen: status changes and other people's comments. */
+/** Log entries of a bug that are new for someone who last opened it at $seen: status changes ("Fixed in" lines while they show, bug_ref_event()) and other people's comments. */
 function m3d_bug_new_entries(array $b, int $seen, string $patronId): array
 {
     return array_filter((array) ($b['log'] ?? []), fn($x) => (int) ($x['at'] ?? 0) > $seen
-        && (in_array($x['t'] ?? '', ['s', 'ref'], true) || (($x['t'] ?? '') === 'c' && (!empty($x['admin']) || (string) ($x['by'] ?? '') !== $patronId))));
+        && (($x['t'] ?? '') === 's' || (($x['t'] ?? '') === 'ref' && ($x['item'] ?? '') === ($b['about'] ?? '')) ||
+            (($x['t'] ?? '') === 'c' && (!empty($x['admin']) || (string) ($x['by'] ?? '') !== $patronId))));
 }
 
 /**
@@ -521,6 +567,7 @@ function bug_news_label(array $entries): string
 /** How many followed reports have something new (the number next to "Bugs" in the menu). */
 function m3d_bug_news_count(?array $p): int
 {
+    if (!m3d_bug_can_follow($p) || !in_array(m3d_like_code((string) $p['id']), m3d_bug_summary()['news'], true)) return 0;   // the usual case: no report read
     return count(array_filter(m3d_bug_following($p)));
 }
 
@@ -616,19 +663,20 @@ function bug_pic_small(string $u): string
     return preg_replace('/\.(webp|jpg)$/', '-sm.$1', $u) ?? $u;
 }
 
-/** Short Discord post about a new report (Settings → Bug Reports → Notify on Discord). A failure is only logged. */
+/** Short Discord post about a new report (Settings → Notifications → New Bug Reports, the creator's channel). A failure is only logged. */
 function m3d_bug_notify(array $b): void
 {
-    $s = m3d_bug_settings();
-    if (!$s['notify'] || !preg_match(DISCORD_WEBHOOK_RE, $s['webhook'])) return;
     $a = m3d_bug_about($b);
-    // the visitor's text as plain text: no masked links ("[this-site/download](https://elsewhere)") or headings in the owner's channel
-    $plain = fn(string $t) => preg_replace('/([\\\\`*_~|>#\[\]()<])/', '\\\\$1', $t);
-    $embed = ['title' => mb_substr('#' . $b['n'] . ' ' . $b['title'], 0, 250), 'url' => abs_url('/bugs/' . $b['n'] . '/'),
-        'description' => mb_substr(trim($a['name'] . ' ' . ($b['ver'] ?? '')) . "\n" . $plain(mb_substr((string) $b['body'], 0, 300)), 0, 700),
-        'color' => hexdec('e8b931'), 'footer' => ['text' => 'New bug report' . (!empty($b['pending']) ? ' · waiting for you' : '')]];
-    $r = m3d_session_pause(fn() => m3d_discord_post($s['webhook'], '', [$embed]));
-    if (empty($r['ok'])) m3d_problem('Bug reports', 'Discord notice failed: ' . ($r['error'] ?? ''));
+    m3d_notify_post('bugs', [['title' => mb_substr('#' . $b['n'] . ' ' . $b['title'], 0, 250), 'url' => abs_url('/bugs/' . $b['n'] . '/'),
+        'description' => mb_substr(trim($a['name'] . ' ' . ($b['ver'] ?? '')) . "\n" . m3d_notify_plain((string) $b['body'], 300), 0, 700),
+        'color' => hexdec('e8b931'), 'footer' => ['text' => 'New bug report · ' . mb_substr((string) ($b['name'] ?? ''), 0, 60) . (!empty($b['pending']) ? ' · waiting for you' : '')]]]);
+}
+
+/** Short Discord post about a visitor's comment on a report (Settings → Notifications → Comments on Bug Reports). */
+function m3d_bug_comment_notify(array $b, string $name, string $text): void
+{
+    m3d_notify_post('bugc', [['title' => mb_substr('Comment on #' . $b['n'] . ' ' . $b['title'], 0, 250), 'url' => abs_url('/bugs/' . $b['n'] . '/#comments'),
+        'description' => mb_substr(m3d_notify_plain($name, 80) . ': ' . m3d_notify_plain($text, 400), 0, 700), 'color' => hexdec('7cb8ff'), 'footer' => ['text' => 'Bug report comment']]]);
 }
 
 // ── Pieces of pages ──────────────────────────────────────────────────────────
@@ -655,7 +703,7 @@ function bug_ref_event(array $b, array $x): string
     [$kind, $slug] = m3d_bug_about_parts((string) ($x['item'] ?? ''));
     $item = $slug !== '' && ($x['item'] ?? '') === ($b['about'] ?? '') ? m3d_item($kind, $slug) : null;
     if (!$item || ($ver = m3d_bug_fixed_in($b, $item)) === '') return '';
-    return 'Fixed in <a class="badge tone-' . BUG_STATUSES['fixed'][1] . ' ev-ref" href="' . e(m3d_item_url($kind, $slug)) . '#changelog">' . e(m3d_model_name($item) . ' ' . bug_version_words($ver)) . '</a>';
+    return 'Fixed in <a class="badge tone-' . BUG_STATUSES['fixed'][1] . ' ev-ref" href="' . e(m3d_version_url($kind, $item, $ver)) . '">' . e(m3d_model_name($item) . ' ' . bug_version_words($ver)) . '</a>';
 }
 
 function bug_status_badge(array $b): string

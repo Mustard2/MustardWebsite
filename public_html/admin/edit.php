@@ -12,6 +12,18 @@ $item = $slug !== '' ? m3d_item($kind, $slug) : null;
 if ($slug !== '' && !$item) m3d_redirect($list);
 $isNew = $item === null;
 $rev = $isNew ? '' : admin_item_rev($item);   // save.php refuses the save when the stored item changed since (another tab, an Images job)
+// History → Load This Version (?from=<saved copy of the data file>): that earlier version fills the editor; the rev stays the one of
+// the item now, so Save puts it back (nothing changes until then). The password hash stays the stored one (save keeps it).
+$loaded = '';
+if (!$isNew && ($from = m3d_get_text('from')) !== '') {
+    require_once __DIR__ . '/_history.php';
+    if ($old = history_item($kind, $from, $slug)) {
+        foreach (history_files($kind) as $f) if ($f['file'] === $from) $loaded = m3d_site_time($f['time'], 'D j M Y, H:i');
+        $item = ['passwordHash' => $item['passwordHash'] ?? null] + array_diff_key($old, ['passwordHash' => 1]);
+        if ($item['passwordHash'] === null) unset($item['passwordHash']);
+        $loaded = $loaded ?: 'an earlier save';
+    }
+}
 $models = m3d_models();
 /** Values in use, most used first: [{v, n, f?}]. $groups (same keys) = the franchise of each game, the one most of its models share;
  *  $extra = values offered even when unused (n 0). Same value with other case / spacing = one entry, in its most used spelling. */
@@ -36,7 +48,15 @@ function admin_value_counts(array $vals, array $groups = [], array $extra = []):
     usort($rows, fn($a, $b) => $b['n'] <=> $a['n'] ?: strnatcasecmp($a['v'], $b['v']));
     return $rows;
 }
-if ($isNew) {
+// Duplicate (?copy=<slug>, the editor's button): a new, unsaved item that starts from that one, as a draft. What belongs to the
+// original alone stays behind: its address, changelog, release dates, password, 3D file and place in the list (likes, counters,
+// comments and bug reports are kept by address, so the copy starts without them)
+$copyOf = $isNew ? m3d_item($kind, m3d_get_text('copy')) : null;
+if ($copyOf) {
+    $item = array_diff_key($copyOf, array_flip(['slug', 'changelog', 'order', 'featured', 'visibility', 'unlisted', 'passwordHash',
+        'patronsFrom', 'publicFrom', 'releaseBefore', 'model3d', 'model3dLight']));
+    $item = ['slug' => '', 'name' => mb_substr($copyOf['name'] . ' (Copy)', 0, 120), 'visibility' => 'draft'] + $item;
+} elseif ($isNew) {
     $item = $kind === 'outfits'
         ? ['slug' => '', 'name' => '', 'models' => [], 'images' => [], 'links' => []]
         : ['slug' => '', 'name' => '', 'franchise' => '', 'status' => 'in-development', 'links' => []];
@@ -49,7 +69,10 @@ unset($item['passwordHash']);
 $payload = [
     'kind'       => $kind,
     'isNew'      => $isNew,
+    'copyOf'     => $copyOf ? (string) $copyOf['name'] : '',
+    'loaded'     => $loaded,   // History → Load This Version: when that version was replaced ('' = the item as stored)
     'rev'        => $rev,
+    'today'      => m3d_site_time(time(), 'd/m/Y'),   // a new version's date: today in site time, not the browser's
     'item'       => $item,
     // the Franchise / Game / Type fields' suggestions: every value in use with how many items use it (suggestField() in admin.js)
     'franchises' => admin_value_counts(array_map(fn($m) => $m['franchise'] ?? '', $models)),
@@ -60,6 +83,7 @@ $payload = [
     'tiers'      => array_map(fn($c, $t) => [$c, $t . ' · ' . m3d_money($c)], array_keys(m3d_known_tiers()), m3d_known_tiers()),   // [cents, "Fan · €10"]: the Access section's tier buttons
     'types'      => admin_value_counts(array_map('m3d_accessory_type', m3d_outfits()), [], M3D_ACCESSORY_TYPES),
     'visibility' => M3D_VISIBILITY,
+    'comments'   => m3d_comments_on($kind),   // the "Allow Comments" switch shows only while comments are on for this kind (app/comments.php)
     'model3d'    => m3d_model3d_facts($item),   // the 3D preview's facts (size, triangles, textures) or why it can't be shown
     's4'         => m3d_s4()['bucket'] !== '' && m3d_s4_on(),   // MEGA S4 on with a bucket: download links may be "s4:<file>" (the S4… picker)
     'deadLinks'  => array_map(fn() => true, lc_dead_for($item)),   // Link Check: these addresses get red fields + a broken chain (markDead() in admin.js)
@@ -80,7 +104,7 @@ admin_start($isNew ? 'New ' . ucfirst($what) : 'Edit ' . $item['name'], $kind);
         <h1><?= $isNew ? 'New ' . ucfirst($what) : e($item['name']) ?></h1>
       </div>
       <div class="head-actions">
-        <?php if (!$isNew): ?><a class="btn btn-ghost" href="<?= e($public) ?>" target="_blank">View Page ↗</a><?php endif ?>
+        <?php if (!$isNew): ?><a class="btn btn-ghost" href="/admin/edit.php?kind=<?= e($kind) ?>&amp;copy=<?= e(rawurlencode((string) $item['slug'])) ?>" title="A new <?= e($what) ?> that starts as a copy of this one (a draft, saved only when you press Save)" data-duplicate>Duplicate</a><button type="button" class="btn btn-ghost" data-history>History</button><a class="btn btn-ghost" href="/admin/stats.php?of=<?= e($kind . ':' . rawurlencode((string) $item['slug'])) ?>">Stats</a><a class="btn btn-ghost" href="<?= e($public) ?>">View Page</a><?php endif ?>
         <button class="btn btn-primary" data-save>Save</button>
       </div>
       <nav class="set-menu ed-menu" aria-label="Sections" data-ed-menu hidden></nav>   <!-- admin.js: one button per section of the form -->

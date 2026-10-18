@@ -12,7 +12,7 @@ require_once dirname(__DIR__) . '/app/version.php';
 const ALLOWED_EXT = ['php', 'js', 'css', 'svg', 'png', 'jpg', 'jpeg', 'webp', 'gif', 'ico', 'txt', 'md', 'json', 'woff2'];
 const MEDIA_EXT = ['webp', 'png', 'jpg', 'jpeg', 'gif', 'glb'];   // glb: 3D previews (app/model3d.php)
 /** Data files restored only with their own tick box: the counters (stats, likes, who saw the welcome page) and the bug reports; every other one is the site's content. */
-const DATA_PARTS = ['stats' => 'counters', 'likes' => 'counters', '.likes-key' => 'counters', 'welcomed' => 'counters', 'ignored' => 'counters', 'logins' => 'counters', 'bugs' => 'bugs'];
+const DATA_PARTS = ['stats' => 'counters', 'likes' => 'counters', '.likes-key' => 'counters', 'welcomed' => 'counters', 'ignored' => 'counters', 'logins' => 'counters', 'comments' => 'counters', 'notify' => 'counters', 'bugs' => 'bugs'];
 
 /** A restore that failed after it had written something: what was put back before the failure stays (the "before restore" backup undoes it). */
 class RestorePartial extends RuntimeException {}
@@ -190,7 +190,7 @@ function install_code(ZipArchive $zip, string $prefix = ''): array
             $old = null;
             if (is_file($dest)) {
                 $old = "$dest.upd-old-$token";
-                // a plain copy: link() is disabled on many shared hosts (Hostinger), and a disabled function can't even be called
+                // a plain copy: link() is disabled on many shared hosts, and a disabled function can't even be called
                 if (!@copy($dest, $old)) throw new RuntimeException("Could not keep a copy of $path");
             }
             if (!@rename($t, $dest)) { if ($old !== null) @unlink($old); throw new RuntimeException("Could not replace $path"); }
@@ -329,6 +329,7 @@ function restore_full(string $path, array $parts): array
             $dir = M3D_PRIVATE . '/data';
             $prev = m3d_settings(true);
             $owners = (array) ($prev['owners'] ?? []);   // the admins: kept when the backup's settings have none (else the site goes back to /setup/)
+            $announced = array_column(array_filter(m3d_blog(true)['posts'], fn($p) => !empty($p['announced'])), 'id');   // blog posts Discord already has
             foreach ($data as $base => $bytes) {
                 // the version being replaced also goes into the change history, like any other save
                 if (str_ends_with($base, '.json') && data_part($base) !== 'counters' && is_file("$dir/$base")) @copy("$dir/$base", bk_dir() . '/' . substr($base, 0, -5) . '-' . gmdate('Ymd-His') . '-' . bin2hex(random_bytes(2)) . '.json');
@@ -337,28 +338,37 @@ function restore_full(string $path, array $parts): array
                 $changed = true;
             }
             if ($want('content')) {
-                // content files that didn't exist yet in the backup (e.g. the FAQ before its first save) go back to the defaults
+                // content files that didn't exist yet in the backup (e.g. the FAQ before its first save, the blog before its first post) go back to the defaults
                 foreach (data_files() as $f) {
-                    if (!isset($inZip[basename($f)]) && in_array(preg_replace('/\.json$/', '', basename($f)), ['faq', 'docs', 'settings'], true)) { @unlink($f); $changed = true; }
+                    if (!isset($inZip[basename($f)]) && in_array(preg_replace('/\.json$/', '', basename($f)), ['faq', 'docs', 'settings', 'blog', 'gallery'], true)) { @unlink($f); $changed = true; }
                 }
                 if ($owners && empty(m3d_settings(true)['owners'])) m3d_save_settings(['owners' => $owners]);
                 // settings.json also holds state that isn't content: what Discord already posted and which release dates were
-                // announced (an old copy would post them again), and the bug-report settings (tags, blocked people), which go
-                // with the bug reports' own tick box
+                // announced (an old copy would post them again), and the bug-report and comment settings (tags, blocked people), which go
+                // with the bug reports' own tick box and with the comments (counters)
                 $restored = m3d_settings(true);
                 $keep = ['release' => $prev['release'] ?? null];
                 if (is_array($prev['discord'] ?? null)) {
                     $keep['discord'] = array_intersect_key($prev['discord'], array_flip(['sent', 'retry', 'last', 'stills_sent', 'stills_queue', 'stills_due', 'stills_tries'])) + (is_array($restored['discord'] ?? null) ? $restored['discord'] : []);
                 }
                 if (!$want('bugs')) $keep['bugs'] = $prev['bugs'] ?? null;
+                if (!isset($data['comments.json'])) $keep['comments'] = $prev['comments'] ?? null;
                 m3d_save_settings($keep);
+                // the same for blog posts: one announced since the backup was made keeps its mark (m3d_blog_discord_run() would post it again)
+                $posts = m3d_blog(true)['posts'];
+                $marked = false;
+                foreach ($posts as &$p) if (empty($p['announced']) && in_array($p['id'], $announced, true)) { $p['announced'] = true; unset($p['tries']); $marked = true; }
+                unset($p);
+                if ($marked) m3d_save_blog($posts);
                 $done[] = 'content';
-            } elseif ($want('bugs') && isset($data['bugs.json'])) {
-                // bug reports without the content: their settings (tags, blocked people) come from the backup's settings.json too
+            } else {
+                // bug reports or comments without the content: their settings (tags, blocked people…) come from the backup's settings.json too
                 $old = json_decode((string) $zip->getFromName('data/settings.json'), true);
-                if (is_array($old['bugs'] ?? null)) m3d_save_settings(['bugs' => $old['bugs']]);
+                $take = array_filter(['bugs' => isset($data['bugs.json']), 'comments' => isset($data['comments.json'])]);
+                $take = is_array($old) ? array_filter(array_intersect_key($old, $take), 'is_array') : [];
+                if ($take) m3d_save_settings($take);
             }
-            if ($want('counters')) $done[] = 'download counts and likes';
+            if ($want('counters')) $done[] = 'download counts, likes and comments';
             if ($want('bugs') && isset($data['bugs.json'])) $done[] = 'bug reports';
         }
         if ($want('log') && ($bytes = $zip->getFromName('logs/downloads.csv')) !== false) {
@@ -439,6 +449,12 @@ function restore_data_version(string $file): string
         if (is_array($now['discord'] ?? null)) {
             $data['discord'] = array_intersect_key($now['discord'], array_flip(['sent', 'retry', 'last', 'stills_sent', 'stills_queue', 'stills_due', 'stills_tries'])) + (is_array($data['discord'] ?? null) ? $data['discord'] : []);
         }
+    }
+    if ($m[1] === 'blog' && is_array($data['posts'] ?? null)) {
+        // blog posts Discord already has keep their mark (m3d_blog_discord_run() would post them again)
+        $announced = array_column(array_filter(m3d_blog(true)['posts'], fn($p) => !empty($p['announced'])), 'id');
+        foreach ($data['posts'] as &$p) if (is_array($p) && in_array($p['id'] ?? '', $announced, true)) { $p['announced'] = true; unset($p['tries']); }
+        unset($p);
     }
     if (!m3d_write_json($m[1], $data)) throw new RuntimeException(m3d_write_error('data'));
     return $m[1];

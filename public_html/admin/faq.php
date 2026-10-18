@@ -13,7 +13,7 @@ admin_start('FAQ', 'faq');
         <h1>FAQ</h1>
       </div>
       <div class="head-actions">
-        <a class="btn btn-ghost" href="/faq/" target="_blank">View Page ↗</a>
+        <a class="btn btn-ghost" href="/faq/">View Page</a>
         <button class="btn btn-primary" data-save>Save</button>
       </div>
     </div>

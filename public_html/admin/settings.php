@@ -6,18 +6,6 @@ require __DIR__ . '/_admin.php';
 require_once dirname(__DIR__) . '/app/version.php';
 admin_require($M3D);
 
-// Features that are only switched on or off (settings.json → <key>.on): title, its help, switch label, link shown while on, messages (on, off)
-const FEATURE_SWITCHES = [
-    'mustardui' => ['MustardUI', 'Ready-made page about MustardUI, the free Blender add-on: features, download, guides and bug reports. Turn on if your models use it.',
-        'Enable MustardUI Page',
-        ['/mustardui/', 'View the Page ↗', true],
-        'The MustardUI page is on: it is in the menu and the footer.', 'The MustardUI page is off: no menu item, and /mustardui/ shows “not found”.'],
-    'smutbase'  => ['SmutBase Import', 'Imports the models of a SmutBase profile as draft models (texts, changelog, pictures). Only useful if you publish on SmutBase.',
-        'Enable SmutBase Import',
-        ['/admin/import.php', 'Open the Import', false],
-        'SmutBase import is on: the button is on Admin → Models.', 'SmutBase import is off.'],
-];
-
 /** Files matching a glob pattern: [count, bytes]. */
 function files_stats(array $files): array
 {
@@ -259,7 +247,12 @@ if (admin_form_post()) {
         case 'timezone':
             $tzId = (string) ($_POST['timezone'] ?? '');
             if (!in_array($tzId, DateTimeZone::listIdentifiers(), true)) { $error = 'Pick a time zone from the list.'; break; }
-            $save(['timezone' => $tzId === SITE_TZ_DEFAULT ? null : $tzId], 'Time zone saved: ' . str_replace('_', ' ', $tzId) . '.');
+            $tzDone = (array) (m3d_settings(true)['release']['done'] ?? []);
+            if (!$save(['timezone' => $tzId === SITE_TZ_DEFAULT ? null : $tzId], 'Time zone saved: ' . str_replace('_', ' ', $tzId) . '.')) break;
+            // a version day starts at another moment now: its release code changes, so the posted ones keep their mark and the next due time is worked out again
+            $tzKeys = [];
+            foreach (m3d_release_events() as $code => $ev) $tzKeys["$ev[0]:$ev[1]:$ev[2]"] = $code;
+            m3d_release_store(array_map(fn($c) => preg_match('/^(.+:v):\d+$/', (string) $c, $mm) && isset($tzKeys[$mm[1]]) ? $tzKeys[$mm[1]] : $c, $tzDone));
             break;
         case 'discord':
         case 'discord-test':
@@ -283,6 +276,27 @@ if (admin_form_post()) {
                 $embed['author'] = ['name' => 'Test message: this is how new versions will look'];
                 $res = m3d_session_pause(fn() => m3d_discord_post($hook, $msg, [$embed]));
                 if ($res['ok']) $done = 'Test message sent: check the Discord channel.' . ($on ? '' : ' Turn on “Announce New Versions” to turn the announcements on.');
+                else $error = $res['error'];
+            }
+            break;
+        case 'notify':
+        case 'notify-test':
+            $hook = trim((string) ($_POST['notify_webhook'] ?? ''));
+            $new = ['bell' => [], 'discord' => [], 'webhook' => $hook];
+            foreach (NOTIFY_EVENTS as $k => $_) {
+                $new['bell'][$k] = !empty($_POST['bell_' . $k]);
+                $new['discord'][$k] = !empty($_POST['discord_' . $k]);
+            }
+            if ($hook !== '' && !preg_match(DISCORD_WEBHOOK_RE, $hook)) { $error = 'That isn’t a Discord webhook address: in Discord, open the channel’s settings → Integrations → Webhooks, then “Copy Webhook URL”.'; break; }
+            if ($hook === '' && (array_filter($new['discord']) || $_POST['do'] === 'notify-test')) { $error = 'Paste the webhook address of your private channel first.'; break; }
+            if (!$save(['notify' => $new], 'Notifications saved.')) break;
+            if ($_POST['do'] === 'notify-test') {
+                $done = null;
+                $on = array_map(fn($k) => NOTIFY_EVENTS[$k][0], array_keys(array_filter($new['discord'])));
+                $res = m3d_session_pause(fn() => m3d_discord_post($hook, '', [['title' => 'Test message from ' . site_name(), 'url' => abs_url('/admin/settings.php?tab=notify'),
+                    'description' => $on ? "This channel gets:\n• " . implode("\n• ", $on) : 'Nothing is switched on for Discord yet.', 'color' => hexdec('e8b931'),
+                    'footer' => ['text' => 'Settings → Notifications']]]));
+                if ($res['ok']) $done = 'Test message sent: check the Discord channel.';
                 else $error = $res['error'];
             }
             break;
@@ -341,7 +355,7 @@ if (admin_form_post()) {
                     }
                     return ['ok' => false, 'err' => m3d_s4_error_text('SignatureDoesNotMatch')];
                 });
-                // the same file through the Download Domain (the Cloudflare Worker), when it is served there
+                // the same file through the Download Domain (the proxy in front of the bucket), when it is served there
                 if ($s4Test['ok'] && ($s4Test['file'] ?? '') !== '' && $s4['domain'] !== '') {
                     $v = m3d_session_pause(fn() => m3d_s4_probe((string) $s4Test['file'], $s4['region'], $s4, true));
                     if ($v['err'] !== 'not via domain') $s4Test['via'] = $v;
@@ -355,15 +369,11 @@ if (admin_form_post()) {
             if (!$done) $error = 'Could not delete ' . basename(M3D_PRIVATE) . '/s4.php.';
             break;
         case 'bugs':
-            $hook = trim((string) ($_POST['bugs_webhook'] ?? ''));
             $host = trim((string) ($_POST['bugs_host'] ?? ''));
-            $notify = !empty($_POST['bugs_notify']);
-            if ($hook !== '' && !preg_match(DISCORD_WEBHOOK_RE, $hook)) { $error = 'The webhook address doesn’t look right: copy it again from Discord (https://discord.com/api/webhooks/…).'; break; }
-            if ($notify && $hook === '') { $error = 'Paste a webhook address to be told on Discord about new reports.'; break; }
             if ($host !== '' && !is_https_url($host)) { $error = 'The upload website must be an address starting with https://'; break; }
             $on = !empty($_POST['bugs_on']);
             $ok = m3d_bug_settings_save(['on' => $on, 'who' => ($_POST['bugs_who'] ?? '') === 'paying' ? 'paying' : 'any', 'host' => mb_substr($host, 0, 300),
-                'uploads' => !empty($_POST['bugs_uploads']), 'moderate' => !empty($_POST['bugs_moderate']), 'notify' => $notify, 'webhook' => $hook,
+                'uploads' => !empty($_POST['bugs_uploads']), 'moderate' => !empty($_POST['bugs_moderate']),
                 'per_day' => max(1, min(50, (int) ($_POST['bugs_per_day'] ?? 5)))]);
             if ($ok) $done = $on ? 'Bug reports are on: /bugs/ is in the footer and on model and accessory pages.' : 'Bug reports are off: /bugs/ shows “not found” to visitors.';
             else $error = m3d_write_error();
@@ -374,6 +384,42 @@ if (admin_form_post()) {
             if (!in_array($id, $blocked, true)) break;
             if (m3d_bug_settings_save(['blocked' => array_values(array_diff($blocked, [$id]))])) $done = 'Unblocked: they can post bug reports again.';
             else $error = m3d_write_error();
+            break;
+        case 'comments':
+            $on = !empty($_POST['cm_on']);
+            $ok = m3d_comment_settings_save(['on' => $on, 'models' => !empty($_POST['cm_models']), 'outfits' => !empty($_POST['cm_outfits']), 'posts' => !empty($_POST['cm_posts']),
+                'who' => ($_POST['cm_who'] ?? '') === 'paying' ? 'paying' : 'any', 'moderate' => !empty($_POST['cm_moderate']),
+                'per_day' => max(1, min(100, (int) ($_POST['cm_per_day'] ?? 10)))]);
+            if ($ok) $done = $on ? 'Comments are on: they show under the pages you picked (each page can turn them off in its editor).' : 'Comments are off: none are shown, and they are kept.';
+            else $error = m3d_write_error();
+            break;
+        case 'comments-unblock':
+            $id = (string) ($_POST['who'] ?? '');
+            $blocked = m3d_comment_settings()['blocked'];
+            if (!in_array($id, $blocked, true)) break;
+            if (m3d_comment_settings_save(['blocked' => array_values(array_diff($blocked, [$id]))])) $done = 'Unblocked: they can comment again.';
+            else $error = m3d_write_error();
+            break;
+        case 'comments-approve':
+        case 'comments-delete':
+            $id = (int) ($_POST['id'] ?? 0);
+            $del = $_POST['do'] === 'comments-delete';
+            if (!m3d_comment_find($id)) { $done = 'That comment is gone already.'; break; }
+            if (m3d_comment_change($id, function ($c) use ($del) { if ($del) return null; unset($c['pending']); return $c; })) {
+                $done = $del ? 'Comment deleted.' : 'Comment published.';
+                if (!$del) m3d_notify_read('c' . $id);   // read in the bell too, as Publish there does
+            } else $error = m3d_write_error();
+            break;
+        case 'comments-clear':
+            $n = m3d_comments_clear();
+            if ($n === null) $error = m3d_write_error();
+            else $done = $n ? 'Deleted ' . m3d_plural($n, 'comment') . ': every page starts with none.' : 'There were no comments to delete.';
+            break;
+        case 'blog':
+            $on = !empty($_POST['blog_on']);
+            $txt = fn(string $k, int $max) => trim(mb_substr(preg_replace('/\s+/u', ' ', is_string($_POST[$k] ?? null) ? $_POST[$k] : ''), 0, $max));
+            $save(['blog' => ['on' => $on, 'title' => $txt('blog_title', 80), 'intro' => $txt('blog_intro', 300)]],
+                $on ? 'The blog is on: it is in the menu once it has a post.' : 'The blog is off: /blog/ shows “not found” to visitors.');
             break;
         case 'welcome':
             $old = m3d_welcome();
@@ -419,7 +465,7 @@ $opcache = function_exists('opcache_get_status') ? @opcache_get_status(false) : 
 if (isset($_GET['tools'])) {
     session_write_close();   // don't keep the login locked while counting: other admin pages stay usable
     @set_time_limit(60);
-    define('STATS_UNTIL', microtime(true) + 25);   // stop well before the server or Cloudflare gives up, and say so
+    define('STATS_UNTIL', microtime(true) + 25);   // stop well before the server or a proxy in front of it gives up, and say so
     ob_start();   // a PHP warning printed by the server would break the JSON answer
     $part = m3d_get_text('tools');
     try {
@@ -672,6 +718,33 @@ admin_start('Settings', 'settings');
 
     <?php endif ?>
 
+    <?php if ($tab === 'notify'): ?>
+    <?php $ns = m3d_notify_settings(); ?>
+    <section class="sec" id="notify">
+      <h2 class="small-h">Notifications<?= tip('What tells you that something needs a look: the bell in the header (here and, for you, on the site), and a private Discord channel. Announcements to patrons are in Features → Discord Announcements.') ?></h2>
+      <form method="post" autocomplete="off" class="set-list">
+        <?= form_keys() ?>
+        <button class="dc-enter" name="do" value="notify" tabindex="-1" aria-hidden="true"></button><?php /* Enter in a field = Save, not the test message */ ?>
+        <div class="nt-set" role="table" aria-label="Notifications">
+          <div class="nt-set-row nt-set-head" role="row"><span role="columnheader">Event</span><span role="columnheader">Bell</span><span role="columnheader">Discord</span></div>
+          <?php foreach (NOTIFY_EVENTS as $k => [$label, $help]):
+              $off = !m3d_notify_feature($k); ?>
+            <div class="nt-set-row<?= $off ? ' is-off' : '' ?>" role="row">
+              <span role="cell"><?= e($label) ?><?= tip($help . ($off ? ' ' . ($k === 'comments' ? 'Comments are' : 'Bug reports are') . ' off in Features.' : '')) ?></span>
+              <span role="cell"><input type="checkbox" class="switch" name="bell_<?= $k ?>" value="1" aria-label="<?= e($label) ?> in the bell" <?= $ns['bell'][$k] ? 'checked' : '' ?> /></span>
+              <span role="cell"><input type="checkbox" class="switch" name="discord_<?= $k ?>" value="1" aria-label="<?= e($label) ?> on Discord" <?= $ns['discord'][$k] ? 'checked' : '' ?> /></span>
+            </div>
+          <?php endforeach ?>
+        </div>
+        <label class="field"><span class="lbl">Private Webhook URL<?= tip('A Discord channel only you can read: posts include patrons’ names and what they wrote. In Discord: channel settings → Integrations → Webhooks → New Webhook → “Copy Webhook URL”.') ?></span>
+          <input class="input dc-hook" type="url" name="notify_webhook" value="<?= e($ns['webhook']) ?>" placeholder="https://discord.com/api/webhooks/…" spellcheck="false" autocomplete="off" /></label>
+        <div class="form-actions">
+          <button class="btn btn-ghost btn-sm" name="do" value="notify-test">Save and Send a Test</button><button class="btn btn-primary btn-sm" name="do" value="notify">Save</button>
+        </div>
+      </form>
+    </section>
+    <?php endif ?>
+
     <?php if ($tab === 'patreon'): ?>
     <?php $pt = m3d_patreon_saved();
           $ptVal = fn(string $k) => (string) ($pt[$k] ?? '');
@@ -725,32 +798,27 @@ admin_start('Settings', 'settings');
     <?php endif ?>
 
     <?php if ($tab === 'features'): ?>
-    <?php $wl = m3d_welcome(); ?>
-    <section class="sec" id="welcome">
-      <h2 class="small-h">Welcome Page <span class="badge tone-<?= $wl['on'] ? 'green' : 'grey' ?>"><?= $wl['on'] ? 'On' : 'Off' ?></span><?= tip('A page that shows new patrons around the site, once, right after their first login: how downloads and unlocks work (from your rules), updates and help. Then it sends them where they were going.') ?></h2>
+    <?php $bl = m3d_blog_settings(); $blRaw = m3d_settings()['blog'] ?? []; ?>
+    <section class="sec" id="blog">
+      <h2 class="small-h">Blog <span class="badge tone-<?= $bl['on'] ? 'green' : 'grey' ?>"><?= $bl['on'] ? 'On' : 'Off' ?></span><?= tip('News, works in progress and tutorials at /blog/, written in Admin → Blog. Patrons can like posts.') ?></h2>
       <form method="post" class="set-list">
-        <?= form_keys('welcome') ?>
-        <label class="toggle"><input type="checkbox" class="switch" name="welcome_on" value="1" <?= $wl['on'] ? 'checked' : '' ?> /><span>Show After the First Login<?= tip('Paying patrons and people with a Bypass Tier exception. Admins never get it. Patrons can open it again from My Account.') ?></span></label>
-        <label class="toggle"><input type="checkbox" class="switch" name="welcome_skip_old" value="1" <?= $wl['skip_old'] ? 'checked' : '' ?> /><span>Skip Patrons Who Downloaded Before<?= tip('People with a download from before you turned the page on don’t get it.') ?></span></label>
-        <label class="field"><span class="lbl">Intro Text<?= tip('Under the title. Empty = “Thanks for supporting ' . site_name() . ' on Patreon. Here’s a quick tour, so you know where everything is.”') ?></span>
-          <textarea class="input" name="welcome_text" rows="3" maxlength="<?= WELCOME_TEXT_MAX ?>" placeholder="<?= e(m3d_welcome_text()) ?>"><?= e($wl['text']) ?></textarea></label>
-        <label class="field"><span class="lbl">Before Your First Download<?= tip('The line next to the Getting Started links of Admin → Models. The box shows only while there are links.') ?></span>
-          <input class="input" name="welcome_start" maxlength="<?= WELCOME_START_MAX ?>" value="<?= e($wl['start']) ?>" placeholder="Most models need a recent Blender. Start here:" /></label>
+        <?= form_keys('blog') ?>
+        <label class="toggle"><input type="checkbox" class="switch" name="blog_on" value="1" <?= $bl['on'] ? 'checked' : '' ?> /><span>Enable Blog<?= tip('Adds “Blog” to the menu and the footer once there is a post. Off: /blog/ returns “not found” (admins still see it).') ?></span></label>
+        <label class="field"><span class="lbl">Page Title</span>
+          <input class="input" name="blog_title" maxlength="80" value="<?= e((string) ($blRaw['title'] ?? '')) ?>" placeholder="Blog" /></label>
+        <label class="field"><span class="lbl">Line Under the Title<?= tip('Optional. Links and **bold** work.') ?></span>
+          <input class="input" name="blog_intro" maxlength="300" value="<?= e($bl['intro']) ?>" placeholder="Release notes, works in progress and how the models are made." /></label>
         <div class="form-actions">
-          <button class="btn btn-ghost btn-sm act-left" form="welcome-reset">Show Again to Everyone</button>
-          <a class="btn btn-ghost btn-sm" href="/welcome/" target="_blank">Preview ↗</a>
+          <a class="btn btn-ghost btn-sm" href="/admin/blog.php">Write Posts</a>
           <button class="btn btn-primary btn-sm">Save</button>
         </div>
-      </form>
-      <form method="post" id="welcome-reset" hidden onsubmit="return confirm('Show the welcome page again to every patron, the next time they log in? Patrons who saw it already will see it once more.')">
-        <?= form_keys('welcome-reset') ?>
       </form>
     </section>
 
     <?php $bs = m3d_bug_settings(); ?>
     <section style="margin-top:20px" class="sec" id="bugs">
       <h2 class="small-h">Bug Reports <span class="badge tone-<?= $bs['on'] ? 'green' : 'grey' ?>"><?= $bs['on'] ? 'On' : 'Off' ?></span></h2>
-      <form method="post" autocomplete="off" class="set-list" data-bugs-form>
+      <form method="post" autocomplete="off" class="set-list">
         <?= form_keys('bugs') ?>
         <label class="toggle"><input type="checkbox" class="switch" name="bugs_on" value="1" <?= $bs['on'] ? 'checked' : '' ?> /><span>Enable Bug Reports<?= tip('Adds “Bug Reports” to the footer and a “Found a bug?” box on model and accessory pages. Off: /bugs/ returns “not found” (admins still see it).') ?></span></label>
         <div class="set-grps">
@@ -769,11 +837,7 @@ admin_start('Settings', 'settings');
             <label class="field"><span class="lbl">Screenshot Host<?= tip('Suggested on the report form for screenshot links. Pictures stay on that site; reports show them only as links. Empty = no suggestion.') ?></span>
               <input class="input" type="url" name="bugs_host" maxlength="300" value="<?= e($bs['host']) ?>" placeholder="https://catbox.moe" spellcheck="false" /></label>
           </div>
-          <div class="set-grp"><h3>Discord</h3>
-            <label class="toggle"><input type="checkbox" class="switch" name="bugs_notify" value="1" <?= $bs['notify'] ? 'checked' : '' ?> /><span>Post New Reports<?= tip('Posts each new report to a Discord channel. Use a private channel: posts include the report text.') ?></span></label>
-            <label class="field bugs-hook"><span class="lbl">Webhook URL<?= tip('Channel settings → Integrations → Webhooks → New Webhook → “Copy Webhook URL”.') ?></span>
-              <input class="input dc-hook" type="url" name="bugs_webhook" value="<?= e($bs['webhook']) ?>" placeholder="https://discord.com/api/webhooks/…" spellcheck="false" autocomplete="off" /></label>
-          </div>
+          <?= notify_group('bugs', 'bugc') ?>
         </div>
         <div class="form-actions"><a class="btn btn-ghost btn-sm" href="/bugs/">Open Bug Reports</a><button class="btn btn-primary btn-sm">Save</button></div>
       </form>
@@ -786,6 +850,60 @@ admin_start('Settings', 'settings');
           <?php foreach ($bs['blocked'] as $id): ?>
             <form method="post" class="inline-row"><?= form_keys('bugs-unblock') ?><input type="hidden" name="who" value="<?= e($id) ?>" />
               <span><b><?= e($names[$id][0] ?? 'Someone') ?></b> <span class="muted small">Patreon ID <?= e($id) ?></span></span>
+              <button class="btn btn-ghost btn-sm">Unblock</button></form>
+          <?php endforeach ?>
+        </div>
+      <?php endif ?>
+    </section>
+
+    <?php $cs = m3d_comment_settings(); $cmCount = m3d_comments_count(); $cmWait = m3d_comments_pending(); ?>
+    <section style="margin-top:20px" class="sec" id="comments">
+      <h2 class="small-h">Comments <span class="badge tone-<?= $cs['on'] ? 'green' : 'grey' ?>"><?= $cs['on'] ? 'On' : 'Off' ?></span><?= tip('Logged-in patrons write comments under model, accessory and blog post pages, shown with their Patreon name. Each page can turn them off with “Allow Comments” in its editor.') ?></h2>
+      <form method="post" autocomplete="off" class="set-list">
+        <?= form_keys('comments') ?>
+        <label class="toggle"><input type="checkbox" class="switch" name="cm_on" value="1" <?= $cs['on'] ? 'checked' : '' ?> /><span>Enable Comments<?= tip('Off: no comments are shown anywhere and nobody can write one. They are kept, and come back when you turn this on again.') ?></span></label>
+        <div class="set-grps">
+          <div class="set-grp"><h3>Where</h3>
+            <?php foreach (COMMENT_KINDS as $k => $label): ?>
+              <label class="toggle"><input type="checkbox" class="switch" name="cm_<?= $k ?>" value="1" <?= $cs[$k] ? 'checked' : '' ?> /><span><?= e($label) ?></span></label>
+            <?php endforeach ?>
+          </div>
+          <div class="set-grp"><h3>Posting</h3>
+            <div class="field"><span class="lbl">Who Can Comment<?= tip('Everyone who can see the page can read its comments, logged in or not.') ?></span>
+              <div class="vis-seg bugs-who">
+                <label class="vis-opt"><input type="radio" name="cm_who" value="any" <?= $cs['who'] === 'any' ? 'checked' : '' ?> />Any Account</label>
+                <label class="vis-opt"><input type="radio" name="cm_who" value="paying" <?= $cs['who'] === 'paying' ? 'checked' : '' ?> />Paying Patrons</label>
+              </div></div>
+            <label class="field bugs-num"><span class="lbl">Comments per Day<?= tip('How many comments one person can write in 24 hours, on all pages together. Yours don’t count.') ?></span>
+              <input class="input" type="number" name="cm_per_day" min="1" max="100" value="<?= (int) $cs['per_day'] ?>" /></label>
+            <label class="toggle"><input type="checkbox" class="switch" name="cm_moderate" value="1" <?= $cs['moderate'] ? 'checked' : '' ?> /><span>Check Before Showing<?= tip('New comments are visible only to their author (and you) until you publish them, here or with ⋯ → Publish on the page.') ?></span></label>
+          </div>
+          <?= notify_group('comments') ?>
+        </div>
+        <div class="form-actions">
+          <button class="btn btn-ghost btn-sm act-left btn-danger" form="comments-clear"<?= $cmCount ? '' : ' disabled' ?>>Delete All Comments<?= $cmCount ? ' (' . $cmCount . ')' : '' ?></button>
+          <button class="btn btn-primary btn-sm">Save</button>
+        </div>
+      </form>
+      <form method="post" id="comments-clear" hidden onsubmit="return confirm(<?= e(json_encode('Delete all ' . m3d_plural($cmCount, 'comment') . ' on every model, accessory and blog post? This can’t be undone (only a backup brings them back).', JSON_UNESCAPED_UNICODE)) ?>)">
+        <?= form_keys('comments-clear') ?>
+      </form>
+      <?php if ($cmWait): ?>
+        <div class="field bugs-blocked cm-waiting"><span class="lbl">Waiting for Approval <span class="badge tone-sky"><?= count($cmWait) ?></span></span>
+          <?php foreach (array_slice($cmWait, 0, 20) as [$k, $key, $c]): [$title, $url] = m3d_comment_page($k, $key); ?>
+            <form method="post" class="inline-row"><?= form_keys() ?><input type="hidden" name="id" value="<?= (int) $c['id'] ?>" />
+              <span class="cm-w-txt"><b><?= e(($c['name'] ?? '') ?: 'Someone') ?></b> <span class="muted small">on <?= $url !== '' ? '<a href="' . e($url . '#cm-' . (int) $c['id']) . '">' . e($title) . '</a>' : e($title) ?> · <?= e(bug_ago((int) ($c['at'] ?? 0))) ?></span>
+                <span class="cm-w-body"><?= e(mb_strimwidth(preg_replace('/\s+/u', ' ', (string) ($c['text'] ?? '')) ?? '', 0, 160, '…')) ?></span></span>
+              <span class="row-btns"><button class="btn btn-ghost btn-sm" name="do" value="comments-delete" onclick="return confirm('Delete this comment?')">Delete</button><button class="btn btn-primary btn-sm" name="do" value="comments-approve">Publish</button></span></form>
+          <?php endforeach ?>
+        </div>
+      <?php endif ?>
+      <?php if ($cs['blocked']):
+          $names = m3d_known_patrons(); ?>
+        <div class="field bugs-blocked"><span class="lbl">Blocked Users</span>
+          <?php foreach ($cs['blocked'] as $id): ?>
+            <form method="post" class="inline-row"><?= form_keys('comments-unblock') ?><input type="hidden" name="who" value="<?= e($id) ?>" />
+              <span><b><?= e(($names[$id] ?? '') ?: 'Someone') ?></b> <span class="muted small">Patreon ID <?= e($id) ?></span></span>
               <button class="btn btn-ghost btn-sm">Unblock</button></form>
           <?php endforeach ?>
         </div>
@@ -805,8 +923,9 @@ admin_start('Settings', 'settings');
             <label class="field"><span class="lbl">Webhook URL<?= tip('Channel settings (gear icon) → Integrations → Webhooks → New Webhook → “Copy Webhook URL”. Anyone with this URL can post in the channel: keep it private (shown only while editing).') ?></span>
               <input class="input dc-hook" type="url" name="discord_webhook" value="<?= e($dc['webhook']) ?>" placeholder="https://discord.com/api/webhooks/…" spellcheck="false" autocomplete="off" data-dc-hook />
               <span class="dc-hook-state small" data-dc-hook-state></span></label>
-            <label class="field"><span class="lbl">Intro Message<?= tip('Optional line above each post, e.g. “New update!”. Use @everyone or a role mention to ping people.') ?></span>
-              <input class="input" name="discord_message" value="<?= e($dc['message']) ?>" maxlength="300" placeholder="New update!" data-dc-message /></label>
+            <label class="field"><span class="lbl">Intro Message<?= tip('Optional line above each post, e.g. “New update!”. Use @everyone, @here or a role’s code to ping people: a role written as plain text (@Notifications) pings no one. To get the code, send \\@RoleName in any Discord channel and copy what Discord shows (<@&…>).') ?></span>
+              <input class="input" name="discord_message" value="<?= e($dc['message']) ?>" maxlength="300" placeholder="New update!" data-dc-message />
+              <span class="dc-hook-state small res-err" data-dc-ment-warn><?= e(discord_plain_mention_warning($dc['message'])) ?></span></label>
           </div>
           <div class="dc-side">
             <?php $dcs = m3d_discord_sample(); ?>
@@ -820,6 +939,28 @@ admin_start('Settings', 'settings');
           <?php endif ?>
           <button class="btn btn-ghost btn-sm" name="do" value="discord-test">Save and Send a Test Message</button><button class="btn btn-primary btn-sm" name="do" value="discord">Save</button>
         </div>
+      </form>
+    </section>
+
+    <?php $wl = m3d_welcome(); ?>
+    <section style="margin-top:20px" class="sec" id="welcome">
+      <h2 class="small-h">Welcome Page <span class="badge tone-<?= $wl['on'] ? 'green' : 'grey' ?>"><?= $wl['on'] ? 'On' : 'Off' ?></span><?= tip('A page that shows new patrons around the site, once, right after their first login: how downloads and unlocks work (from your rules), updates and help. Then it sends them where they were going.') ?></h2>
+      <form method="post" class="set-list">
+        <?= form_keys('welcome') ?>
+        <label class="toggle"><input type="checkbox" class="switch" name="welcome_on" value="1" <?= $wl['on'] ? 'checked' : '' ?> /><span>Show After the First Login<?= tip('Paying patrons and people with a Bypass Tier exception. Admins never get it. Patrons can open it again from My Account.') ?></span></label>
+        <label class="toggle"><input type="checkbox" class="switch" name="welcome_skip_old" value="1" <?= $wl['skip_old'] ? 'checked' : '' ?> /><span>Skip Patrons Who Downloaded Before<?= tip('People with a download from before you turned the page on don’t get it.') ?></span></label>
+        <label class="field"><span class="lbl">Intro Text<?= tip('Under the title. Empty = “Thanks for supporting ' . site_name() . ' on Patreon. Here’s a quick tour, so you know where everything is.”') ?></span>
+          <textarea class="input" name="welcome_text" rows="3" data-img-drop="misc" maxlength="<?= WELCOME_TEXT_MAX ?>" placeholder="<?= e(m3d_welcome_text()) ?>"><?= e($wl['text']) ?></textarea></label>
+        <label class="field"><span class="lbl">Before Your First Download<?= tip('The line next to the Getting Started links of Admin → Models. The box shows only while there are links.') ?></span>
+          <input class="input" name="welcome_start" maxlength="<?= WELCOME_START_MAX ?>" value="<?= e($wl['start']) ?>" placeholder="Most models need a recent Blender. Start here:" /></label>
+        <div class="form-actions">
+          <button class="btn btn-ghost btn-sm act-left" form="welcome-reset">Show Again to Everyone</button>
+          <a class="btn btn-ghost btn-sm" href="/welcome/" target="_blank">Preview ↗</a>
+          <button class="btn btn-primary btn-sm">Save</button>
+        </div>
+      </form>
+      <form method="post" id="welcome-reset" hidden onsubmit="return confirm('Show the welcome page again to every patron, the next time they log in? Patrons who saw it already will see it once more.')">
+        <?= form_keys('welcome-reset') ?>
       </form>
     </section>
 
@@ -841,7 +982,7 @@ admin_start('Settings', 'settings');
               <select class="input" name="s4_unit" aria-label="Unit"><option value="minutes"<?= $inHours ? '' : ' selected' ?>>Minutes</option><option value="hours"<?= $inHours ? ' selected' : '' ?>>Hours</option></select></div></div>
           <label class="field"><span class="lbl">Bucket Address<?= tip('Your bucket, e.g. https://s3.g.megas4.com/your-bucket/ (MEGA’s Object URL of any file in it works too). Then a download link only needs “s4:” and the file name: s4:model.zip, or s4:folder/file.zip.') ?></span>
             <input class="input" type="url" name="s4_bucket" value="<?= e($s4['bucket']) ?>" maxlength="1000" placeholder="https://s3.g.megas4.com/your-bucket/" spellcheck="false" /></label>
-          <label class="field"><span class="lbl">Download Domain<?= tip('Optional. Your own address for downloads, e.g. files.example.com: a Cloudflare Worker on it passes each temporary address on to the bucket’s host unchanged. Downloads of files in the bucket above then show your address instead of MEGA’s. Empty: downloads go straight to MEGA.') ?></span>
+          <label class="field"><span class="lbl">Download Domain<?= tip('Optional. Your own address for downloads, e.g. files.example.com: a proxy on it (e.g. a CDN worker) passes each temporary address on to the bucket’s host unchanged. Downloads of files in the bucket above then show your address instead of MEGA’s. Empty: downloads go straight to MEGA.') ?></span>
             <input class="input" name="s4_domain" value="<?= e($s4['domain']) ?>" maxlength="253" placeholder="files.example.com" spellcheck="false" autocomplete="off" /></label>
         </div>
         <?php $s4TestVal = m3d_s4_short($s4['test']) ? ltrim(substr($s4['test'], 3), '/') : $s4['test']; ?>
@@ -964,10 +1105,6 @@ admin_start('Settings', 'settings');
           <div><b>Temporary Files</b><p class="muted small"><span data-stat="temp">Counting…</span></p></div>
           <?= $action('temp', 'Delete Temporary Files', '', 'temp') ?>
         </div>
-        <div class="tool">
-          <div><b>Cloudflare Cache</b><?= tip('If a replaced image still shows the old version: Cloudflare → Caching → Configuration → Purge Everything.') ?><p class="muted small">For images that still show the old version.</p></div>
-          <a class="btn btn-ghost btn-sm" href="https://dash.cloudflare.com/" target="_blank" rel="noopener">Open Cloudflare ↗</a>
-        </div>
       </div>
     </section>
 
@@ -1022,13 +1159,13 @@ admin_start('Settings', 'settings');
           <table class="pd-table">
             <thead><tr><th>What</th><th>Found</th></tr></thead>
             <tbody><?php foreach (pd_summary($pdOne) as $what => $found): ?>
-              <tr><td><?= e($what) ?></td><td<?= $found === '' ? ' class="muted"' : '' ?>><?= e($found !== '' ? $found : ($what === 'Blocked from Bug Reports' ? 'No' : 'None')) ?></td></tr>
+              <tr><td><?= e($what) ?></td><td<?= $found === '' ? ' class="muted"' : '' ?>><?= e($found !== '' ? $found : (str_starts_with($what, 'Blocked from') ? 'No' : 'None')) ?></td></tr>
             <?php endforeach ?></tbody>
           </table>
           <?php endif ?>
-          <p class="muted small pd-out">Not in the file: the login session (deleted at log out), the web host’s and Cloudflare’s server logs, and the copies inside backups. The file says so too.</p>
+          <p class="muted small pd-out">Not in the file: the login session (deleted at log out), the server logs of the web host and the delivery service, and the copies inside backups. The file says so too.</p>
           <div class="form-actions">
-            <?php if ($pdAny): ?><details class="pd-del act-left">
+            <?php if (pd_found($pdOne, false)): ?><details class="pd-del act-left">
               <summary class="btn btn-danger btn-sm">Delete All Their Data…</summary>
               <form method="post" class="pd-del-box" onsubmit="return confirm(<?= e(json_encode('Delete everything about ' . ($pdOne['name'] !== '' ? $pdOne['name'] . ' (Patreon ID ' . $pdOne['id'] . ')' : 'Patreon ID ' . $pdOne['id']) . '? This cannot be undone.')) ?>)">
                 <?= form_keys('pd-delete') ?><input type="hidden" name="id" value="<?= e($pdOne['id']) ?>" />
@@ -1036,9 +1173,10 @@ admin_start('Settings', 'settings');
                 <ul>
                   <li>Their downloads leave the log, so their unlocks start from zero: they can unlock again as if new, and you lose the record of what they downloaded.</li>
                   <li>Their bug reports go with every comment on them, other people’s too; their comments elsewhere, Me Too and follows go as well.</li>
+                  <li>Their comments under models, accessories and blog posts go.</li>
                   <li>Their likes, ignored updates, welcome page mark and access exception go. The like counts drop.</li>
                 </ul>
-                <p class="muted small">What stays: the all-time download totals (numbers only), a bug-report block (only their ID, so the block keeps working), and the copies inside backups until those backups are deleted. If they log in again, new data starts from zero. Download their data first if you need to send it.</p>
+                <p class="muted small">What stays: the all-time download totals (numbers only), a bug-report or comments block (only their ID, so the block keeps working), and the copies inside backups until those backups are deleted. If they log in again, new data starts from zero. Download their data first if you need to send it.</p>
                 <label class="field"><span class="lbl">Type <code><?= e($pdOne['id']) ?></code> to Confirm</span><input class="input" name="typed" required autocomplete="off"<?= ctype_digit($pdOne['id']) ? ' pattern="' . e($pdOne['id']) . '"' : '' ?> /></label>
                 <div class="form-actions"><button class="btn btn-danger btn-sm">Delete All Their Data</button></div>
               </form>

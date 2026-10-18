@@ -1,5 +1,5 @@
 <?php
-// Downloads: all-time totals (counters + likes), then the patron download log with filters, search and CSV export.
+// Downloads: the patron download log with filters, search and CSV export (the totals per model and accessory are on Stats, admin/stats.php).
 require __DIR__ . '/_admin.php';
 admin_require($M3D);
 
@@ -72,9 +72,9 @@ $berlin = function (string $d, string $fmt = 'Y-m-d H:i:s'): string {
     catch (Exception) { return $d; }
 };
 // the membership saved with a line (m3d_log_membership()): "4 mo" in the Patron column, the rest in its hover text
-$memText = function (array $m) use ($berlin): string {
+$memText = function (array $m): string {
     return implode(' · ', array_filter([
-        $m['months'] !== null ? m3d_plural($m['months'], 'month') . ' as a patron' . ($m['since'] !== '' ? ' (since ' . $berlin($m['since'] . 'T12:00:00Z', 'j M Y') . ')' : '') : '',
+        $m['months'] !== null ? m3d_plural($m['months'], 'month') . ' as a patron' . ($m['since'] !== '' ? ' (since ' . m3d_day_text($m['since']) . ')' : '') : '',
         $m['tier_cents'] !== null ? m3d_tier_label($m['tier_cents']) : '',
         $m['total_cents'] !== null ? m3d_money($m['total_cents']) . ' total support' : '',
     ]));
@@ -142,23 +142,8 @@ $shown = array_slice($found, ($page - 1) * PER_PAGE, PER_PAGE);
 // "Last N days" = N calendar days (site time) with today: from N - 1 days ago (Admin → Home links its 7-day tile the same way)
 $daysAgo = fn(int $n) => (new DateTimeImmutable('today', m3d_tz()))->modify('-' . ($n - 1) . ' days')->format('Y-m-d');
 
-// All-time totals (counters, they don't expire like the log)
-$stats = m3d_stats();
-$all = [];
-foreach (m3d_models() as $m) $all[] = ['name' => $m['name'], 'tag' => $genTag[$m['slug']], 'kind' => 'models', 'find' => $m['franchise'] ?? '', 'key' => $m['slug'], 'href' => '/models/' . $m['slug'] . '/', 'likes' => m3d_like_count($m['slug']), 'item' => $m] + m3d_downloads('models', $m['slug'], $stats);
-foreach (m3d_outfits() as $o) $all[] = ['name' => $o['name'], 'tag' => m3d_accessory_type($o), 'kind' => 'outfits', 'find' => 'accessory', 'key' => m3d_log_item('outfits', $o['slug']), 'href' => m3d_item_url('outfits', $o['slug']), 'likes' => m3d_like_count($o['slug'], 'outfits'), 'item' => $o] + m3d_downloads('outfits', $o['slug'], $stats);
-usort($all, fn($a, $b) => [$b['total'], $b['likes']] <=> [$a['total'], $a['likes']]);
-$maxTotal = max(1, ...array_column($all, 'total') ?: [0]);
-$kinds = array_count_values(array_column($all, 'kind'));
-$sum = fn($k) => array_sum(array_column($all, $k));
-$since = substr((string) ($stats['since'] ?? ''), 0, 10);
-
-// small line icons for the tiles and the column titles of both tables
+// small line icons for the column titles of the table
 const LOG_ICONS = [
-    'dl'      => '<path d="M12 4v11"/><path d="m7 10 5 5 5-5"/><path d="M5 20h14"/>',
-    'patrons' => '<path fill="currentColor" stroke="none" d="' . SOCIAL_TYPES['patreon'][2] . '"/>',
-    'free'    => '<rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V7.5a4 4 0 0 1 7.6-1.7"/>',
-    'likes'   => '<path d="M12 20s-7.5-4.6-7.5-10.2A4.2 4.2 0 0 1 12 7.3a4.2 4.2 0 0 1 7.5 2.5C19.5 15.4 12 20 12 20z"/>',
     'item'    => '<path d="M12 3 3 7.5l9 4.5 9-4.5z"/><path d="m3 12 9 4.5 9-4.5"/><path d="m3 16.5 9 4.5 9-4.5"/>',
     'date'    => '<rect x="4" y="5" width="16" height="15" rx="2"/><path d="M4 10h16M9 3v4M15 3v4"/>',
     'patron'  => '<circle cx="12" cy="8.2" r="4.2"/><path d="M4.5 20.5c.8-4 3.8-6.3 7.5-6.3s6.7 2.3 7.5 6.3"/>',
@@ -173,57 +158,8 @@ admin_start('Downloads', 'log');
       <div>
         <h1>Downloads</h1>
       </div>
+      <div class="head-actions"><a class="btn btn-ghost" href="/admin/stats.php">Stats</a></div>
     </div>
-    <section class="sec dl-totals">
-      <h2 class="small-h">All-Time Totals<?= tip('Every download click, patron and free' . ($since ? ', since ' . $since : '') . '.') ?></h2>
-      <!-- the sums, always in view (the list below scrolls); they follow the search and the Models / Accessories choice -->
-      <div class="stats" data-tot-sums>
-        <div class="stat stat-i stat-dl"><span class="stat-ico"><?= $ico('dl') ?></span><b data-sum="total"><?= number_format($sum('total')) ?></b><span>Downloads</span></div>
-        <div class="stat stat-i stat-pat"><span class="stat-ico"><?= $ico('patrons') ?></span><b data-sum="patrons"><?= number_format($sum('patrons')) ?></b><span>By Patrons</span></div>
-        <div class="stat stat-i stat-free"><span class="stat-ico"><?= $ico('free') ?></span><b data-sum="public"><?= number_format($sum('public')) ?></b><span>Free</span></div>
-        <div class="stat stat-i stat-likes"><span class="stat-ico"><?= $ico('likes') ?></span><b data-sum="likes"><?= number_format($sum('likes')) ?></b><span>Likes</span></div>
-      </div>
-      <?php if ($all): ?>
-      <div class="tot-bar">
-        <?php if (count($kinds) > 1): ?>
-          <span class="tot-kinds" role="group" aria-label="Show">
-            <button type="button" class="chip" data-tot-kind="" aria-pressed="true">All <span><?= count($all) ?></span></button>
-            <button type="button" class="chip" data-tot-kind="models" aria-pressed="false">Models <span><?= $kinds['models'] ?></span></button>
-            <button type="button" class="chip" data-tot-kind="outfits" aria-pressed="false">Accessories <span><?= $kinds['outfits'] ?></span></button>
-          </span>
-        <?php endif ?>
-        <span class="muted small tot-count" data-tot-count hidden></span>
-        <label class="batch-search"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg><input class="input" type="search" data-tot-search placeholder="Search name, franchise, type…" aria-label="Search the totals" autocomplete="off" spellcheck="false" /></label>
-      </div>
-      <?php endif ?>
-      <div class="table-wrap">
-        <table class="log-table tot-table" data-tot-table>
-          <colgroup><col /><col class="tot-w" /><col class="tot-w" /><col class="tot-w" /><col class="tot-w" /><col class="tot-log" /></colgroup>
-          <thead><tr>
-            <th aria-sort="none"><button type="button" class="tot-sort" data-tot-sort="name"><?= $ico('item') ?>Model / Accessory</button></th>
-            <th class="c-num" aria-sort="descending"><button type="button" class="tot-sort" data-tot-sort="total"><?= $ico('dl') ?>Downloads</button></th>
-            <th class="c-num" aria-sort="none"><button type="button" class="tot-sort" data-tot-sort="patrons"><?= $ico('patrons') ?>By Patrons</button></th>
-            <th class="c-num" aria-sort="none"><button type="button" class="tot-sort" data-tot-sort="public"><?= $ico('free') ?>Free</button></th>
-            <th class="c-num" aria-sort="none"><button type="button" class="tot-sort" data-tot-sort="likes"><?= $ico('likes') ?>Likes</button></th>
-            <th><span class="sr-only">Patron Log</span></th>
-          </tr></thead>
-          <tbody>
-            <?php foreach ($all as $r): $icon = $r['kind'] === 'outfits' ? accessory_icon_paths($r['tag']) : LOG_ICONS['patron']; ?>
-              <tr class="<?= $r['total'] ? '' : 'tot-zero' ?>" data-kind="<?= e($r['kind']) ?>" data-name="<?= e(mb_strtolower($r['name'] . ' ' . $r['tag'])) ?>" data-search="<?= e(implode(' ', [$r['name'], $r['tag'], $r['find'], $r['key']])) ?>" data-total="<?= $r['total'] ?>" data-patrons="<?= $r['patrons'] ?>" data-public="<?= $r['public'] ?>" data-likes="<?= $r['likes'] ?>">
-                <td><span class="tot-item"><?= $pic($r['item'], $r['kind'], $icon) ?><span class="tot-name"><a href="<?= e($r['href']) ?>" target="_blank"><?= e($r['name']) ?></a><?php if ($r['tag'] !== ''): ?><span class="tot-tag tot-tag-<?= e($r['kind']) ?>"><svg viewBox="0 0 24 24" aria-hidden="true"><?= $icon ?></svg><?= e($r['tag']) ?></span><?php endif ?></span></span></td>
-                <td class="c-num"><span class="tot-dl"><span class="tot-meter" title="<?= e($r['patrons'] . ' by patrons, ' . $r['public'] . ' free') ?>" aria-hidden="true"><i style="width: <?= round($r['patrons'] / $maxTotal * 100, 1) ?>%"></i><i style="width: <?= round($r['public'] / $maxTotal * 100, 1) ?>%"></i></span><b class="num"><?= number_format($r['total']) ?></b></span></td>
-                <td class="c-num"><?= number_format($r['patrons']) ?></td>
-                <td class="c-num"><?= number_format($r['public']) ?></td>
-                <td class="c-num"><?= $r['likes'] ? '<span class="likes-num">♥ ' . $r['likes'] . '</span>' : '<span class="muted">0</span>' ?></td>
-                <td class="c-num"><?php if (!empty($itemCounts[$r['key']])): ?><a class="log-jump" href="<?= e($url(['item' => $r['key'], 'q' => '', 'patron' => '', 'link' => ''])) ?>" title="Show these downloads in the patron log" aria-label="<?= e('Patron log of ' . $r['name']) ?>">log ↓</a><?php endif ?></td>
-              </tr>
-            <?php endforeach ?>
-            <tr class="tot-empty" data-tot-empty hidden><td colspan="6" class="muted"></td></tr>
-          </tbody>
-        </table>
-      </div>
-    </section>
-
     <section class="sec log-sec" id="log">
     <div class="dl-log-head">
       <div>

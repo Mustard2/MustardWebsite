@@ -7,7 +7,7 @@ const searchHasAll = (hay, words) => { const h = searchFold(hay); return words.e
 
 // Times in the visitor's own time zone: localTime(unix seconds, style) = "Tue 20 Oct, 12:00 PM EDT" in their zone and clock (12 / 24 hours
 // as their browser uses), or '' when their zone is the site's (<html data-tz>, the page already says it) or the browser can't tell.
-// Styles = WHEN_FORMATS in view.php: full, at, day, short, long.
+// Styles = WHEN_FORMATS in view.php: full, at, day, short, date, long.
 const localTime = (() => {
   const site = document.documentElement.dataset.tz || '';
   let zone = '', h12 = false;
@@ -16,8 +16,10 @@ const localTime = (() => {
     const o = new Intl.DateTimeFormat(undefined, { hour: 'numeric' }).resolvedOptions();
     h12 = o.hourCycle ? o.hourCycle === 'h12' || o.hourCycle === 'h11' : !!o.hour12;
   } catch { zone = ''; }
-  if (!zone || !site || zone === site) return () => '';
-  const make = (long) => new Intl.DateTimeFormat('en-US', { timeZone: zone, weekday: long ? 'long' : 'short', day: 'numeric', month: long ? 'long' : 'short',
+  let siteZone = site;   // the browser's own name for it (Asia/Kolkata reads Asia/Calcutta in some browsers)
+  try { if (site) siteZone = new Intl.DateTimeFormat('en-US', { timeZone: site }).resolvedOptions().timeZone; } catch { /* a zone this browser doesn't know */ }
+  if (!zone || !site || zone === site || zone === siteZone) return () => '';
+  const make = (long) => new Intl.DateTimeFormat('en-US', { timeZone: zone, weekday: long ? 'long' : 'short', day: 'numeric', month: long ? 'long' : 'short', year: 'numeric',
     hour: h12 ? 'numeric' : '2-digit', minute: '2-digit', hourCycle: h12 ? 'h12' : 'h23' });
   let fmt = null, names = null;   // made on first use, inside the try below
   // the zone's short name: "EDT", "CEST", "BST", else "GMT+9" (en-US knows the American names, en-GB the European ones)
@@ -42,6 +44,7 @@ const localTime = (() => {
       const time = p.hour + ':' + p.minute + (p.dayPeriod ? ' ' + p.dayPeriod : '');
       const day = p.weekday + ' ' + p.day + ' ' + p.month;
       if (style === 'short') return p.day + ' ' + p.month;
+      if (style === 'date') return p.day + ' ' + p.month + ' ' + p.year;
       if (style === 'day') return day;
       return day + (style === 'at' ? ' at ' : ', ') + time + ' ' + zoneName(d);
     } catch { return ''; }   // the page keeps the site's time
@@ -527,21 +530,27 @@ const likedOk = (root) => {
   });
 })();
 
-// ── Model/outfit pages: the gallery row; ‹ › scroll it by most of a screen, each shown only when there is more that way ──
+// ── Card and picture rows ([data-strip]: the gallery row, "More from", liked, "Optimized for"): ‹ › scroll by most of a screen,
+// shown while the row doesn't fit; they go round: › at the end goes back to the start, ‹ at the start to the end ──
 (() => {
   document.querySelectorAll('[data-strip]').forEach((strip) => {
     const row = strip.querySelector('[data-strip-row]');
     const prev = strip.querySelector('[data-strip-prev]');
     const next = strip.querySelector('[data-strip-next]');
     const update = () => {
-      prev.hidden = row.scrollLeft < 4;
-      next.hidden = row.scrollLeft + row.clientWidth > row.scrollWidth - 4;
+      prev.hidden = next.hidden = row.scrollWidth <= row.clientWidth + 4;
     };
-    const go = (dir) => row.scrollBy({ left: dir * row.clientWidth * 0.8 });
+    const go = (dir) => {
+      const end = row.scrollWidth - row.clientWidth;
+      if (dir > 0 && row.scrollLeft >= end - 4) row.scrollTo({ left: 0 });
+      else if (dir < 0 && row.scrollLeft < 4) row.scrollTo({ left: end });
+      else row.scrollBy({ left: dir * row.clientWidth * 0.8 });
+    };
     prev.addEventListener('click', () => go(-1));
     next.addEventListener('click', () => go(1));
-    row.addEventListener('scroll', update, { passive: true });
     addEventListener('resize', update);
+    addEventListener('load', update);   // pictures that came in late can make the row wider
+    row.addEventListener('load', update, true);   // and lazy ones that load after the page did
     update();
   });
 })();
@@ -906,6 +915,18 @@ const likedOk = (root) => {
     orderBtn.querySelector('[data-order-label]').textContent = newestFirst ? 'Oldest First' : 'Newest First';
     if (!newestFirst && !open) setOpen(true);
   });
+  // an address naming one version (#v4, #beta-2: the chain link next to it, What's New, a bug report's "Fixed in"): older ones
+  // open, and that version is marked until another one is named
+  const openVersion = () => {
+    let li = null;
+    try { li = location.hash.length > 1 ? document.getElementById(decodeURIComponent(location.hash.slice(1))) : null; } catch { /* a broken %-code */ }
+    if (!li || li.parentElement !== log) return;
+    log.querySelectorAll(':scope > li.is-target').forEach((x) => x.classList.remove('is-target'));
+    li.classList.add('is-target');
+    if (li.hidden) { setOpen(true); li.scrollIntoView({ block: 'start' }); }   // hidden, the browser couldn't scroll to it
+  };
+  window.addEventListener('hashchange', openVersion);
+  openVersion();
 })();
 
 // ── FAQ: search, open the question in the address (#…), copy a question's link ──
@@ -1076,13 +1097,13 @@ document.addEventListener('click', async (e) => {
   heads.forEach((h) => io.observe(h));
 })();
 
-// ── Likes on model and outfit pages (paying patrons; others are told how to get there) ──
+// ── Likes on model, outfit and blog pages (paying patrons; others are told how to get there) ──
 (() => {
   const btn = document.querySelector('[data-like]');
   if (!btn) return;
   const slug = btn.dataset.like;
-  const kind = btn.dataset.likeKind === 'outfits' ? 'outfits' : 'models';
-  const what = kind === 'outfits' ? 'accessory' : 'model';
+  const kind = ['outfits', 'posts'].includes(btn.dataset.likeKind) ? btn.dataset.likeKind : 'models';
+  const what = { outfits: 'accessory', posts: 'post' }[kind] || 'model';
   const countEl = btn.querySelector('[data-like-count]');
   const msg = document.querySelector('[data-like-msg]');
   let state = null;
@@ -1120,6 +1141,37 @@ document.addEventListener('click', async (e) => {
     }
     btn.disabled = false;
   });
+})();
+
+// ── My account → My Models: the like heart of each row (only printed for patrons who can like; auth/like.php) ──
+(() => {
+  const btns = document.querySelectorAll('[data-acc-like]');
+  if (!btns.length) return;
+  let csrf = '';
+  try { csrf = JSON.parse(document.querySelector('[data-account]')?.dataset.me || '{}').csrf || ''; } catch { /* no status */ }
+  const show = (b, on) => {
+    const what = b.dataset.likeKind === 'outfits' ? 'accessory' : 'model';
+    b.setAttribute('aria-pressed', String(on));
+    b.title = on ? `You like this ${what} (click to remove)` : `Like this ${what}`;
+  };
+  btns.forEach((b) => b.addEventListener('click', async () => {
+    if (b.disabled) return;
+    const want = b.getAttribute('aria-pressed') !== 'true';
+    show(b, want);   // instant feedback
+    if (want) { b.classList.remove('pop'); void b.offsetWidth; b.classList.add('pop'); }
+    b.disabled = true;
+    try {
+      const kind = b.dataset.likeKind === 'outfits' ? 'outfits' : 'models';
+      const r = await fetch('/auth/like.php', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf }, body: JSON.stringify({ slug: b.dataset.accLike, kind, like: want }) });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.error || 'Something went wrong.');
+      show(b, !!d.liked);
+    } catch (e) {
+      show(b, !want);
+      siteToast(e.message, 'err');
+    }
+    b.disabled = false;
+  }));
 })();
 
 // ── Site notice: the ✕ hides it and this browser remembers it (until the notice text changes) ──

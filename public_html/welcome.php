@@ -150,7 +150,8 @@ if (empty($p['preview']) && !$owner) m3d_welcome_mark((string) $p['id']);
       <h2>Download Rules</h2>
       <?php if ($ownRules): ?><p class="wl-rules-for">These rules were set just for you.</p>
       <?php elseif ($owner && $tierRules): ?><p class="wl-rules-for muted">Patrons see only the rules of their own tier.</p>
-      <?php elseif ($tierRules && $tier): ?><p class="wl-rules-for">For your tier, <b><?= e(m3d_tier_label($tier[1])) ?></b>.</p>
+      <?php elseif ($tierRules && $myTierRow !== null): ?><p class="wl-rules-for">For your tier, <b><?= e(m3d_tier_label($tier[1])) ?></b>.</p>
+      <?php elseif ($tierRules && $tier): ?><p class="wl-rules-for">Your tier has no rules of its own, so the general rules apply.</p>
       <?php elseif ($tierRules && ($p['reason'] ?? '') === 'exception'): ?><p class="wl-rules-for">You have no paid tier, so the general rules apply.</p>
       <?php elseif ($tierRules): ?><p class="wl-rules-for">Your Patreon tier wasn’t found, so the general rules apply. <a rel="nofollow" href="/auth/login.php?return=%2Faccount%2F"<?= $new ?>>Refresh from Patreon</a></p>
       <?php endif ?>

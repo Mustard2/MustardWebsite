@@ -167,7 +167,7 @@ function m3d_discord_embed(string $kind, array $item): array
     $what = $kind === 'outfits' ? m3d_accessory_type($item) : 'Model' . (($item['franchise'] ?? '') !== '' ? ' · ' . $item['franchise'] : '');
     $e = [
         'title'  => mb_substr(($kind === 'models' ? m3d_model_name($item) : $item['name']) . ' · ' . m3d_version_label(m3d_current_version($item)), 0, 250),
-        'url'    => abs_url(m3d_item_url($kind, (string) $item['slug'])),
+        'url'    => abs_url(m3d_version_url($kind, $item, m3d_version_label($en))),   // straight to that version in the changelog
         'footer' => ['text' => mb_substr($what . ' · ' . site_name(), 0, 200)],
     ];
     if ($text !== '') $e['description'] = $text;

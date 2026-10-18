@@ -12,8 +12,8 @@ $type = m3d_accessory_type($o);
 $images = array_values(array_filter(array_map('as_image', $o['images'] ?? []), fn($g) => $g['src'] !== ''));
 $preview = $images[0]['src'] ?? '';
 $models = array_values(array_filter(array_map('m3d_model', $o['models'] ?? []), fn($m) => $m && m3d_listed($m)));
-$others = array_slice(array_values(array_filter(m3d_listed_items('outfits'), fn($x) => $x['slug'] !== $o['slug']
-    && array_intersect($x['models'] ?? [], $o['models'] ?? []))), 0, 4);
+$others = array_values(array_filter(m3d_listed_items('outfits'), fn($x) => $x['slug'] !== $o['slug']
+    && array_intersect($x['models'] ?? [], $o['models'] ?? [])));
 
 if ($preview !== '' && m3d_visibility($o) === 'public') page_image($preview);   // link previews: public accessories only
 layout_start($o['name'] . ' (' . mb_strtolower($type) . ')', $o['name'] . ', ' . (preg_match('/^[aeiou]/i', $type) ? 'an ' : 'a ') . mb_strtolower($type) . ' for the ' . site_name() . ' models.', 'page-model page-outfit');
@@ -58,10 +58,12 @@ layout_start($o['name'] . ' (' . mb_strtolower($type) . ')', $o['name'] . ', ' .
     <?php endif ?>
 
     <?php if ($others): ?>
-      <section class="section">
+      <section class="section rel-sec">
         <h2 class="h2 rel-title">More Accessories for the Same Models</h2>
-        <div class="ogrid"><?php foreach ($others as $x) echo outfit_card($x) ?></div>
+        <?= like_strip(array_map('outfit_card', $others), 'accessories', 'rel-strip') ?>
       </section>
     <?php endif ?>
+
+    <?= comments_block('outfits', $o['slug'], $o, 'accessory') ?>
   </div>
 <?php layout_end();

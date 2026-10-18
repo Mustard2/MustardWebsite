@@ -38,10 +38,10 @@ function sb_fetch(string $url): string
     return $body;
 }
 
-/** What a page that isn't the expected one is, in a few words (for error messages): a Cloudflare check, or its title. */
+/** What a page that isn't the expected one is, in a few words (for error messages): a bot check, or its title. */
 function sb_describe(string $html): string
 {
-    if (preg_match('/challenge-platform|cf-chl|cf_chl|Just a moment\.\.\.|Attention Required/i', $html)) return 'a Cloudflare “are you human?” check (only a browser gets through)';
+    if (preg_match('/challenge-platform|cf-chl|cf_chl|Just a moment\.\.\.|Attention Required/i', $html)) return 'an “are you human?” check (only a browser gets through)';
     if (preg_match('/not a bot|anubis|techaro/i', $html)) return 'its “Making sure you’re not a bot!” check (only a browser gets through)';
     $x = sb_dom($html);
     $title = trim(preg_replace('/\s+/', ' ', (string) ($x->query('//title')->item(0)?->textContent ?? '')));

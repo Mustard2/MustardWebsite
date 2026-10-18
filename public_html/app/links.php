@@ -401,6 +401,8 @@ function lc_auto_run(): void
             $every = lc_auto()['every'] * 86400;
             $due = lc_auto_due($every);
             $slow = false;
+            $was = lc_results();
+            $dead = [];   // found dead now, and not before: one Discord post (Settings → Notifications → Dead Links)
             foreach (array_slice($due, 0, LC_AUTO_BATCH) as $i => $url) {
                 if ($i) sleep(1);
                 $res = lc_check($url);
@@ -408,7 +410,9 @@ function lc_auto_run(): void
                 // and the link stays due; the rest waits for the next run
                 if (!empty($res['slow'])) { $slow = true; break; }
                 lc_save(md5($url), $res);
+                if ($res['st'] === 'dead' && ($was[md5($url)]['st'] ?? '') !== 'dead') $dead[md5($url)] = true;
             }
+            m3d_notify_dead_links(array_values(array_filter(lc_links(), fn($l) => isset($dead[$l['h']]))));
             // more due: again in a while; else when the oldest result gets old enough
             $left = lc_auto_due($every);
             if ($left) $next = time() + ($slow ? 3 * LC_AUTO_GAP : LC_AUTO_GAP);

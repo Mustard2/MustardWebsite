@@ -67,10 +67,22 @@ layout_start('My Account', 'Your Patreon membership on ' . site_name() . '.', 'p
     // unlock counters in the header, site.js) + the version they downloaded last
     $kindIcons = ['models' => '<circle cx="12" cy="8.2" r="4.2"/><path d="M4.5 20.5c.8-4 3.8-6.3 7.5-6.3s6.7 2.3 7.5 6.3"/>',
                   'outfits' => '<path d="M9.8 6.3a2.2 2.2 0 1 1 3 2.05c-.5.2-.8.6-.8 1.1v.55"/><path d="M12 10 3.6 16.1c-.7.5-.35 1.6.5 1.6h15.8c.85 0 1.2-1.1.5-1.6L12 10z"/>'];
-    $cell = function (array $c) use ($kindIcons): string {
+    // the like heart before the picture (site.js [data-acc-like] → auth/like.php): only for those who can like (paying, not previewing)
+    $canLike = !empty(m3d_like_viewer($p)['can']) && empty($p['preview']);
+    $code = m3d_like_code((string) $p['id']);
+    $likes = ['models' => m3d_likes('models'), 'outfits' => m3d_likes('outfits')];
+    $heart = function (string $kind, ?array $it) use ($canLike, $code, $likes): string {
+        if (!$canLike) return '';
+        if (!$it) return '<span class="acc-like" aria-hidden="true"></span>';   // keeps the names in line
+        $on = in_array($code, (array) ($likes[$kind][$it['slug']] ?? []), true);
+        $what = $kind === 'outfits' ? 'accessory' : 'model';
+        return '<button type="button" class="acc-like" data-acc-like="' . e($it['slug']) . '" data-like-kind="' . $kind . '" aria-pressed="' . ($on ? 'true' : 'false') . '"'
+            . ' title="' . ($on ? 'You like this ' . $what . ' (click to remove)' : 'Like this ' . $what) . '"><span class="sr-only">Like</span>' . HEART_ICON . '</button>';
+    };
+    $cell = function (array $c) use ($kindIcons, $heart): string {
         [$it, $kind] = [$c['item'], $c['kind']];
         if (!$it) {   // removed, draft or password not entered: the name only (an empty square with the kind's icon keeps the rows alike)
-            return '<span class="acc-item acc-gone"><span class="acc-pic acc-pic-ph" aria-hidden="true"><svg viewBox="0 0 24 24">' . $kindIcons[$kind] . '</svg></span><span class="acc-n">' . e($c['name']) . '</span></span>';
+            return '<span class="acc-item acc-gone">' . $heart($kind, null) . '<span class="acc-pic acc-pic-ph" aria-hidden="true"><svg viewBox="0 0 24 24">' . $kindIcons[$kind] . '</svg></span><span class="acc-n">' . e($c['name']) . '</span></span>';
         }
         [$src, $hidden] = card_pic($kind, $it);   // blurred copy when this visitor may not see the pictures
         $url = e(m3d_item_url($kind, $it['slug']));
@@ -79,7 +91,7 @@ layout_start('My Account', 'Your Patreon membership on ' . site_name() . '.', 'p
         $sub = '<span class="acc-sub"><span class="acc-kind acc-kind-' . $kind . '"><svg viewBox="0 0 24 24" aria-hidden="true">' . ($kind === 'outfits' ? accessory_icon_paths(m3d_accessory_type($it)) : $kindIcons[$kind]) . '</svg>'
              . ($kind === 'outfits' ? e(m3d_accessory_type($it)) : 'Model') . '</span>' . ($c['got'] !== '' ? '<span class="acc-ver">' . e($c['got']) . '</span>' : '') . $c['updTag'] . '</span>';   // updTag: on phones, in place of the Update column
         // not one big link: the update tag in the line under the name (phones) is a button
-        return '<div class="acc-item">' . $pic . '<span><a class="acc-n" href="' . $url . '">' . e($kind === 'models' ? m3d_model_name($it) : (string) $it['name']) . '</a>' . $sub . '</span></div>';
+        return '<div class="acc-item">' . $heart($kind, $it) . $pic . '<span><a class="acc-n" href="' . $url . '">' . e($kind === 'models' ? m3d_model_name($it) : (string) $it['name']) . '</a>' . $sub . '</span></div>';
     };
     // the Download button, or "✗ Not eligible (2 months)": what the patron has where they fall short
     $action = fn(array $t) => !$t['item'] ? '' : (!empty($t['dev']) ? '<span class="muted small">' . when_text($t['dev']) . '</span>' : ($t['ok']
@@ -132,9 +144,8 @@ layout_start('My Account', 'Your Patreon membership on ' . site_name() . '.', 'p
     // (a "Custom" limits exception: their own rules, Admin → Access)
     $allRules = !$owner && empty($p['access']) ? [] : (($p['exception']['limits'] ?? '') === 'custom' ? array_column($limits['rows'], 'rule')
         : array_values(array_filter(m3d_dl_settings()['rules'], fn($r) => !empty($r['on']) && isset($mine[(string) ($r['id'] ?? '')]))));
-    $code = m3d_like_code((string) $p['id']);
-    $liked = array_values(array_filter(m3d_models(), fn($m) => m3d_can_view('models', $m) && in_array($code, m3d_likes('models')[$m['slug']] ?? [], true)));
-    $likedOutfits = array_values(array_filter(m3d_outfits(), fn($o) => m3d_can_view('outfits', $o) && in_array($code, m3d_likes('outfits')[$o['slug']] ?? [], true)));
+    $liked = array_values(array_filter(m3d_models(), fn($m) => m3d_can_view('models', $m) && in_array($code, $likes['models'][$m['slug']] ?? [], true)));
+    $likedOutfits = array_values(array_filter(m3d_outfits(), fn($o) => m3d_can_view('outfits', $o) && in_array($code, $likes['outfits'][$o['slug']] ?? [], true)));
   ?>
     <section class="acc-card acc-head">   <!-- the page title is the patron's name: everything about the login in one card -->
       <div>
@@ -208,7 +219,7 @@ layout_start('My Account', 'Your Patreon membership on ' . site_name() . '.', 'p
           <?php endif ?>
           <p class="muted" data-acc-empty hidden>Nothing to show here.</p>
           <div class="table-wrap">
-            <table class="acc-table">
+            <table class="acc-table<?= $canLike ? ' has-likes' : '' ?>">
               <thead><tr><th>Model / Accessory</th><th class="hide-sm">Unlocked</th><th class="hide-sm"></th><th></th></tr></thead>
               <tbody>
                 <?php foreach ($claimed as $c): ?>

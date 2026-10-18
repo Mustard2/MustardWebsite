@@ -16,7 +16,7 @@ $want = preg_replace('/[^a-z0-9-]/', '', strtolower(m3d_get_text('folder'))) ?: 
 $opt = fn(string $f) => folder_option($f, $pick, $names, $f === $want);
 $upload = '<optgroup label="Models">' . implode('', array_map(fn($m) => $opt($m['slug']), $models)) . '</optgroup>'
     . (m3d_outfits() ? '<optgroup label="Accessories">' . implode('', array_map(fn($o) => $opt('outfit-' . $o['slug']), m3d_outfits())) . '</optgroup>' : '')
-    . '<optgroup label="Other">' . implode('', array_map($opt, ['gallery', 'docs', 'faq', 'misc'])) . '</optgroup>';
+    . '<optgroup label="Other">' . implode('', array_map($opt, array_merge(['gallery'], m3d_blog_on() || m3d_blog()['posts'] || $want === 'blog' ? ['blog'] : [], ['docs', 'faq', 'misc']))) . '</optgroup>';
 admin_json(['ok' => true,
     'items' => array_map(fn($i) => ['url' => $i['url'], 'small' => $i['small'], 'folder' => $i['folder'], 'name' => $i['name'], 'w' => $i['w'], 'h' => $i['h'], 'label' => mb_strtolower($i['name'] . ' ' . ($names[$i['folder']] ?? $i['folder']))], $items),
     'folders' => implode('', array_map(fn($f) => folder_option($f, $pick, $names), $folders)),

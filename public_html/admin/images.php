@@ -41,7 +41,11 @@ function external_images(): array
         // every text of the item (description, notes, changelog notes…)
         array_walk_recursive($m, function ($x) use ($inText, $folder) { if (is_string($x)) $inText($x, $folder); });
     }
-    foreach (m3d_texts() as $t) $inText($t['text'], $t['folder']);   // FAQ answers, docs pages
+    foreach (m3d_texts() as $t) $inText($t['text'], $t['folder']);   // FAQ answers, docs pages, blog posts
+    foreach (m3d_blog()['posts'] as $p) {   // blog covers
+        $c = (string) ($p['cover'] ?? '');
+        if (preg_match('#^https?://#i', $c) && preg_match('/\.(jpe?g|png|webp|gif)(\?|$)/i', $c)) $found[$c] ??= 'blog';
+    }
     $inText(outfits_intro(), 'misc');   // Admin → Accessories → Page text
     $inText(m3d_welcome()['text'], 'misc');   // Settings → Features → Welcome Page
     return $found;
@@ -59,7 +63,7 @@ function replace_everywhere(array $models, array $map): array
     return $models;
 }
 
-/** Points every use of the pictures in $map (old address => new) to the new one: models, accessories, FAQ / docs texts, gallery. */
+/** Points every use of the pictures in $map (old address => new) to the new one: models, accessories, FAQ / docs texts, blog posts, gallery. */
 function media_replace(array $map): bool
 {
     $ok = true;
@@ -97,7 +101,7 @@ if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST' && str_starts_with((string) ($
     }
     if (($in['action'] ?? '') === 'crop') {
         // Crops (and turns / mirrors) the large version into a NEW file (same folder, name + "-crop-<code>"): images are cached for a year
-        // (Cloudflare too), so the same address would keep showing the old picture. replace = use it everywhere.
+        // (by CDNs too), so the same address would keep showing the old picture. replace = use it everywhere.
         $url = img_large((string) ($in['url'] ?? ''));
         $p = media_path($url);
         if (!$p || !is_file($p)) admin_json(['ok' => false, 'error' => 'Only images stored on this site can be cropped. Copy outside images here first (Images page).'], 404);
@@ -223,7 +227,7 @@ function use_href(string $key): string
     [$k, $sl] = explode(':', $key, 2) + [1 => ''];
     return match ($k) {
         'faq' => '/admin/faq.php', 'other' => '/admin/outfits.php', 'gallery' => '/admin/gallery.php?still=' . rawurlencode($sl),
-        'docs' => '/admin/docs.php?page=' . rawurlencode($sl), default => '/admin/edit.php?kind=' . rawurlencode($k) . '&slug=' . rawurlencode($sl),
+        'docs' => '/admin/docs.php?page=' . rawurlencode($sl), 'blog' => '/admin/blog.php?post=' . rawurlencode($sl), default => '/admin/edit.php?kind=' . rawurlencode($k) . '&slug=' . rawurlencode($sl),
     };
 }
 
@@ -307,17 +311,18 @@ $todoExt = array_diff_key($todoExtAll, array_flip($extFailed));
 // unused images go by their folder (media/<model>, outfit-<slug>, docs, faq, misc…). 'group' = the model/outfit/docs page/
 // FAQ question/folder it is listed under (the filter menu of the tab); 'groups' = every one of the tab's it is used by.
 // '3d' = the 3D preview files (.glb, `model3d`), listed only there, so the tab shows only when there is one.
-const IMG_TABS = ['models' => 'Models', 'outfits' => 'Accessories', 'gallery' => 'Gallery', 'docs' => 'Docs', 'faq' => 'FAQ', 'other' => 'Other', '3d' => '3D Files'];
+const IMG_TABS = ['models' => 'Models', 'outfits' => 'Accessories', 'gallery' => 'Gallery', 'blog' => 'Blog', 'docs' => 'Docs', 'faq' => 'FAQ', 'other' => 'Other', '3d' => '3D Files'];
 $modelSlugs = array_flip(array_column($models, 'slug'));
 $folderSection = fn(string $folder): string => match (true) {
     $folder === 'docs' => 'docs',
     $folder === 'gallery' => 'gallery',
+    $folder === 'blog' => 'blog',
     $folder === 'faq' => 'faq',
     str_starts_with($folder, 'outfit-') => 'outfits',
     isset($modelSlugs[$folder]) => 'models',
     default => 'other',
 };
-// a use ('models:<slug>', 'outfits:<slug>', 'docs:<slug>', 'faq:<n>' / 'faq:intro', 'other:outfits-page' / 'other:welcome') → the group it is listed under
+// a use ('models:<slug>', 'outfits:<slug>', 'docs:<slug>', 'faq:<n>' / 'faq:intro', 'blog:<id>', 'other:outfits-page' / 'other:welcome') → the group it is listed under
 $useGroup = fn(string $key): string => match (explode(':', $key)[0]) { 'models' => explode(':', $key, 2)[1], 'outfits' => 'outfit-' . explode(':', $key, 2)[1], 'gallery' => 'gallery', 'other' => 'misc', default => $key };
 foreach ($items as &$i) {
     $i['section'] = $folderSection($i['folder']);
@@ -353,8 +358,8 @@ if ($tab === '3d') {   // listed under the model / accessory using it, else its 
     usort($items, fn($a, $b) => [$a['group'], $b['time']] <=> [$b['group'], $a['time']]);
 }
 $folders = array_values(array_unique(array_merge(...array_column($items, 'groups') ?: [[]])));
-$uploadDefault = ['gallery' => 'gallery', 'docs' => 'docs', 'faq' => 'faq', 'other' => 'misc'][$tab] ?? null;
-$whatName = ['models' => 'model', 'outfits' => 'accessory', 'docs' => 'page', 'faq' => 'question', '3d' => 'item'][$tab] ?? 'folder';
+$uploadDefault = ['gallery' => 'gallery', 'blog' => 'blog', 'docs' => 'docs', 'faq' => 'faq', 'other' => 'misc'][$tab] ?? null;
+$whatName = ['models' => 'model', 'outfits' => 'accessory', 'blog' => 'post', 'docs' => 'page', 'faq' => 'question', '3d' => 'item'][$tab] ?? 'folder';
 // what the folder pickers show for each folder (admin.js turns the two menus into a search picker: one row per character, its generations as buttons)
 [$pick, $names] = admin_folder_picks($models);
 $order = array_flip(array_keys($pick));   // the filter menu in the site's own order (models, accessories, docs pages, FAQ questions), folders last
@@ -380,7 +385,7 @@ admin_start('Images', 'images');
         <select class="input" data-upload-folder data-folder-pick="upload" aria-label="Upload into">
           <optgroup label="Models"><?php foreach ($models as $m) echo folder_option($m['slug'], $pick, $names) ?></optgroup>
           <?php if (m3d_outfits()): ?><optgroup label="Accessories"><?php foreach (m3d_outfits() as $k => $o) echo folder_option('outfit-' . $o['slug'], $pick, $names, $tab === 'outfits' && $k === 0) ?></optgroup><?php endif ?>
-          <optgroup label="Other"><?php foreach (['gallery', 'docs', 'faq', 'misc'] as $f) echo folder_option($f, $pick, $names, $uploadDefault === $f) ?></optgroup>
+          <optgroup label="Other"><?php foreach (array_merge(['gallery'], m3d_blog_on() || m3d_blog()['posts'] ? ['blog'] : [], ['docs', 'faq', 'misc']) as $f) echo folder_option($f, $pick, $names, $uploadDefault === $f) ?></optgroup>
         </select>
         <label class="btn btn-primary">Upload Images<input type="file" accept="image/*" multiple hidden data-upload-files /></label>
       </div>
@@ -432,12 +437,12 @@ admin_start('Images', 'images');
 
     <?php if (!$items): ?>
       <?php if ($tab === '3d'): ?><p class="muted">No 3D files yet. Upload one in a model or accessory editor (Images → 3D Preview).</p>
-      <?php else: ?><p class="muted">No <?= e(strtolower(IMG_TABS[$tab])) ?> images yet. Upload some with the button above<?= ['models' => ', or from the editor', 'outfits' => ', or from the editor', 'gallery' => ', or with Add Pictures in Admin → Gallery', 'docs' => ', or with Image in the Docs editor', 'faq' => ', or with Add Image in the FAQ editor'][$tab] ?? '' ?>.</p><?php endif ?>
+      <?php else: ?><p class="muted">No <?= e(strtolower(IMG_TABS[$tab])) ?> images yet. Upload some with the button above<?= ['models' => ', or from the editor', 'outfits' => ', or from the editor', 'gallery' => ', or with Add Pictures in Admin → Gallery', 'blog' => ', or from the Blog editor', 'docs' => ', or with Image in the Docs editor', 'faq' => ', or with Add Image in the FAQ editor'][$tab] ?? '' ?>.</p><?php endif ?>
     <?php else: ?>
       <div class="lib-filters">
         <input class="input" type="search" placeholder="Search file name or <?= $whatName ?>…" data-lib-search aria-label="Search <?= $tab === '3d' ? '3D files' : 'images' ?>" />
-        <select class="input" data-lib-folder data-folder-pick="filter" data-search-ph="Search <?= ['outfits' => 'accessories', 'docs' => 'pages', 'faq' => 'questions', 'models' => 'models', '3d' => 'items'][$tab] ?? 'folders' ?>…" aria-label="<?= e(ucfirst($whatName)) ?>" <?= count($folders) < 2 ? 'hidden' : '' ?>>
-          <option value=""><?= ['models' => 'All Models', 'outfits' => 'All Accessories', 'docs' => 'All Pages', 'faq' => 'All Questions', '3d' => 'All Items'][$tab] ?? 'All Folders' ?></option>
+        <select class="input" data-lib-folder data-folder-pick="filter" data-search-ph="Search <?= ['outfits' => 'accessories', 'blog' => 'posts', 'docs' => 'pages', 'faq' => 'questions', 'models' => 'models', '3d' => 'items'][$tab] ?? 'folders' ?>…" aria-label="<?= e(ucfirst($whatName)) ?>" <?= count($folders) < 2 ? 'hidden' : '' ?>>
+          <option value=""><?= ['models' => 'All Models', 'outfits' => 'All Accessories', 'blog' => 'All Posts', 'docs' => 'All Pages', 'faq' => 'All Questions', '3d' => 'All Items'][$tab] ?? 'All Folders' ?></option>
           <?php foreach ($folders as $f) echo folder_option($f, $pick, $names) ?>
         </select>
         <label class="toggle lib-unused"><input type="checkbox" class="switch" data-lib-unused <?= $onlyUnused ? 'checked' : '' ?> /><span>Unused Only</span></label>

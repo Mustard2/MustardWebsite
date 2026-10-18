@@ -114,7 +114,7 @@ function m3d_status(array $m): string
 
 function m3d_is_https(): bool
 {
-    // Cloudflare may talk to the server over HTTP while the visitor uses HTTPS
+    // a proxy / CDN may talk to the server over HTTP while the visitor uses HTTPS
     return (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off')
         || strtolower($_SERVER['HTTP_X_FORWARDED_PROTO'] ?? '') === 'https';
 }
@@ -715,6 +715,13 @@ function m3d_today(): string
     return m3d_site_time(time(), 'Y-m-d');
 }
 
+/** A calendar day stored as "2026-04-17" in words ("17 Apr 2026"), as it is: no time zone moves it to another day. */
+function m3d_day_text(string $day, string $fmt = 'j M Y'): string
+{
+    $d = DateTimeImmutable::createFromFormat('!Y-m-d', $day);
+    return $d ? $d->format($fmt) : $day;
+}
+
 /** "Tue 20 Oct, 18:00 CEST" (site time: Discord, admin); $time false = "Tue 20 Oct". Pages for visitors use when_html(). */
 function m3d_release_when(int $ts, bool $time = true): string
 {
@@ -1226,7 +1233,7 @@ const DL_REPEAT_SECS = 600;
 /** This visitor downloaded $code less than DL_REPEAT_SECS ago. */
 function m3d_dl_repeat(string $code): bool
 {
-    $at = (int) ($_SESSION['dl_done'][$code] ?? 0);
+    $at = (int) ($_SESSION['dl_done'][m3d_dl_done_key($code)] ?? 0);
     return $at > time() - DL_REPEAT_SECS;
 }
 
@@ -1235,8 +1242,14 @@ function m3d_dl_done(string $code): void
 {
     if (session_status() !== PHP_SESSION_ACTIVE) return;
     $done = array_filter(is_array($_SESSION['dl_done'] ?? null) ? $_SESSION['dl_done'] : [], fn($t) => (int) $t > time() - DL_REPEAT_SECS);
-    $done[$code] = time();
+    $done[m3d_dl_done_key($code)] = time();
     $_SESSION['dl_done'] = $done;
+}
+
+/** dl_done's key: the link + who downloaded it (another Patreon account logged in the same browser, or a preview, isn't a repeat). */
+function m3d_dl_done_key(string $code): string
+{
+    return $code . '|' . (string) (m3d_patron($GLOBALS['M3D'])['id'] ?? '');
 }
 
 /**
@@ -1286,8 +1299,9 @@ function m3d_rule_matches(array $r, int $months, ?int $tierCents): bool
 
 /**
  * The unlock limit rules of a patron: the ones on, matching their months and their tier. A tier's rules replace the "Any Tier" ones
- * for its patrons (Admin → Access → Unlock Limits), kind by kind: an "Any Tier" rule is left out when a rule for their own tier counts
- * what it counts (models, accessories; "all" counts both), so a tier rule for models leaves the "Any Tier" accessory rules in place.
+ * for its patrons (Admin → Access → Unlock Limits), kind by kind: an "Any Tier" rule is left out only when their own tier's rules count
+ * everything it counts (models, accessories; "all" counts both), so a tier rule for models leaves the "Any Tier" accessory rules and the
+ * "Any Tier" rules for both in place.
  */
 function m3d_rules_for(?array $patron): array
 {
@@ -1303,7 +1317,7 @@ function m3d_rules_pick(array $all, int $months, ?int $tier): array
     $rules = array_values(array_filter($all, fn($r) => is_array($r) && m3d_rule_matches($r, $months, $tier)));
     $covered = [];   // the kinds the patron's own tier rules count
     foreach ($rules as $r) if ((int) ($r['tier'] ?? 0) > 0) foreach (m3d_rule_kinds($r) as $k) $covered[$k] = true;
-    return array_values(array_filter($rules, fn($r) => (int) ($r['tier'] ?? 0) > 0 || !array_intersect(m3d_rule_kinds($r), array_keys($covered))));
+    return array_values(array_filter($rules, fn($r) => (int) ($r['tier'] ?? 0) > 0 || array_diff(m3d_rule_kinds($r), array_keys($covered))));
 }
 
 /** A patron's downloads in the log, oldest first: [[timestamp, kind, slug, version, link label, free, update, membership], …] (patron
@@ -1334,24 +1348,29 @@ function m3d_patron_log(string $patronId): array
  * the newest name from the download log, else from their bug reports / comments, else the name of their exception (written by the admin).
  * The site learns a name only from these, so anyone else is found by their Patreon user ID.
  */
-function m3d_known_patrons(): array
+function m3d_known_patrons(bool $all = false): array
 {
-    static $known = null;
-    if ($known !== null) return $known;
-    $known = [];
+    static $known = null, $seen = null;   // $seen: id => every name it had (a search finds older names too)
+    if ($known !== null) return $all ? $seen : $known;
+    $known = $seen = [];
+    $add = function (string $id, string $name, bool $newest = false) use (&$known, &$seen) {
+        if ($newest) $known[$id] = $name; else $known[$id] ??= $name;
+        if ($name !== '') $seen[$id][$name] = true;
+    };
     if ($fh = @fopen(m3d_log_file(), 'rb')) {
         while (($line = fgets($fh)) !== false) {
             $r = m3d_log_cols($line);
-            if (($r[1] ?? '') !== '') $known[(string) $r[1]] = (string) ($r[2] ?? '');
+            if (($r[1] ?? '') !== '') $add((string) $r[1], (string) ($r[2] ?? ''), true);
         }
         fclose($fh);
     }
     if (function_exists('m3d_bugs')) foreach (m3d_bugs() as $b) {
-        if (($b['by'] ?? '') !== '') $known[(string) $b['by']] ??= (string) ($b['name'] ?? '');
-        foreach ((array) ($b['log'] ?? []) as $x) if (($x['t'] ?? '') === 'c' && ($x['by'] ?? '') !== '' && empty($x['admin'])) $known[(string) $x['by']] ??= (string) ($x['name'] ?? '');
+        if (($b['by'] ?? '') !== '') $add((string) $b['by'], (string) ($b['name'] ?? ''));
+        foreach ((array) ($b['log'] ?? []) as $x) if (($x['t'] ?? '') === 'c' && ($x['by'] ?? '') !== '' && empty($x['admin'])) $add((string) $x['by'], (string) ($x['name'] ?? ''));
     }
-    foreach (m3d_exceptions() as $x) $known[(string) $x['id']] ??= (string) ($x['name'] ?? '');
-    return $known;
+    if (function_exists('m3d_comments_flat')) foreach (m3d_comments_flat() as [, , $c]) if (($c['by'] ?? '') !== '' && empty($c['admin'])) $add((string) $c['by'], (string) ($c['name'] ?? ''));
+    foreach (m3d_exceptions() as $x) $add((string) $x['id'], (string) ($x['name'] ?? ''));
+    return $all ? $seen : $known;
 }
 
 /** What goes in a "Patreon ID or name" field's suggestion list for one person: "Anna · 12345678" (m3d_find_patrons() reads it back). */
@@ -1374,10 +1393,14 @@ function m3d_find_patrons(string $q, int $max = 30): array
     if (preg_match('/^\d{1,20}$/', $q)) return [[$q, '']];
     $words = array_filter(preg_split('/\s+/', m3d_fold($q)) ?: []);
     $out = [];
+    $seen = m3d_known_patrons(true);
     foreach ($known as $id => $name) {
-        $n = m3d_fold($name);
-        foreach ($words as $w) if (!str_contains($n, $w)) continue 2;
-        $out[] = [(string) $id, $name];
+        foreach (array_keys($seen[$id] ?? [$name => true]) as $any) {   // the newest name, or one they had before
+            $n = m3d_fold((string) $any);
+            foreach ($words as $w) if (!str_contains($n, $w)) continue 2;
+            $out[] = [(string) $id, $name];
+            continue 2;
+        }
     }
     return array_slice($out, 0, $max);
 }
@@ -1661,6 +1684,33 @@ function m3d_version_label(array $v): string
 }
 
 /**
+ * The changelog's version anchors (the item page's #v4, #v3-1, #beta-2: changelog_items()), by position in $log; '' for an entry
+ * without a version. A label seen twice gets -2, -3…, so every anchor is one place.
+ */
+function m3d_version_ids(array $log): array
+{
+    $out = [];
+    $seen = [];
+    foreach (array_values($log) as $i => $en) {
+        $id = is_array($en) ? trim((string) preg_replace('/[^a-z0-9]+/', '-', mb_strtolower(m3d_version_label($en))), '-') : '';
+        if ($id !== '' && ctype_digit($id[0])) $id = 'v' . $id;
+        if ($id !== '' && isset($seen[$id])) $id .= '-' . (++$seen[$id]);
+        elseif ($id !== '') $seen[$id] = 1;
+        $out[$i] = $id;
+    }
+    return $out;
+}
+
+/** The address of one version on its item's page (/models/tifa/#v4), or of the changelog when that version isn't in it. */
+function m3d_version_url(string $kind, array $item, string $label): string
+{
+    $log = (array) ($item['changelog'] ?? []);
+    $i = function_exists('m3d_changelog_find') ? m3d_changelog_find($log, $label) : null;
+    $id = $i !== null ? (m3d_version_ids($log)[$i] ?? '') : '';
+    return m3d_item_url($kind, (string) ($item['slug'] ?? '')) . '#' . ($id !== '' ? $id : 'changelog');
+}
+
+/**
  * Updates for a patron: the models/outfits they downloaded where a newer version came out after their last download:
  * the version they got is found below the top of the changelog, or (old log lines without a version, a version renamed
  * since) the latest version is dated after the day of that download. ['models' => [slug => version], 'outfits' => [slug => version]] (public and blurred items, not drafts or password ones; the version
@@ -1841,10 +1891,11 @@ function m3d_like_code(string $patronId): string
     return substr(hash_hmac('sha256', $patronId, m3d_secret('likes')), 0, 20);
 }
 
-/** slug => [codes] for 'models' or 'outfits'; still id => [codes] for 'stills'. */
-function m3d_likes(string $kind = 'models'): array
+/** slug => [codes] for 'models' or 'outfits'; still id => [codes] for 'stills'; post id => [codes] for 'posts' (blog). */
+function m3d_likes(string $kind = 'models', bool $fresh = false): array
 {
     static $all = null;
+    if ($fresh) $all = null;
     $all ??= m3d_read_json('likes') ?? [];
     return is_array($all[$kind] ?? null) ? $all[$kind] : [];
 }
@@ -1864,21 +1915,23 @@ function m3d_set_like(string $slug, string $patronId, bool $like, string $kind =
         $list = array_values(array_diff($d[$kind][$slug] ?? [], [$code]));
         if ($like) $list[] = $code;
         if ($list) $d[$kind][$slug] = $list; else unset($d[$kind][$slug]);
-        if ($like && !$had) $d['daily'] = m3d_likes_daily_add($d['daily'] ?? null);
+        if ($like !== $had) $d['daily'] = m3d_likes_daily_add($d['daily'] ?? null, $like ? 1 : -1);
         return [$d, [count($list), $like]];
     }) ?? [m3d_like_count($slug, $kind), false];
 }
 
-const LIKES_DAILY_KEEP = 60;   // days of new-like counts kept (Admin → Home shows the last 7)
+const LIKES_DAILY_KEEP = 366;   // days of new-like counts kept (Admin → Home shows the last 7, Stats up to a year)
 
-/** likes.json → daily: {since: first day counted, n: {Y-m-d (site time): new likes that day}}; numbers only, no patron codes. */
-function m3d_likes_daily_add(mixed $daily): array
+/** likes.json → daily: {since: first day counted, n: {Y-m-d (site time): new likes that day}}; numbers only, no patron codes.
+ *  A removed like takes one off today (a day may go below 0; the week's total never does), so liking, unliking and liking again counts once,
+ *  also across days. */
+function m3d_likes_daily_add(mixed $daily, int $by = 1): array
 {
     $tz = m3d_tz();
     $today = (new DateTimeImmutable('now', $tz))->format('Y-m-d');
     $daily = is_array($daily) ? $daily : [];
     $n = is_array($daily['n'] ?? null) ? $daily['n'] : [];
-    $n[$today] = (int) ($n[$today] ?? 0) + 1;
+    $n[$today] = (int) ($n[$today] ?? 0) + $by;   // may go below 0: a like given on an earlier day and removed today
     $oldest = (new DateTimeImmutable('today', $tz))->modify('-' . (LIKES_DAILY_KEEP - 1) . ' days')->format('Y-m-d');
     $n = array_filter($n, fn($v, $day) => is_string($day) && $day >= $oldest, ARRAY_FILTER_USE_BOTH);
     ksort($n);
@@ -1893,10 +1946,10 @@ function m3d_likes_new_since(string $from): array
     if (!is_array($daily)) return [0, ''];
     $sum = 0;
     foreach ((array) ($daily['n'] ?? []) as $day => $v) if ((string) $day >= $from) $sum += (int) $v;
-    return [$sum, is_string($daily['since'] ?? null) ? $daily['since'] : ''];
+    return [max(0, $sum), is_string($daily['since'] ?? null) ? $daily['since'] : ''];   // a like from before $from removed since: never below 0
 }
 
-const LOGINS_KEEP = 60;   // days of login counts kept (Admin → Home shows the last 30)
+const LOGINS_KEEP = 366;   // days of login counts kept (Admin → Home shows the last 30, Stats up to a year)
 
 /** A Patreon login (auth/callback.php; owners aren't counted): data/logins.json → {since: first day counted, n: {Y-m-d (site time):
  *  [logins that can download, logins refused]}}. Numbers only: no Patreon ids, names or codes. */
@@ -1944,6 +1997,8 @@ function m3d_rename_counts(string $kind, string $old, string $new): void
         return [$d, null];
     });
     m3d_ignored_move($kind, $old, $new);   // an ignored update stays ignored
+    m3d_blog_rename_item($kind, $old, $new);   // posts showing it
+    m3d_comments_rename($kind, $old, $new);   // its comments
     // the log too: what patrons unlocked, their My Models and updates are read from it by the item's address
     m3d_log_rename_items([m3d_log_item($kind, $old) => m3d_log_item($kind, $new)]);
 }
@@ -2189,6 +2244,7 @@ function m3d_problem(string $where, string $msg, bool $php = true): void
             }
             if ($fh) fclose($fh);
         }
+        if (function_exists('m3d_notify_problem')) m3d_notify_problem($where, $msg);   // the creator's Discord channel, when switched on
     } catch (Throwable) {
         // the log itself failing must never break a page
     }
@@ -2212,6 +2268,33 @@ function m3d_read_json(string $name): ?array
     $f = M3D_PRIVATE . "/data/$name.json";
     $d = is_file($f) ? json_decode((string) file_get_contents($f), true) : null;
     return is_array($d) ? $d : null;
+}
+
+/**
+ * A few facts worked out from a big data file, for what every page shows (the menu, a count in the header), so those pages don't read the
+ * whole file: $make() reads the data and returns the facts, kept in private/cache/summary-<name>.json with the data file's stamp (time,
+ * size, inode: every save writes a new file) and made again whenever the file changed in any way (a save, a restore, a hand edit).
+ * $remake = work it out now (after a save in this request). The cache folder is safe to delete.
+ */
+function m3d_data_summary(string $name, callable $make, bool $remake = false): array
+{
+    static $memo = [];
+    if (isset($memo[$name]) && !$remake) return $memo[$name];
+    $src = M3D_PRIVATE . "/data/$name.json";
+    clearstatcache(true, $src);
+    $st = @stat($src);
+    $stamp = $st ? $st['mtime'] . ':' . $st['size'] . ':' . $st['ino'] : '';
+    $file = M3D_PRIVATE . "/cache/summary-$name.json";
+    if (!$remake && $stamp !== '' && is_file($file)) {
+        $c = json_decode((string) file_get_contents($file), true);
+        if (is_array($c) && ($c['stamp'] ?? '') === $stamp && is_array($c['data'] ?? null)) return $memo[$name] = $c['data'];
+    }
+    $data = $make();
+    if ($stamp !== '') {
+        if (!is_dir(dirname($file))) @mkdir(dirname($file), 0755, true);
+        m3d_atomic_write($file, (string) json_encode(['stamp' => $stamp, 'data' => $data]));
+    }
+    return $memo[$name] = $data;
 }
 
 /** A secret kept in data/.<name>-key, made on first use: the HMAC keys of unlock cookies ('unlock'), download links ('download') and likes ('likes'). */
@@ -2297,7 +2380,7 @@ function m3d_docs_home(): string
     return (m3d_doc_pages(true)[0] ?? m3d_doc_pages()[0] ?? ['slug' => ''])['slug'];
 }
 
-/** Long texts in the simple text format (FAQ answers, docs pages): [{key, name, title, section, folder, text}] for image tools. */
+/** Long texts in the simple text format (FAQ answers, docs pages, blog posts): [{key, name, title, section, folder, text}] for image tools. */
 function m3d_texts(): array
 {
     $out = [];
@@ -2309,10 +2392,12 @@ function m3d_texts(): array
         $out[] = ['key' => 'faq:' . $n++, 'name' => 'FAQ: ' . $q, 'title' => $q, 'section' => (string) ($sec['title'] ?? ''), 'folder' => 'faq', 'text' => (string) ($it['a'] ?? '')];
     }
     foreach (m3d_doc_pages() as $p) $out[] = ['key' => 'docs:' . $p['slug'], 'name' => 'Docs: ' . ($p['title'] ?? $p['slug']), 'title' => (string) ($p['title'] ?? $p['slug']), 'section' => $p['section'], 'folder' => 'docs', 'text' => (string) ($p['body'] ?? '')];
+    // blog posts: 'blog:<id>' (the cover is added by usage_map())
+    foreach (m3d_blog()['posts'] as $p) $out[] = ['key' => 'blog:' . $p['id'], 'name' => 'Blog: ' . $p['title'], 'title' => (string) $p['title'], 'section' => 'Blog', 'folder' => 'blog', 'text' => (string) ($p['body'] ?? '')];
     return $out;
 }
 
-/** Replaces addresses (old => new) inside FAQ answers and docs pages, saving only what changed. */
+/** Replaces addresses (old => new) inside FAQ answers, docs pages and blog posts (their covers too), saving only what changed. */
 function m3d_texts_replace(array $map): bool
 {
     $ok = true;
@@ -2327,7 +2412,7 @@ function m3d_texts_replace(array $map): bool
     foreach ($newDocs['sections'] as &$sec) foreach ($sec['pages'] as &$p) $p['body'] = strtr((string) $p['body'], $map);
     unset($sec, $p);
     if ($newDocs !== $docs) $ok = m3d_save_docs($newDocs) && $ok;
-    return $ok;
+    return m3d_blog_replace($map) && $ok;
 }
 
 // ── Site settings (Admin → Settings), data/settings.json ─────────────────────

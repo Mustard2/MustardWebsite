@@ -7,7 +7,7 @@ defined('M3D_PRIVATE') || exit;
 // Google's <model-viewer>, self-hosted) and the file load only when it is pressed (site.js). Only items whose pictures are public
 // show it (admins also on drafts and password items; blurred pictures never), because anyone who sees the viewer can save the file.
 
-const M3D_GLB_MAX = 100 * 1024 * 1024;   // Cloudflare's free plan refuses requests over 100 MB
+const M3D_GLB_MAX = 100 * 1024 * 1024;   // common CDN proxies (free plans) refuse requests over 100 MB
 const M3D_GLB_LIGHT = ['bytes' => 25 * 1024 * 1024, 'tris' => 150000, 'tex' => 2048];   // above any of these: "may be slow on phones"
 // glTF extensions the viewer can't read without files from another website (or at all): refused at upload
 const M3D_GLB_REFUSED = [

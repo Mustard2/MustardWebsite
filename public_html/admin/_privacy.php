@@ -1,7 +1,8 @@
 <?php
 // Admin → Settings → Privacy → Personal Data: everything the site stores about one Patreon user, for a GDPR access request
 // (Art. 15) or a copy to take elsewhere (Art. 20). Read only: nothing is changed or logged. Included only by settings.php.
-//   By Patreon ID: the download log, an access exception, bug reports and comments, the bug-report block list.
+//   By Patreon ID: the download log, an access exception, bug reports and comments, the bug-report block list, comments on pages
+//   (models, accessories, blog posts) and the comments block list.
 //   By the scrambled code (m3d_like_code() of the ID; the site holds the key, so it finds them from the ID): likes, ignored
 //   updates, the welcome page, Me Too and following bug reports.
 // pd_collect() gathers it; pd_html() is the readable file (one page, opens in any browser, prints); the JSON is the same data.
@@ -20,8 +21,8 @@ function pd_collect(string $id): array
 {
     $code = m3d_like_code($id);
     $d = ['id' => $id, 'name' => '', 'names' => [], 'made' => time(), 'downloads' => [], 'exception' => null,
-          'likes' => ['models' => [], 'outfits' => [], 'stills' => []], 'ignored' => [], 'welcome' => null,
-          'reports' => [], 'comments' => [], 'metoo' => [], 'following' => [], 'blocked' => false];
+          'likes' => ['models' => [], 'outfits' => [], 'stills' => [], 'posts' => []], 'ignored' => [], 'welcome' => null,
+          'reports' => [], 'comments' => [], 'metoo' => [], 'following' => [], 'blocked' => false, 'page_comments' => [], 'cm_blocked' => false];
     $names = [];
 
     // download log: every column of their lines (patron links only: public links are only counted)
@@ -46,6 +47,10 @@ function pd_collect(string $id): array
     foreach (m3d_likes('stills') as $sid => $codes) if (in_array($code, (array) $codes, true)) {
         $s = m3d_still((string) $sid);
         $d['likes']['stills'][] = $s ? m3d_still_name($s) . ' (' . $s['src'] . ')' : 'Picture ' . $sid;
+    }
+    foreach (m3d_likes('posts') as $pid => $codes) if (in_array($code, (array) $codes, true)) {
+        $p = m3d_post((string) $pid);
+        $d['likes']['posts'][] = $p ? $p['title'] . ' (' . m3d_post_url($p) . ')' : 'Post ' . $pid;
     }
 
     foreach ((array) ((m3d_read_json('ignored') ?? [])['ignored'][$code] ?? []) as $key => $ver) {
@@ -75,17 +80,26 @@ function pd_collect(string $id): array
     }
     $d['blocked'] = in_array($id, array_map('strval', m3d_bug_settings()['blocked']), true);
 
+    // comments under model, accessory and blog post pages (app/comments.php), oldest first; the creator's own aren't personal data asked for
+    foreach (array_reverse(m3d_comments_flat()) as [$k, $key, $c]) if ((string) ($c['by'] ?? '') === $id && empty($c['admin'])) {
+        $names[] = (string) ($c['name'] ?? '');
+        [$title, $url] = m3d_comment_page($k, $key);
+        $d['page_comments'][] = ['kind' => $k, 'page' => $title, 'url' => $url !== '' ? abs_url($url) : '', 'at' => (int) ($c['at'] ?? 0),
+            'text' => (string) ($c['text'] ?? ''), 'shown_as' => (string) ($c['name'] ?? ''), 'pending' => !empty($c['pending'])];
+    }
+    $d['cm_blocked'] = in_array($id, m3d_comment_settings()['blocked'], true);
+
     $names = array_values(array_unique(array_filter(array_map('trim', $names), fn($s) => $s !== '' && $s !== $id)));
     $d['names'] = $names;   // as Patreon sent them (the exception's name is the site's own, in its section)
     $d['name'] = $d['downloads'] ? (string) end($d['downloads'])['name'] : ($names[0] ?? (string) ($d['exception']['name'] ?? ''));
     return $d;
 }
 
-/** Whether anything was found. */
-function pd_found(array $d): bool
+/** Whether anything was found ($block false: anything Delete removes; a bug-report block stays). */
+function pd_found(array $d, bool $block = true): bool
 {
     return $d['downloads'] || $d['exception'] || array_filter($d['likes']) || $d['ignored'] || $d['welcome'] !== null
-        || $d['reports'] || $d['comments'] || $d['metoo'] || $d['following'] || $d['blocked'];
+        || $d['reports'] || $d['comments'] || $d['metoo'] || $d['following'] || $d['page_comments'] || ($block && ($d['blocked'] || $d['cm_blocked']));
 }
 
 /** One "Tier: Custom (at least …)" line per part of an exception. */
@@ -113,8 +127,8 @@ function pd_membership(?array $m): string
 {
     if (!$m) return '';
     $p = [];
-    if ($m['months'] !== null) $p[] = m3d_plural($m['months'], 'month') . ' as a patron' . ($m['since'] !== '' ? ' (since ' . m3d_site_time($m['since'], 'j M Y') . ')' : '');
-    elseif ($m['since'] !== '') $p[] = 'patron since ' . m3d_site_time($m['since'], 'j M Y');
+    if ($m['months'] !== null) $p[] = m3d_plural($m['months'], 'month') . ' as a patron' . ($m['since'] !== '' ? ' (since ' . m3d_day_text($m['since']) . ')' : '');
+    elseif ($m['since'] !== '') $p[] = 'patron since ' . m3d_day_text($m['since']);
     if ($m['tier_cents'] !== null) $p[] = m3d_money($m['tier_cents']) . ' tier';
     if ($m['total_cents'] !== null) $p[] = m3d_money($m['total_cents']) . ' total support';
     return implode(' · ', $p);
@@ -127,7 +141,7 @@ function pd_summary(array $d): array
     $items = count(array_unique(array_map(fn($r) => $r['kind'] . ':' . $r['item'], $dl)));
     $l = $d['likes'];
     $likes = array_filter([count($l['models']) ? m3d_plural(count($l['models']), 'model') : '', count($l['outfits']) ? m3d_plural(count($l['outfits']), 'accessory', 'accessories') : '',
-        count($l['stills']) ? m3d_plural(count($l['stills']), 'gallery picture') : '']);
+        count($l['stills']) ? m3d_plural(count($l['stills']), 'gallery picture') : '', count($l['posts']) ? m3d_plural(count($l['posts']), 'blog post') : '']);
     $bugs = array_filter([$d['reports'] ? m3d_plural(count($d['reports']), 'report') : '', $d['comments'] ? m3d_plural(count($d['comments']), 'comment') : '',
         $d['metoo'] ? 'Me Too on ' . count($d['metoo']) : '', $d['following'] ? 'following ' . count($d['following']) : '']);
     return [
@@ -137,8 +151,10 @@ function pd_summary(array $d): array
         'Ignored Updates' => $d['ignored'] ? (string) count($d['ignored']) : '',
         'Welcome Page' => $d['welcome'] !== null ? 'Seen ' . m3d_site_time($d['welcome'], 'j M Y') : '',
         'Bug Reports' => implode(', ', $bugs),
+        'Comments' => $d['page_comments'] ? m3d_plural(count($d['page_comments']), 'comment') . ' on models, accessories and blog posts' : '',
         'Access Exception' => $d['exception'] ? 'Yes' : '',
         'Blocked from Bug Reports' => $d['blocked'] ? 'Yes' : '',
+        'Blocked from Comments' => $d['cm_blocked'] ? 'Yes' : '',
     ];
 }
 
@@ -156,7 +172,7 @@ function pd_json(array $d): array
             'membership' => $r['membership'] ? ['months_as_patron' => $r['membership']['months'], 'patron_since' => $r['membership']['since'] ?: null,
                 'tier_cents' => $r['membership']['tier_cents'], 'total_support_cents' => $r['membership']['total_cents'], 'currency' => m3d_currency()] : null], $d['downloads']),
         'access_exception' => $d['exception'] ? pd_exception_lines($d['exception']) : null,
-        'likes' => ['models' => $d['likes']['models'], 'accessories' => $d['likes']['outfits'], 'gallery_pictures' => $d['likes']['stills']],
+        'likes' => ['models' => $d['likes']['models'], 'accessories' => $d['likes']['outfits'], 'gallery_pictures' => $d['likes']['stills'], 'blog_posts' => $d['likes']['posts']],
         'ignored_updates' => array_map(fn($r) => ['item' => $r['item'], 'version' => $r['version']], $d['ignored']),
         'welcome_page_seen' => $iso($d['welcome']),
         'bug_reports' => array_map(fn($r) => ['number' => $r['n'], 'date' => $iso($r['at'])] + array_diff_key($r, ['n' => 1, 'at' => 1]), $d['reports']),
@@ -164,6 +180,9 @@ function pd_json(array $d): array
         'bug_me_too' => array_map(fn($r) => ['report' => $r['n'], 'report_title' => $r['title']], $d['metoo']),
         'bug_following' => array_map(fn($r) => ['report' => $r['n'], 'report_title' => $r['title'], 'last_opened' => $iso($r['opened'])], $d['following']),
         'blocked_from_bug_reports' => $d['blocked'],
+        'comments' => array_map(fn($r) => ['date' => $iso($r['at']), 'on' => ['models' => 'model', 'outfits' => 'accessory', 'posts' => 'blog post'][$r['kind']] ?? $r['kind'],
+            'page' => $r['page'], 'address' => $r['url'], 'text' => $r['text'], 'shown_as' => $r['shown_as'], 'waiting_for_approval' => $r['pending']], $d['page_comments']),
+        'blocked_from_comments' => $d['cm_blocked'],
         'not_included' => pd_not_included(),
     ];
 }
@@ -173,9 +192,10 @@ function pd_not_included(): array
 {
     return [
         'While you are logged in, a session file on the server holds what Patreon sent at login (shown on My account); it is deleted when you log out or the login expires.',
-        'The web host and Cloudflare keep short-term server logs with IP addresses; the website itself stores no IP addresses.',
+        'The web host and the delivery and protection service keep short-term server logs with IP addresses; the website itself stores no IP addresses.',
         'Backups of the website contain copies of the data above; they are kept to restore the site after a failure.',
-    ] + (m3d_bugs_on() && m3d_bug_settings()['notify'] ? [3 => 'New bug reports are also sent to a private Discord channel of ' . site_name() . ' (title, text and your Patreon name).'] : []);
+    ] + (($bugDc = notify_bug_discord_words()) !== '' ? [3 => ucfirst($bugDc) . ' are also sent to a private Discord channel of ' . site_name() . ' (title, text and your Patreon name).'] : [])
+      + (m3d_notify_discord_on('comments') ? [4 => 'New comments are also sent to a private Discord channel of ' . site_name() . ' (the text and your Patreon name).'] : []);
 }
 
 /** The readable file: a single HTML page, light, printable, no outside files. */
@@ -209,9 +229,10 @@ function pd_html(array $d): string
     }
 
     $h .= $sec('Likes', 'Stored under a scrambled code instead of your Patreon ID; only the number of likes is shown on the site.',
-        $d['likes']['models'] || $d['likes']['outfits'] || $d['likes']['stills']
+        $d['likes']['models'] || $d['likes']['outfits'] || $d['likes']['stills'] || $d['likes']['posts']
             ? ($d['likes']['models'] ? '<h3>Models</h3>' . $list($d['likes']['models']) : '') . ($d['likes']['outfits'] ? '<h3>Accessories</h3>' . $list($d['likes']['outfits']) : '')
               . ($d['likes']['stills'] ? '<h3>Gallery Pictures</h3>' . $list($d['likes']['stills']) : '')
+              . ($d['likes']['posts'] ? '<h3>Blog Posts</h3>' . $list($d['likes']['posts']) : '')
             : $none);
 
     $h .= $sec('Ignored Updates', 'Updates you chose to ignore, so the “Update” mark stays hidden (scrambled code, like likes).',
@@ -240,6 +261,17 @@ function pd_html(array $d): string
         if ($d['blocked']) $h .= '<p>You can’t post bug reports any more (your Patreon ID is on the block list).</p>';
     }
 
+    if ($d['page_comments'] || $d['cm_blocked']) {
+        $c = '';
+        $what = ['models' => 'Model', 'outfits' => 'Accessory', 'posts' => 'Blog post'];
+        foreach ($d['page_comments'] as $r) {
+            $c .= '<div class="card"><p class="card-h">On ' . e($r['page']) . '<span class="sub"> · ' . e($what[$r['kind']] ?? '') . ' · ' . $t($r['at']) . ($r['pending'] ? ' · waiting for approval' : '') . '</span></p>'
+                . ($r['url'] !== '' ? '<p class="sub">' . e($r['url']) . '</p>' : '') . $text($r['text']) . '</div>';
+        }
+        $h .= $sec('Comments', 'Comments you wrote under models, accessories and blog posts, shown publicly with your Patreon name.', $c !== '' ? $c : $none);
+        if ($d['cm_blocked']) $h .= '<p>You can’t comment any more (your Patreon ID is on the block list).</p>';
+    }
+
     $h .= $sec('Not in This File', '', $list(pd_not_included()));
 
     $legal = m3d_legal();
@@ -264,8 +296,8 @@ function pd_html(array $d): string
 /**
  * Deletes everything pd_collect() finds for one Patreon user (Settings → Privacy, after a typed confirmation): their download log lines
  * (so their unlocks start from zero), their exception, likes, ignored updates, welcome-page mark, bug reports (with every comment on
- * them and their uploaded pictures), their comments, Me Too and follows. The all-time download counters stay (totals only), and so
- * does a bug-report block (only the ID, kept so the block still works). Copies inside backups stay until those backups go.
+ * them and their uploaded pictures), their comments, Me Too and follows, and their comments under models, accessories and blog posts.
+ * The all-time download counters stay (totals only), and so do a bug-report or comments block (only the ID, kept so the block still works). Copies inside backups stay until those backups go.
  * Returns [what was deleted (lines for the message), what failed].
  */
 function pd_delete(string $id): array
@@ -282,11 +314,11 @@ function pd_delete(string $id): array
         $people = array_values(array_filter(m3d_exceptions(true), fn($x) => (string) $x['id'] !== $id));
         if (m3d_save_exceptions($people)) $done[] = 'their access exception'; else $fail[] = 'access exception';
     }
-    $likes = count($d['likes']['models']) + count($d['likes']['outfits']) + count($d['likes']['stills']);
+    $likes = count($d['likes']['models']) + count($d['likes']['outfits']) + count($d['likes']['stills']) + count($d['likes']['posts']);
     if ($likes) {
         $ok = m3d_json_update('likes', function ($l) use ($code) {
             $l = is_array($l) ? $l : [];
-            foreach (['models', 'outfits', 'stills'] as $k) {
+            foreach (['models', 'outfits', 'stills', 'posts'] as $k) {
                 foreach ((array) ($l[$k] ?? []) as $key => $codes) {
                     $left = array_values(array_filter((array) $codes, fn($c) => $c !== $code));
                     if ($left) $l[$k][$key] = $left; else unset($l[$k][$key]);
@@ -294,7 +326,7 @@ function pd_delete(string $id): array
             }
             return [$l, true];
         });
-        if ($ok) $done[] = m3d_plural($likes, 'like'); else $fail[] = 'likes';
+        if ($ok) { m3d_likes('models', true); $done[] = m3d_plural($likes, 'like'); } else $fail[] = 'likes';   // the page shown next reads them again
     }
     if ($d['ignored']) {
         $ok = m3d_json_update('ignored', function ($x) use ($code) {
@@ -331,6 +363,18 @@ function pd_delete(string $id): array
             $done[] = implode(', ', array_filter([$d['reports'] ? m3d_plural(count($d['reports']), 'bug report') : '', $d['comments'] ? m3d_plural(count($d['comments']), 'comment') : '',
                 $d['metoo'] ? m3d_plural(count($d['metoo']), 'Me Too', 'Me Too') : '', $d['following'] ? m3d_plural(count($d['following']), 'follow') : '']));
         } else $fail[] = 'bug reports';
+    }
+    if ($d['page_comments']) {
+        $ok = m3d_comments_update(function (array $all) use ($id) {
+            $n = 0;
+            foreach (array_keys(COMMENT_KINDS) as $k) foreach ($all[$k] as $key => $list) {
+                $left = array_values(array_filter((array) $list, fn($c) => !(is_array($c) && (string) ($c['by'] ?? '') === $id && empty($c['admin']))));
+                $n += count((array) $list) - count($left);
+                $all[$k][$key] = $left;
+            }
+            return [$all, $n];
+        });
+        if ($ok !== null) $done[] = m3d_plural((int) $ok, 'comment') . ' on models, accessories and blog posts'; else $fail[] = 'comments';
     }
     return [$done, $fail];
 }

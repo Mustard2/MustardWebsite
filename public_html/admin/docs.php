@@ -25,7 +25,7 @@ admin_start('Docs', 'docs');
         <h1>Docs</h1>
       </div>
       <div class="head-actions">
-        <a class="btn btn-ghost" href="/docs/" target="_blank" data-view-page>View Page ↗</a>
+        <a class="btn btn-ghost" href="/docs/" data-view-page>View Page</a>
         <button class="btn btn-primary" data-save>Save</button>
       </div>
     </div>

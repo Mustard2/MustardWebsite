@@ -6,7 +6,7 @@
 // A link can also be written short, `s4:<file>` (e.g. s4:model.zip or s4:folder/file.zip): the file in the bucket of the
 // "Bucket Address" setting (m3d_s4_resolve()). Settings: private/s4.php {key, secret, minutes, region, bucket, test}: a PHP file like
 // patreon.php (never readable over the web, never in backups). Signing is AWS Signature Version 4 with the query string (the only version S4 accepts: github.com/meganz/s4-specs).
-// Download Domain (`domain`, optional): the site's own address for downloads (files.example.com), a Cloudflare Worker that passes the
+// Download Domain (`domain`, optional): the site's own address for downloads (files.example.com), a proxy (e.g. a CDN worker) that passes the
 // signed address on to the bucket's host unchanged. The address is still signed for the bucket's host (the Worker's request to S4 carries
 // that Host), only the host the visitor sees changes: m3d_s4_domain_url(), for files in the Bucket Address's bucket only.
 declare(strict_types=1);

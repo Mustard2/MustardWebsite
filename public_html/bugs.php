@@ -128,9 +128,13 @@ if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST') {
             $saved = m3d_bug_change($n, function (array $b) use ($p, $text, $now, $admin) {
                 $b['log'][] = ['t' => 'c', 'by' => (string) $p['id'], 'name' => (string) ($p['name'] ?? ''), 'at' => $now, 'text' => $text] + ($admin ? ['admin' => true] : []);
                 $b['act'] = $now;
-                if (!$admin) unset($b['seen']);   // a new comment shows up in Admin → Bugs again
+                if (!$admin) {   // a new comment: the report is "not seen" again, and the bell tells new comments from a new report
+                    if (!empty($b['seen'])) $b['seen_at'] = $now - 1;
+                    unset($b['seen']);
+                }
                 return m3d_bug_follow($b, $p, $now);
             });
+            if ($saved && !$admin) m3d_bug_comment_notify($b, (string) ($p['name'] ?? ''), $text);
             if ($saved) m3d_redirect("/bugs/$n/#comments");
             $error = 'Your comment could not be saved. Please try again.';
         }
@@ -233,7 +237,7 @@ if ($n > 0) {
             $fixAt = $fixIn !== '' ? m3d_changelog_find($fixLog, $fixIn) : null;
             $fixTs = $fixAt !== null ? m3d_changelog_ts((string) (array_values($fixLog)[$fixAt]['date'] ?? '')) : null;
             $fixSoon = $fixTs !== null && $fixTs > time(); ?>
-          <div class="fixed-bar"><?= bug_icon('check') ?><span>Fixed<?= $fixIn !== '' ? ' in <b>' . e($a['name'] . ' ' . bug_version_words($fixIn)) . '</b>' : '' ?><?= $fixSoon ? ', coming ' . e(m3d_release_day($fixTs)) : ($fixAt !== null ? ', out now' : '') ?>.</span><?php if ($a['url'] !== '' && $a['item'] && !$fixSoon && ($fixIn === '' || $fixAt !== null)): ?><a class="btn btn-sm btn-ghost" href="<?= e($a['url']) ?>#changelog">Get the Update →</a><?php endif ?></div>
+          <div class="fixed-bar"><?= bug_icon('check') ?><span>Fixed<?= $fixIn !== '' ? ' in <b>' . e($a['name'] . ' ' . bug_version_words($fixIn)) . '</b>' : '' ?><?= $fixSoon ? ', coming ' . e(m3d_release_day($fixTs)) : ($fixAt !== null ? ', out now' : '') ?>.</span><?php if ($a['url'] !== '' && $a['item'] && !$fixSoon && ($fixIn === '' || $fixAt !== null)): ?><a class="btn btn-sm btn-ghost" href="<?= e($fixIn !== '' ? m3d_version_url($a['kindKey'], $a['item'], $fixIn) : $a['url'] . '#changelog') ?>">Get the Update →</a><?php endif ?></div>
         <?php elseif ($status === 'closed' && ($b['reason'] ?? '') === 'duplicate' && (int) ($b['dup'] ?? 0) > 0): ?>
           <?php $dupB = m3d_bug((int) $b['dup']); /* a hidden, waiting or deleted report would be a dead link */ ?>
           <?php if ($dupB && m3d_bug_visible($dupB, $p)): ?><div class="fixed-bar is-dup"><span>Same bug as <a href="/bugs/<?= (int) $b['dup'] ?>/"><b>#<?= (int) $b['dup'] ?></b></a>: follow that report instead.</span></div><?php else: ?><div class="fixed-bar is-closed"><?= bug_icon('closed') ?><span>Closed: <b>duplicate</b>.</span></div><?php endif ?>

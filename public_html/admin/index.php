@@ -3,7 +3,6 @@
 // to the page where things are changed. The models list is admin/models.php.
 require __DIR__ . '/_admin.php';
 require_once __DIR__ . '/_backup.php';
-require_once __DIR__ . '/_github.php';
 admin_require($M3D);
 
 const HOME_DAYS = 30;   // the chart
@@ -30,6 +29,7 @@ const HOME_WIDGETS = [
     'uptake'      => ['Update Uptake', 'box', 6, 'For each version out in the last 30 days: how many of the patrons who downloaded the item have it.', 2.5],
     'bugs-week'   => ['Bugs This Week', 'tile', 4, 'Bug reports opened in the last 7 days, and how many were fixed or closed.'],
     'stills'      => ['Gallery Downloads', 'tile', 4, 'Full size downloads of Gallery pictures, all time.'],
+    'comments'    => ['Latest Comments', 'box', 6, 'The newest comments on models, accessories and blog posts, and how many wait for approval.', 3],
 ];
 const HOME_SPANS = ['tile' => [3, 4, 6], 'box' => [4, 6, 8, 12]];   // ¼ ⅓ ½ ⅔ Full
 const HOME_TALL = 10;      // a box's height is 1.5–10 tiles (HOME_LOW–HOME_TALL), in half steps: n tiles of HOME_UNIT px and the gaps between them, so it lines up with
@@ -78,8 +78,10 @@ if (admin_form_post('home-layout')) {
         if (!isset(HOME_WIDGETS[$id]) || isset($keep[$id])) continue;
         $keep[$id] = home_place($id, $r[1] ?? 0, $r[2] ?? 0, $r[3] ?? 0);
     }
-    // a widget that can't show now (Bug Reports while bug reports are off) keeps its place for when it can
-    if (!m3d_bugs_on()) foreach (home_layout() as $i => $r) if ($r[0] === 'bugs' && !isset($keep['bugs'])) $keep = array_slice($keep, 0, $i, true) + ['bugs' => $r] + $keep;
+    // a widget that can't show now (the bug widgets while bug reports are off, Latest Comments while comments are off, Gallery Downloads without pictures)
+    // keeps its place for when it can
+    $off = ['bugs' => !m3d_bugs_on(), 'bugs-week' => !m3d_bugs_on(), 'comments' => !m3d_comments_on(), 'stills' => !m3d_gallery()['stills']];
+    foreach (home_layout() as $i => $r) if (!empty($off[$r[0]]) && !isset($keep[$r[0]])) $keep = array_slice($keep, 0, $i, true) + [$r[0] => $r] + $keep;
     m3d_save_settings(['home' => array_map(fn($r) => $r[3] ? $r : ($r[2] ? array_slice($r, 0, 3) : [$r[0], $r[1]]), array_values($keep))]) ? admin_flash('✓ Layout saved') : admin_flash(e(m3d_write_error()), 'err');
 }
 if (admin_form_post('home-reset')) {
@@ -133,22 +135,14 @@ $item = function (string $k, string $s): array {   // [name, picture, kind label
     return [(string) $it['name'], item_pic($k, $it), $k === 'outfits' ? m3d_accessory_type($it) : 'Model', $it];
 };
 
-// ── Needs a look: problems (warn), things waiting (info), then the backup (ok, or warn when old) ──
+// ── Needs a look: problems (warn), things waiting (info), then the backup (ok, or warn when old). The site rows are the bell's
+// (m3d_notify_site() in app/notify.php), here all of them and problems of the whole 7 days ──
 $todo = [];
 if (m3d_bugs_on() && ($n = m3d_bugs_unseen())) $todo[] = ['warn', m3d_plural($n, 'bug report') . ' you haven’t seen', '/bugs/?status=unseen', 'Bugs'];
-$disc = m3d_discord();
-if (m3d_discord_on() && $disc['last'] && empty($disc['last']['ok'])) {
-    $todo[] = ['warn', 'Last Discord post failed' . (($w = (string) ($disc['last']['what'] ?? '')) !== '' ? " ($w)" : ''), settings_url('discord'), 'Settings'];
-}
-if ($dead = lc_dead()) {   // from the last time the admin pressed "Check all links" (never automatic)
-    $names = array_values(array_unique(array_column($dead, 'name')));
-    $todo[] = ['warn', m3d_plural(count($dead), 'download link is', 'download links are') . ' dead: ' . implode(', ', array_slice($names, 0, 3)) . (count($names) > 3 ? '…' : ''), '/admin/links.php', 'Link Check'];
-}
-if ($np = count(m3d_problems($now - 7 * 86400))) $todo[] = ['warn', m3d_plural($np, 'site problem') . ' in the last 7 days', settings_url('problems'), 'Settings'];
-$upCh = gh_saved()['channel'];   // the last check of the update channel: never waits for GitHub (gh_check_cached())
-if (($upCheck = gh_check_cached($upCh)) && ($upNew = gh_newer($upCheck))) {
-    $todo[] = ['info', (count($upNew) === 1 ? 'Update available: ' : count($upNew) . ' updates available, newest ') . $upNew[0]['v'], '/admin/update.php', 'Update'];
-}
+$site = m3d_notify_site(false);
+foreach ($site as [, $tone, , $text, $href, $go]) if ($tone === 'warn') $todo[] = [$tone, $text, $href, $go];
+if (m3d_comments_on() && ($n = count(m3d_comments_pending()))) $todo[] = ['info', m3d_plural($n, 'comment') . ' waiting for approval', settings_url('comments'), 'Settings'];
+foreach ($site as [, $tone, , $text, $href, $go]) if ($tone !== 'warn') $todo[] = [$tone, $text, $href, $go];
 foreach (['models' => '/admin/models.php', 'outfits' => '/admin/outfits.php'] as $k => $href) {
     $drafts = array_values(array_filter(m3d_items($k), fn($it) => m3d_visibility($it) === 'draft'));
     if (!$drafts) continue;
@@ -182,16 +176,17 @@ $diff = function (int $now, int $before, string $what, string $noun = 'downloads
     $up = $now > $before;
     // today: the plain difference; the 7 days: a % only against 20 or more (against a handful it says nothing: "16100% more than (1)")
     $txt = ($what === 'yesterday' || $before < 20 ? abs($now - $before) : round(abs($now - $before) / $before * 100) . '%') . ($up ? ' more' : ' fewer') . " than $what ($before)";
-    return '<small class="' . ($up ? 'up' : 'down') . '">' . ($up ? '↑ ' : '↓ ') . e($txt) . '</small>';
+    return '<small class="' . ($up ? 'up' : 'down') . '" title="' . e($txt) . '">' . ($up ? '↑ ' : '↓ ') . e($txt) . '</small>';   // the whole line on hover when a narrow tile cuts it
 };
 // likes: new ones in the same 7 days (counted per day since this was added: likes.json → daily), and every like there is now
 [$newLikes] = m3d_likes_new_since($today->modify('-6 days')->format('Y-m-d'));
-// only items and pictures that still exist, like the Likes tile of Downloads (models and accessories) it links to; Gallery likes are named apart
-$itemLikes = $stillLikes = 0;
+// only items, pictures and posts that still exist, like the Likes tile of Downloads (models and accessories) it links to; Gallery and blog likes are named apart
+$itemLikes = $stillLikes = $postLikes = 0;
 foreach (['models', 'outfits'] as $k) foreach (m3d_likes($k) as $slug => $codes) if (m3d_item($k, (string) $slug)) $itemLikes += count((array) $codes);
 foreach (m3d_likes('stills') as $id => $codes) if (m3d_still((string) $id)) $stillLikes += count((array) $codes);
-$allLikes = $itemLikes + $stillLikes;
-$likesNote = number_format($allLikes) . ' ' . ($allLikes === 1 ? 'like' : 'likes') . ' in all' . ($stillLikes ? ', ' . number_format($stillLikes) . ' on Gallery pictures' : '');
+foreach (m3d_likes('posts') as $id => $codes) if (m3d_post((string) $id)) $postLikes += count((array) $codes);
+$allLikes = $itemLikes + $stillLikes + $postLikes;
+$likesNote = number_format($allLikes) . ' ' . ($allLikes === 1 ? 'like' : 'likes') . ' in all' . ($stillLikes ? ', ' . number_format($stillLikes) . ' on Gallery pictures' : '') . ($postLikes ? ', ' . number_format($postLikes) . ' on blog posts' : '');
 $maxDay = max(1, max($days));
 // Patreon logins per day (counted since this was added: data/logins.json, numbers only; owners aren't counted): [can download, refused]
 [$loginDays, $loginSince] = m3d_logins_daily();
@@ -221,13 +216,15 @@ if (m3d_bugs_on()) {
 // like Admin → Downloads: the models and accessories on the site (no Gallery pictures, no removed items)
 $all = 0;
 foreach (['models', 'outfits'] as $k) foreach (m3d_items($k) as $it) $all += m3d_downloads($k, (string) $it['slug'])['total'];
-$w['dl-all'] = '<a class="stat stat-i stat-free" href="/admin/log.php">' . $icon('all') . '<b>' . number_format($all) . '</b><span>Downloads All Time</span><small class="flat">patrons and free links</small></a>';
-$w['likes-week'] = '<a class="stat stat-i stat-likes" href="/admin/log.php?tsort=likes-desc" title="Likes given in the last 7 days on models, accessories and gallery pictures">' . $icon('like') . '<b>' . number_format($newLikes) . '</b><span>New Likes This Week</span><small class="flat">' . e($likesNote) . '</small></a>';
-$w['logins-week'] = '<div class="stat stat-i stat-login" title="Logins with Patreon (yours aren’t counted)">' . $icon('login') . '<b>' . number_format($loginWeek) . '</b><span>Logins, Last 7 Days</span>' . ($loginSince === '' ? '<small class="flat">counted from the next login</small>' : $diff($loginWeek, $loginPrev, 'the 7 days before', 'logins')) . '</div>';
+$w['dl-all'] = '<a class="stat stat-i stat-free" href="/admin/stats.php?p=all">' . $icon('all') . '<b>' . number_format($all) . '</b><span>Downloads All Time</span><small class="flat">patrons and free links</small></a>';
+$w['likes-week'] = '<a class="stat stat-i stat-likes" href="/admin/stats.php?tsort=likes-desc" title="Likes given in the last 7 days on models, accessories, gallery pictures and blog posts">' . $icon('like') . '<b>' . number_format($newLikes) . '</b><span>New Likes This Week</span><small class="flat">' . e($likesNote) . '</small></a>';
+$w['logins-week'] = '<div class="stat stat-i stat-login" title="Logins with Patreon (yours aren’t counted)">' . $icon('login') . '<b>' . number_format($loginWeek) . '</b><span>Logins, Last 7 Days</span>' . ($loginSince === '' ? '<small class="flat">counted from the next login</small>'
+    : ($loginSince > $today->modify('-13 days')->format('Y-m-d') ? '<small class="flat">counted since ' . e((new DateTimeImmutable($loginSince, $tz))->format('j M')) . '</small>'   // the 7 days before weren't all counted
+    : $diff($loginWeek, $loginPrev, 'the 7 days before', 'logins'))) . '</div>';
 
 ob_start(); ?>
         <section class="sec hm-chart-box">
-          <h2>Downloads, Last <?= HOME_DAYS ?> Days <a href="/admin/log.php">Downloads →</a></h2>
+          <h2>Downloads, Last <?= HOME_DAYS ?> Days <a href="/admin/stats.php">Stats →</a></h2>
           <div class="hm-chart" role="img" aria-label="<?= e(number_format(array_sum($days)) . ' patron downloads in the last ' . HOME_DAYS . ' days') ?>">
             <?php foreach ($days as $d => $n): ?><i class="<?= $d === array_key_last($days) ? 'today' : '' ?>" style="height:<?= max(2, round($n / $maxDay * 100)) ?>%" title="<?= e($fmtDay($d) . ': ' . m3d_plural($n, 'download')) ?>"></i><?php endforeach ?>
           </div>
@@ -298,7 +295,7 @@ $liked = [];
 foreach (['models', 'outfits'] as $k) foreach (m3d_likes($k) as $slug => $codes) if (($n = count((array) $codes)) && ($it = m3d_item($k, (string) $slug))) $liked[] = [$n, $k, $it];
 usort($liked, fn($a, $b) => $b[0] <=> $a[0]);
 $liked = array_slice($liked, 0, HOME_MORE);
-$h = '<section class="sec hm-top-box"><h2>Most Liked <a href="/admin/log.php?tsort=likes-desc">Downloads →</a></h2>';
+$h = '<section class="sec hm-top-box"><h2>Most Liked <a href="/admin/stats.php?tsort=likes-desc">Stats →</a></h2>';
 if (!$liked) $h .= '<p class="muted">No likes yet.</p>';
 else {
     $h .= '<ul class="hm-top">';
@@ -381,6 +378,29 @@ if (($stills = m3d_gallery()['stills'])) {   // Gallery Downloads: the all-time 
     $withLink = count(array_filter($stills, fn($x) => !empty($x['link']['url'])));
     $w['stills'] = '<a class="stat stat-i stat-gal" href="/admin/gallery.php">' . $icon('pic') . '<b>' . number_format($sd) . '</b><span>Gallery Downloads</span><small class="flat">'
         . e('all time · ' . m3d_plural($withLink, 'picture') . ' with a full size file') . '</small></a>';
+}
+if (m3d_comments_on()) {   // Latest Comments: the newest ones by visitors (not yours), the waiting ones tagged; the link opens the comment on its page
+    $cms = array_values(array_filter(m3d_comments_flat(), fn($r) => empty($r[2]['admin'])));
+    $wait = count(m3d_comments_pending());
+    $h = '<section class="sec hm-cm-box"><h2>Latest Comments <a href="' . e(settings_url('comments')) . '">' . ($wait ? e($wait . ' Waiting') . ' →' : 'Settings →') . '</a></h2>';
+    if (!$cms) $h .= '<p class="muted">No comments yet.</p>';
+    else {
+        $h .= '<ul class="hm-top hm-cm">';
+        foreach (array_slice($cms, 0, HOME_MORE) as $i => [$k, $key, $c]) {
+            [$title, $url] = m3d_comment_page($k, $key);
+            $name = (string) ($c['name'] ?? '') ?: 'Someone';
+            $at = (int) ($c['at'] ?? 0);
+            $text = preg_replace('/\s+/u', ' ', (string) ($c['text'] ?? '')) ?? '';   // one line, without the format's marks (**bold**, links…)
+            $text = mb_strimwidth(trim(html_entity_decode(strip_tags(md_inline($text)), ENT_QUOTES | ENT_HTML5, 'UTF-8')), 0, 160, '…');
+            $h .= $more($i, HOME_TOP) . bug_avatar($name) . '<span class="nm"><b>' . e($name) . '</b> <span class="on">' . (!empty($c['re']) ? 'replied on ' : 'on ')
+                . ($url !== '' ? '<a href="' . e($url . '#cm-' . (int) $c['id']) . '">' . e($title) . '</a>' : e($title)) . '</span>'
+                . '<span class="k">' . e($text) . '</span></span>'
+                . '<span class="when" title="' . e(m3d_site_time($at, 'D j M Y, H:i T')) . '">' . e(m3d_site_time($at, m3d_site_time($at, 'Y-m-d') === m3d_today() ? 'H:i' : 'j M'))   // like Latest Downloads
+                . (!empty($c['pending']) ? '<span class="hm-draft hm-wait">Waiting</span>' : '') . '</span></li>';
+        }
+        $h .= '</ul>';
+    }
+    $w['comments'] = $h . '</section>';
 }
 
 // shown ones in the saved order, then the others (hidden: the Add Widget window shows them)
