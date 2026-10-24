@@ -27,10 +27,10 @@ $p = m3d_patron($M3D);
 $can = $p !== null && !empty($p['access']);
 
 if ($kind === 'stills') {
-    $still = preg_match('/^[0-9a-f]{8}$/', $slug) ? m3d_still($slug) : null;
+    $still = preg_match('/^[0-9a-f]{8}$/D', $slug) ? m3d_still($slug) : null;
     if (!$still || m3d_still_view($still) !== 'clear') like_out(['error' => 'Unknown picture.'], 404);   // hidden or blurred for this visitor
 } elseif ($kind === 'posts') {
-    $post = preg_match('/^[0-9a-f]{8}$/', $slug) && m3d_blog_on() ? m3d_post($slug) : null;
+    $post = preg_match('/^[0-9a-f]{8}$/D', $slug) && m3d_blog_on() ? m3d_post($slug) : null;
     if (!$post || m3d_post_view($post) !== 'full') like_out(['error' => 'Unknown post.'], 404);   // drafts, scheduled posts, Patrons Only posts locked for this visitor
 } else {
     $item = m3d_item($kind, $slug);

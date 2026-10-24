@@ -1,5 +1,5 @@
 <?php
-// Admin → Gallery: the pictures of /gallery/ (added from the Images library or uploaded; caption, characters, date,
+// Admin → Gallery: the pictures of /gallery/ (added from the Media library or uploaded; caption, characters, date,
 // visibility, full size link). Rules: app/gallery.php.
 // The page is built by admin.js (initGallery) from the JSON below; changes go to save.php (kind "gallery").
 require __DIR__ . '/_admin.php';
@@ -19,6 +19,7 @@ admin_start('Gallery', 'gallery');
         <button type="button" class="btn btn-primary" data-g-add>+ Add Pictures</button>
       </div>
     </div>
+    <?= admin_gallery_tabs('gallery') ?>
 
     <div data-gadmin></div>
 

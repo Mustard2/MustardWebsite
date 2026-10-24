@@ -6,9 +6,10 @@ $outfits = m3d_listed_items('outfits');
 // the Filters panel's rows (chip_row()); the address can pick a model (?model=), a type (?type=) and an order (?sort=)
 $modelChips = ['' => 'All'];
 $forModels = [];
-foreach ($outfits as $o) foreach (array_unique($o['models'] ?? []) as $s) $forModels[$s] = ($forModels[$s] ?? 0) + 1;   // outfits per model
+$forAll = 0;   // accessories made for every model: counted under every model's chip, but they give no model a chip of its own
+foreach ($outfits as $o) if (m3d_fits_all($o)) $forAll++; else foreach (array_unique($o['models'] ?? []) as $s) $forModels[$s] = ($forModels[$s] ?? 0) + 1;   // outfits per model
 foreach (m3d_listed_items('models') as $m) if (isset($forModels[$m['slug']]))
-    $modelChips[$m['slug']] = ['label' => m3d_model_name($m) . (($m['generation'] ?? '') !== '' ? ' G' . $m['generation'] : ''), 'count' => $forModels[$m['slug']]];
+    $modelChips[$m['slug']] = ['label' => m3d_model_name($m) . (($m['generation'] ?? '') !== '' ? ' G' . $m['generation'] : ''), 'count' => $forModels[$m['slug']] + $forAll];
 $types = [];   // lowercased type => [name as first written, how many] ("Hair" and "hair" are one type, like the cards' data-type); the Type row only with two or more
 foreach ($outfits as $o) { $t = m3d_accessory_type($o); $k = mb_strtolower($t); $types[$k] = [$types[$k][0] ?? $t, ($types[$k][1] ?? 0) + 1]; }
 uksort($types, fn($a, $b) => ($b === 'outfit') <=> ($a === 'outfit') ?: strnatcasecmp((string) $a, (string) $b));   // Outfit first
@@ -37,14 +38,14 @@ layout_start('Accessories', 'Outfits, hair styles and other accessories made for
       </div>
       <!-- sort, type, unlocked and model: closed by default (open when the address asks for a type or a model), the Filters button opens them -->
       <div class="filter-panel" id="outfit-filters"<?= $open ? '' : ' hidden' ?>>
-        <?= chip_row('Sort', 'sort', ['order' => 'Featured', 'updated' => 'Recently Updated', 'name' => 'A–Z', 'likes' => 'Most Liked', 'downloads' => 'Most Downloaded'], $pre['sort']) ?>
+        <?= chip_row('Sort', 'sort', ['updated' => 'Recently Updated', 'order' => 'Featured', 'name' => 'A–Z', 'likes' => 'Most Liked', 'downloads' => 'Most Downloaded'], $pre['sort']) ?>
         <?= count($types) > 1 ? chip_row('Type', 'type', $typeChips, $pre['type']) : '' ?>
         <?= liked_row('outfits', $outfits) ?>
         <?= chip_row('Unlocked', 'owned', ['' => 'All', 'yes' => 'Unlocked', 'no' => 'Not Yet'], '', ' data-owned-row hidden') /* shown by site.js when download limits apply */ ?>
         <?= count($modelChips) > 1 ? chip_row('Model', 'model', $modelChips, $pre['model']) : '' ?>
       </div>
       <div class="ogrid ogrid-lg" data-ogrid>
-        <?php foreach ($outfits as $o) echo outfit_card($o) ?>
+        <?php foreach (cards_by_updated($outfits) as $o) echo outfit_card($o) ?>
       </div>
       <nav class="pager" data-pager aria-label="Accessory pages" hidden></nav>   <!-- site.js: 25 per page -->
       <div class="empty" data-cat-empty hidden>

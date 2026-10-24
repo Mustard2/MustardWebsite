@@ -28,7 +28,7 @@ function img_webp(): bool
 /** Absolute file path for a /media/... address, or null if it isn't one of ours (never a hidden file like media/.htaccess). */
 function media_path(string $url): ?string
 {
-    if (!preg_match('#^/media/[A-Za-z0-9/_.-]+$#', $url) || str_contains($url, '..') || str_contains($url, '/.')) return null;
+    if (!preg_match('#^/media/[A-Za-z0-9/_.-]+$#D', $url) || str_contains($url, '..') || str_contains($url, '/.')) return null;
     return M3D_SITE . $url;
 }
 
@@ -134,7 +134,7 @@ function img_load(string $path)
     if ($info[2] === IMAGETYPE_JPEG && function_exists('exif_read_data')) {
         $o = (int) (@exif_read_data($path)['Orientation'] ?? 1);
         $rot = [3 => 180, 6 => -90, 8 => 90][$o] ?? 0;
-        if ($rot) { $r = imagerotate($im, $rot, 0); if ($r) { imagedestroy($im); $im = $r; } }
+        if ($rot) { $r = imagerotate($im, $rot, 0); if ($r) $im = $r; }
     }
     return $im;
 }
@@ -198,9 +198,9 @@ function img_make_versions(string $src, string $dir, string $base): string
         $large = img_resized($im, IMG_LARGE);
         $largePath = img_save($large, "$dir/$base");
         img_save_versions($large, "$dir/$base", ['md', 'sm', 'xs']);
-        if ($large !== $im) imagedestroy($large);
+        unset($large);
     } finally {
-        imagedestroy($im);
+        unset($im);
     }
     return basename($largePath);
 }
@@ -217,10 +217,8 @@ function img_save_versions($im, string $pathNoExt, array $which): void
         if ($suf !== 'sm' && $long <= $max) continue;
         $v = img_resized($from, $max);
         if (in_array($suf, $which, true)) img_save($v, "$pathNoExt-$suf");
-        if ($from !== $im && $from !== $v) imagedestroy($from);
         $from = $v;
     }
-    if ($from !== $im) imagedestroy($from);
 }
 
 /** The versions ('md', 'xs') a picture in media/ should have but doesn't (pictures from before they existed). */
@@ -248,7 +246,7 @@ function img_make_missing(string $url): void
     $im = img_load($p);
     if (!$im) throw new RuntimeException('Could not read this image.');
     try { img_save_versions($im, dirname($p) . '/' . pathinfo($p, PATHINFO_FILENAME), $missing); }
-    finally { imagedestroy($im); }
+    finally { unset($im); }
 }
 
 const IMG_BLUR = 24;   // longest side of the blurred copies (blurred / locked items)
@@ -285,7 +283,7 @@ function img_cache_cleanup(string $dir): void
     if (!is_dir($dir) || (is_file($mark) && filemtime($mark) > time() - 86400)) return;
     @touch($mark);
     $old = time() - 60 * 86400;
-    foreach (glob($dir . '/*-*.json') ?: [] as $f) if ((int) @filemtime($f) < $old) @unlink($f);
+    foreach (array_merge(glob($dir . '/*-*.json') ?: [], glob($dir . '/og-*.jpg') ?: []) as $f) if ((int) @filemtime($f) < $old) @unlink($f);   // og-: social_image_file()
 }
 
 /**
@@ -309,13 +307,12 @@ function glow_colors_of(string $path): array
     if (!img_supported() || !($im = img_load($path))) return [];
     $grid = imagecreatetruecolor(3, 3);   // 3×3 averages: the 8 outer cells are the edges and corners
     imagecopyresampled($grid, $im, 0, 0, 0, 0, 3, 3, imagesx($im), imagesy($im));
-    imagedestroy($im);
+    unset($im);
     $out = [];
     foreach (['tl' => [0, 0], 't' => [1, 0], 'tr' => [2, 0], 'r' => [2, 1], 'br' => [2, 2], 'b' => [1, 2], 'bl' => [0, 2], 'l' => [0, 1]] as $k => [$x, $y]) {
         $c = imagecolorat($grid, $x, $y);
         $out[$k] = sprintf('rgb(%d %d %d)', ($c >> 16) & 255, ($c >> 8) & 255, $c & 255);
     }
-    imagedestroy($grid);
     return $out;
 }
 
@@ -351,41 +348,116 @@ function img_tiny_jpeg(string $what, string $url, int $max, int $quality): strin
         ob_start();
         $ok = imagejpeg($tiny, null, $quality);
         $data = (string) ob_get_clean();
-        if ($tiny !== $im) imagedestroy($tiny);
-        imagedestroy($im);
+        unset($tiny, $im);
         return $ok && $data !== '' ? 'data:image/jpeg;base64,' . base64_encode($data) : '';
     });
 }
 
+const IMG_SOCIAL_W = 1200;   // link-preview picture (X's summary_large_image): 1.91:1, shown whole with no cropping
+const IMG_SOCIAL_H = 630;
+
 /**
- * Copies one outside image into media/<folder>/ as WebP; returns the new address (Images page, SmutBase import).
- * $key names the file (default: the address; signed addresses change every time, so the importer passes one without the query).
- * $maxPixels > 0 refuses bigger pictures before decoding them (GD would run out of memory), $maxBytes caps the download.
+ * The address of the link-preview copy of a picture of this site (twitter:image): /og/<signature><address>.jpg, served by
+ * og-image.php. X crops a large card picture to 1.91:1 (a 9:16 main picture would show only a strip of its middle) and is
+ * pickier than Discord about formats, so this is a 1200 × 630 JPEG: the whole picture in the middle over a dark blurred copy of itself.
+ * The signature means only addresses the site printed work (nobody can make the server draw any file). '' when it can't be made.
  */
-function copy_external(string $url, string $folder, int $maxPixels = 0, ?string $key = null, int $maxBytes = 80 * 1024 * 1024): string
+function social_image_url(string $url): string
+{
+    $path = media_path($url);
+    if (!$path || !is_file($path) || !img_supported()) return '';
+    $b = rtrim(strtr(base64_encode($url), '+/', '-_'), '=');
+    return strlen($b) <= 400 ? '/og/' . social_image_sig($url) . $b . '.jpg' : '';   // 400: social_image_src()'s limit
+}
+
+function social_image_sig(string $url): string
+{
+    return substr(hash_hmac('sha256', $url, m3d_secret('preview')), 0, 16);
+}
+
+/** The picture address in a code of social_image_url(), null when it isn't one the site made. */
+function social_image_src(string $code): ?string
+{
+    if (!preg_match('/^([0-9a-f]{16})([A-Za-z0-9_-]{1,400})$/D', $code, $m)) return null;
+    $url = (string) base64_decode(strtr($m[2], '-_', '+/'), true);
+    if ($url === '' || !hash_equals(social_image_sig($url), $m[1])) return null;
+    $path = media_path($url);
+    return $path && is_file($path) ? $url : null;
+}
+
+/** The link-preview JPEG of a picture (made once, kept in private/cache/ like img_cache()), null when it can't be made. */
+function social_image_file(string $url): ?string
+{
+    $src = img_variant($url, 'md') ?: $url;   // 1800 px is plenty for 1200 × 630 and quicker to read than the large file
+    $path = (string) media_path($src);
+    $dir = M3D_PRIVATE . '/cache';
+    img_cache_cleanup($dir);
+    $file = $dir . '/og-' . md5($path . '|' . (int) @filemtime($path)) . '.jpg';
+    if (is_file($file)) {
+        if ((int) @filemtime($file) < time() - 7 * 86400) @touch($file);   // still in use: the clean-up keeps it
+        return $file;
+    }
+    $jpeg = social_image_make($path);
+    if ($jpeg === '' || !(is_dir($dir) || @mkdir($dir, 0700, true))) return null;
+    m3d_atomic_write($file, $jpeg);
+    return is_file($file) ? $file : null;
+}
+
+/** Draws the link-preview picture of one file: the whole picture fitted in the middle, the rest a dark blurred copy of it. */
+function social_image_make(string $path): string
+{
+    if (!img_supported() || !($im = img_load($path))) return '';
+    $w = imagesx($im); $h = imagesy($im);
+    $W = IMG_SOCIAL_W; $H = IMG_SOCIAL_H;
+    $out = imagecreatetruecolor($W, $H);
+    // background: the picture covering the frame, shrunk to a few pixels (the blur) and drawn back big, darker
+    $s = max($W / $w, $H / $h);
+    $cw = (int) round($W / $s); $ch = (int) round($H / $s);
+    $bg = imagecreatetruecolor(40, (int) round(40 * $H / $W));
+    imagecopyresampled($bg, $im, 0, 0, intdiv($w - $cw, 2), intdiv($h - $ch, 2), imagesx($bg), imagesy($bg), $cw, $ch);
+    foreach ([2, 4, 4] as $k) {   // grown back in steps, softened at each one: GD's one-step enlargement shows the pixels as squares
+        $big = imagecreatetruecolor(imagesx($bg) * $k, imagesy($bg) * $k);
+        imagecopyresampled($big, $bg, 0, 0, 0, 0, imagesx($big), imagesy($big), imagesx($bg), imagesy($bg));
+        for ($i = 0; $i < 3; $i++) imagefilter($big, IMG_FILTER_GAUSSIAN_BLUR);
+        $bg = $big;
+    }
+    imagecopyresampled($out, $bg, 0, 0, 0, 0, $W, $H, imagesx($bg), imagesy($bg));
+    imagefilter($out, IMG_FILTER_BRIGHTNESS, -70);
+    // the picture itself, whole
+    $f = min($W / $w, $H / $h);
+    $fw = (int) round($w * $f); $fh = (int) round($h * $f);
+    imagecopyresampled($out, $im, intdiv($W - $fw, 2), intdiv($H - $fh, 2), 0, 0, $fw, $fh, $w, $h);
+    unset($im, $bg, $big);
+    imageinterlace($out, true);
+    ob_start();
+    $ok = imagejpeg($out, null, 85);
+    $data = (string) ob_get_clean();
+    return $ok ? $data : '';
+}
+
+/**
+ * Copies one outside image into media/<folder>/ as WebP; returns the new address (Images page). The download is capped at 80 MB.
+ */
+function copy_external(string $url, string $folder): string
 {
     $dir = M3D_SITE . '/media/' . $folder;
     if (!is_dir($dir) && !@mkdir($dir, 0755, true)) throw new RuntimeException('Cannot create media folder');
-    $key ??= $url;
-    $base = strtolower(preg_replace('/[^A-Za-z0-9]+/', '-', pathinfo((string) parse_url($key, PHP_URL_PATH), PATHINFO_FILENAME)));
-    $base = substr(trim($base, '-') ?: 'image', 0, 50) . '-' . substr(md5($key), 0, 6);
+    $maxBytes = 80 * 1024 * 1024;
+    $base = strtolower(preg_replace('/[^A-Za-z0-9]+/', '-', pathinfo((string) parse_url($url, PHP_URL_PATH), PATHINFO_FILENAME)));
+    $base = substr(trim($base, '-') ?: 'image', 0, 50) . '-' . substr(md5($url), 0, 6);
     if (is_file("$dir/$base.webp")) return "/media/$folder/$base.webp";   // copied before
     $tmp = "$dir/.copy-" . bin2hex(random_bytes(4));
     $copied = false;
     // a second try when the connection breaks off halfway (big pictures on a busy server); the error says why it stopped
     for ($try = 1; !$copied; $try++) {
         $fh = fopen($tmp, 'wb');
-        $ch = curl_init($url);
-        curl_setopt_array($ch, [CURLOPT_FILE => $fh, CURLOPT_FOLLOWLOCATION => true, CURLOPT_MAXREDIRS => 3, CURLOPT_CONNECTTIMEOUT => 15, CURLOPT_TIMEOUT => 120,
-            CURLOPT_USERAGENT => 'Mozilla/5.0 (catalog site)', CURLOPT_MAXFILESIZE => $maxBytes]);
-        $ok = curl_exec($ch);
-        $code = (int) curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
-        $errno = curl_errno($ch);
-        $err = curl_error($ch);
-        curl_close($ch);
+        // m3d_fetch(): http / https only, never this server or a private network, each of the 3 redirects checked again
+        ['body' => $ok, 'code' => $code, 'errno' => $errno, 'err' => $err] = m3d_fetch($url, [CURLOPT_FILE => $fh, CURLOPT_CONNECTTIMEOUT => 15, CURLOPT_TIMEOUT => 120,
+            CURLOPT_USERAGENT => 'Mozilla/5.0 (catalog site)', CURLOPT_MAXFILESIZE => $maxBytes], 3);
         fclose($fh);
         if ($ok && $code === 200) break;
         @unlink($tmp);
+        if ($errno === M3D_FETCH_REFUSED) throw new RuntimeException($err);   // trying again changes nothing
         $why = $errno === CURLE_FILESIZE_EXCEEDED ? 'bigger than ' . max(1, round($maxBytes / 1048576)) . ' MB'
             : ($errno === CURLE_OPERATION_TIMEDOUT ? 'too slow, stopped after 2 minutes' : ($err !== '' ? $err : 'no answer'));
         $retry = $code !== 404 && $code !== 403 && $errno !== CURLE_FILESIZE_EXCEEDED;
@@ -393,7 +465,6 @@ function copy_external(string $url, string $folder, int $maxPixels = 0, ?string 
     }
     try {
         $sz = @getimagesize($tmp);
-        if ($maxPixels > 0 && $sz && $sz[0] * $sz[1] > $maxPixels) throw new RuntimeException('Picture too large to convert');
         if ($sz && !img_fits_memory($sz[0], $sz[1])) throw new RuntimeException('Picture too large for this server’s memory (' . $sz[0] . '×' . $sz[1] . ')');
         if (img_is_animated_gif($tmp)) { rename($tmp, "$dir/$base.gif"); return "/media/$folder/$base.gif"; }
         return "/media/$folder/" . img_make_versions($tmp, $dir, $base);

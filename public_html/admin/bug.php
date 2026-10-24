@@ -1,7 +1,8 @@
 <?php
 // The creator's changes to one bug report, made on the report's own page (/bugs/<n>/: Creator Tools, Reported By, the ⋯ menus).
 // POST do = state (status with "fixed in" / the reason it was closed, tags, pin / hide / lock) | title (edited in place) | edit (what the person wrote) |
-// publish | editcomment | delcomment | block | unblock | delete (CSRF), each coming back to the report with ?done= or ?err=.
+// publish | editcomment | delcomment | block | unblock | delete (CSRF), each coming back to the report with ?done= or ?err= (a code:
+// bug_result_text() has the messages, so the address never carries a text).
 // Opening this address shows the report.
 require __DIR__ . '/_admin.php';
 admin_require($M3D);
@@ -17,17 +18,16 @@ $now = time();
 $msg = '';
 $error = '';
 $anchor = '';
-$fail = 'Could not save: check that ' . basename(M3D_PRIVATE) . '/data is writable.';
 switch ($do) {
     case 'state':
         $st = bug_str($_POST['status'] ?? '');
-        if (!isset(BUG_STATUSES[$st])) { $error = 'Pick a status.'; break; }
+        if (!isset(BUG_STATUSES[$st])) { $error = 'status'; break; }
         // a typed version (website / other reports); an item's report has no field (its version comes from the changelog): what's stored stays, so no new log line
         $fixed = $st !== 'fixed' ? '' : (array_key_exists('fixed', $_POST) ? bug_line($_POST['fixed'], 80) : (string) ($b['fixed'] ?? ''));
         $reason = $st === 'closed' && isset(BUG_REASONS[bug_str($_POST['reason'] ?? '')]) ? (string) $_POST['reason'] : '';
         $dup = $reason === 'duplicate' ? (int) bug_str($_POST['dup'] ?? '') : 0;
         // (a number saved before may since have been deleted: it doesn't block the other changes)
-        if ($dup === $n || ($dup > 0 && $dup !== (int) ($b['dup'] ?? 0) && !m3d_bug($dup))) { $error = 'Duplicate of: write the number of another report.'; break; }
+        if ($dup === $n || ($dup > 0 && $dup !== (int) ($b['dup'] ?? 0) && !m3d_bug($dup))) { $error = 'dup'; break; }
         $tags = array_values(array_intersect(array_map('strval', array_keys(m3d_bug_tags())), array_map('bug_str', (array) ($_POST['tags'] ?? []))));   // ids as strings, also digit-only ones
         $res = m3d_bug_change($n, function (array $b) use ($st, $fixed, $reason, $dup, $tags, $now) {
             $was = (string) ($b['status'] ?? 'new');
@@ -44,20 +44,20 @@ switch ($do) {
             $b['seen'] = true;
             return $b;
         });
-        $msg = $res ? 'Saved.' : '';
+        $msg = $res ? 'saved' : '';
         $anchor = '#tools';
         break;
     case 'title':   // edited in place, next to the title (like GitHub)
         $title = bug_line($_POST['title'] ?? '', BUG_MAX['title']);
-        if ($title === '') { $error = 'The report needs a title.'; break; }
+        if ($title === '') { $error = 'title'; break; }
         if ($title === (string) ($b['title'] ?? '')) m3d_redirect($page);   // nothing changed: nothing to say
         $res = m3d_bug_change($n, function (array $b) use ($title) { $b['title'] = $title; $b['seen'] = true; return $b; });
-        $msg = $res ? 'Title changed.' : '';
+        $msg = $res ? 'title' : '';
         break;
     case 'edit':
         $abouts = m3d_bug_abouts_all();
         $about = bug_str($_POST['about'] ?? '');
-        if (!isset($abouts[$about]) && $about !== ($b['about'] ?? '')) { $error = 'Pick what the report is about.'; break; }
+        if (!isset($abouts[$about]) && $about !== ($b['about'] ?? '')) { $error = 'about'; break; }
         $del = array_map('strval', (array) ($_POST['delpic'] ?? []));
         $gone = [];
         $res = m3d_bug_change($n, function (array $b) use ($about, $abouts, $del, &$gone) {
@@ -76,24 +76,24 @@ switch ($do) {
         });
         if (!$res) break;
         bug_delete_pics($gone);
-        $msg = 'Report changed.';
+        $msg = 'edited';
         break;
     case 'publish':
         $res = m3d_bug_change($n, function (array $b) { unset($b['pending']); $b['seen'] = true; return $b; });
-        $msg = $res ? 'Published: everyone can see this report now.' : '';
+        $msg = $res ? 'published' : '';
         break;
     case 'editcomment':
     case 'delcomment':
         $i = (int) ($_POST['i'] ?? -1);
         $text = bug_text($_POST['text'] ?? '', BUG_MAX['comment']);
-        if ($do === 'editcomment' && mb_strlen($text) < 2) { $error = 'A comment can’t be empty: delete it instead.'; break; }
+        if ($do === 'editcomment' && mb_strlen($text) < 2) { $error = 'empty'; break; }
         $res = m3d_bug_change($n, function (array $b) use ($i, $do, $text) {
             if (($b['log'][$i]['t'] ?? '') !== 'c') return $b;
             if ($do === 'delcomment') { unset($b['log'][$i]); $b['log'] = array_values($b['log']); }
             else $b['log'][$i]['text'] = $text;
             return $b;
         });
-        $msg = $res ? ($do === 'delcomment' ? 'Comment deleted.' : 'Comment changed.') : '';
+        $msg = $res ? ($do === 'delcomment' ? 'cdeleted' : 'cchanged') : '';
         $anchor = $do === 'editcomment' ? "#c$i" : '#comments';
         break;
     case 'block':
@@ -101,21 +101,21 @@ switch ($do) {
         // the reporter, or someone who commented on this report (`who`); unblocking: anyone on the list
         $id = bug_str($_POST['who'] ?? ($b['by'] ?? ''));
         $here = array_merge([(string) ($b['by'] ?? '')], array_map(fn($x) => (string) ($x['by'] ?? ''), array_filter((array) ($b['log'] ?? []), fn($x) => ($x['t'] ?? '') === 'c' && empty($x['admin']))));
-        if ($id === '' || !in_array($id, $do === 'block' ? $here : m3d_bug_settings()['blocked'], true)) { $error = 'This person can’t be ' . $do . 'ed here.'; break; }
-        $blocked = m3d_bug_settings()['blocked'];
-        $blocked = $do === 'block' ? array_values(array_unique([...$blocked, $id])) : array_values(array_diff($blocked, [$id]));
-        $msg = m3d_bug_settings_save(['blocked' => $blocked]) ? ($do === 'block' ? 'Blocked: they can still read the reports, but not post or comment.' : 'Unblocked: they can post again.') : '';
+        if ($id === '' || !in_array($id, $do === 'block' ? $here : m3d_bug_settings()['blocked'], true)) { $error = $do; break; }
+        $name = '';   // the name they posted with, for the record in Admin → Access
+        foreach (array_merge([$b], (array) ($b['log'] ?? [])) as $x) if ((string) ($x['by'] ?? '') === $id && ($x['name'] ?? '') !== '') $name = (string) $x['name'];
+        $msg = m3d_ban_set($id, 'bugs', $do === 'block', $name) ? $do . 'ed' : '';   // a ban in Admin → Access
         break;
     case 'delete':
         $pics = (array) ($b['pics'] ?? []);
         m3d_bug_change($n, fn() => null);
         if (!m3d_bug($n)) {
             bug_delete_pics($pics);
-            m3d_redirect('/bugs/?done=' . rawurlencode("Report #$n deleted.") . '#list');
+            m3d_redirect("/bugs/?done=deleted-$n#list");
         }
         break;
     default:
-        $error = 'Unknown action.';
+        $error = 'action';
 }
-if (!$error && $msg === '') $error = $fail;
-m3d_redirect($page . '?' . ($error ? 'err=' . rawurlencode($error) : 'done=' . rawurlencode($msg)) . $anchor);
+if (!$error && $msg === '') $error = 'write';
+m3d_redirect($page . '?' . ($error ? 'err=' . $error : 'done=' . $msg) . $anchor);   // codes of bug_result_text()

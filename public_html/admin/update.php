@@ -153,8 +153,12 @@ $keyText = $keyState === 'ok' ? 'Key works' . ($expires !== '' ? ' · expires ' 
         </div>
         <div class="ch-key">
           <label class="field"><span class="lbl">GitHub Key<?= tip('A fine-grained token made on GitHub (Settings → Developer settings → Fine-grained tokens) with access to ' . gh_repo('dev') . ' only and “Contents: Read-only”. It can’t change anything on GitHub.') ?></span>
-            <span class="ch-key-in"><input class="input" type="password" name="token" autocomplete="off" maxlength="255" placeholder="<?= $saved['token'] !== '' ? 'Saved: paste a new key to replace it' : 'github_pat_…' ?>" /><?php
-              if ($keyState !== ''): $keyOk = $keyState === 'ok'; ?><button type="button" class="tip key-st <?= $keyOk ? 'ok' : 'bad' ?>" data-tip="<?= e($keyText) ?>" aria-label="<?= e($keyText) ?>"><svg viewBox="0 0 24 24" aria-hidden="true"><?= $keyOk ? '<path d="M20 6 9 17l-5-5"/>' : '<path d="M12 8v5"/><path d="M12 16.5v.5"/><circle cx="12" cy="12" r="9.5"/>' ?></svg></button><?php endif ?></span></label>
+            <?php $keySt = '';   // the key's last check, in the locked box: ✓ works, else what went wrong
+              if ($keyState !== ''): $keyOk = $keyState === 'ok';
+                $keySt = '<button type="button" class="tip key-st ' . ($keyOk ? 'ok' : 'bad') . '" data-tip="' . e($keyText) . '" aria-label="' . e($keyText) . '"><svg viewBox="0 0 24 24" aria-hidden="true">'
+                  . ($keyOk ? '<path d="M20 6 9 17l-5-5"/>' : '<path d="M12 8v5"/><path d="M12 16.5v.5"/><circle cx="12" cy="12" r="9.5"/>') . '</svg></button>';
+              endif ?>
+            <?= key_field('GitHub Key', $saved['token'] !== '', null, 'type="password" name="token" autocomplete="off" maxlength="255" placeholder="github_pat_…"', $keySt) ?></label>
         </div>
         <div class="form-actions">
           <?php if ($saved['token'] !== ''): ?><button class="btn btn-ghost btn-sm" form="forget-key">Remove Key</button><?php endif ?>

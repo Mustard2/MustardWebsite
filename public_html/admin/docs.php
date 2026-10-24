@@ -43,8 +43,8 @@ admin_start('Docs', 'docs');
       </form>
     </details>
 
-    <?= format_help('How to Format Pages', ['para', 'inline', 'heading', 'list', 'steps', 'box', 'table', 'code', 'image', 'tabs'],
-        'Headings appear in <i>On this page</i> and get their own link (not those inside tabs). Tabs show two or more ways to do the same thing: <code>=== Name</code> starts a tab, a line with only <code>===</code> ends them, and tabs with the same names on a page switch together. Site pages can be linked as <code>[Requirements](/docs/requirements/)</code>. The toolbar above the text inserts most of these for you.', true) ?>
+    <?= format_help('How to Format Pages', ['box', 'image', 'card', 'tabs'],
+        'The toolbar above the text inserts most of them for you. Headings appear in <i>On this page</i> (not those inside tabs), and tabs with the same names on a page switch together.', true) ?>
 
     <form class="docs-editor" data-editor novalidate></form>
     <script type="application/json" id="editor-data"><?= json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AMP) ?></script>

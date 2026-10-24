@@ -51,9 +51,17 @@ if (m3d_link_access($item, $link) === 'public') {   // public links, and every l
     dl_wait_gate($kind, $slug, $n, $item, $label, $here, free: true);   // free downloads start at once
     if (m3d_preview()) preview_download_page($kind, $item, $label);   // admin previewing as a patron
     if (!$again) {
-        m3d_count_download($kind, $slug, !($p && !empty($p['access'])));   // before the log line, like below
         if ($p && !empty($p['access'])) {
-            m3d_log_download($M3D, $p, m3d_log_item($kind, $slug), $label, m3d_released_label($item), true);
+            // the cap again, with the log line, under the patron's lock (m3d_dl_locked()): parallel downloads can't pass it together
+            $ok = m3d_dl_locked((string) $p['id'], function () use ($M3D, $p, $kind, $slug, $label, $item) {
+                if (m3d_dl_capped($p) !== null) return false;
+                m3d_count_download($kind, $slug, false);   // before the log line, like below
+                m3d_log_download($M3D, $p, m3d_log_item($kind, $slug), $label, m3d_released_label($item), true);
+                return true;
+            });
+            if (!$ok) $capped();
+        } else {
+            m3d_count_download($kind, $slug, true);
         }
         m3d_dl_done($code);
     }
@@ -65,6 +73,7 @@ if (!$patron) {
     // Not logged in, or last check too old: (re)check with Patreon. Seamless for patrons.
     m3d_redirect('/auth/login.php?return=' . rawurlencode($here));
 }
+if (m3d_banned($patron, 'download')) m3d_redirect(m3d_ban_url('download'));   // banned in Admin → Access: the page with the reason
 if (empty($patron['access'])) {
     m3d_redirect('/patreon-required/?reason=' . rawurlencode((string) $patron['reason']) . '&return=' . rawurlencode($here));
 }
@@ -91,9 +100,20 @@ if (!empty($patron['preview'])) preview_download_page($kind, $item, $label);   /
 
 // the version logged = the newest one out (one dated in the future isn't yet); "free" = not counted in the limits, even if that changes later
 // counted before the log line: with no stats.json yet the counters are first worked out from the log, which would then hold this one too
+// The cap and the limits are checked again together with the log line, under the patron's lock (m3d_dl_locked()) and on the log read
+// fresh: the checks above ran before the countdown, so two downloads of the same patron at once (two browsers) could both have passed them
 if (!$again) {
-    m3d_count_download($kind, $slug, false);
-    m3d_log_download($M3D, $patron, m3d_log_item($kind, $slug), $label, m3d_released_label($item), !empty($item['noLimits']), $unlocks && $limits['update']);
+    $refused = m3d_dl_locked((string) $patron['id'], function () use ($M3D, $patron, $kind, $slug, $label, $item) {
+        if (m3d_dl_capped($patron) !== null) return 'cap';
+        $limits = m3d_check_limits($patron, $kind, $slug);
+        if (!$limits['ok']) return 'limit';
+        $unlocks = $limits['rows'] && !$limits['exempt'] && !$limits['free'] && !$limits['owned'];
+        m3d_count_download($kind, $slug, false);
+        m3d_log_download($M3D, $patron, m3d_log_item($kind, $slug), $label, m3d_released_label($item), !empty($item['noLimits']), $unlocks && $limits['update']);
+        return null;
+    });
+    if ($refused === 'cap') $capped();
+    if ($refused === 'limit') m3d_redirect('/patreon-required/?reason=limit&type=' . ($kind === 'outfits' ? 'outfit' : 'model') . '&item=' . rawurlencode($slug) . '&return=' . rawurlencode($here));
     m3d_dl_done($code);
 }
 m3d_redirect(m3d_download_url((string) $link['url']));   // an S4 file: a fresh pre-signed address (app/s4.php)

@@ -115,7 +115,7 @@ if (($fh = @fopen(m3d_log_file(), 'rb'))) {
         [$k, $s] = m3d_log_item_parts($r[3]);
         if ($t >= $weekFrom) { $week++; $top["$k:$s"] = ($top["$k:$s"] ?? 0) + 1; }
         elseif ($t >= $prevFrom) $prevWeek++;
-        $recent[] = [$t, $id, (string) $r[2], $k, $s, (string) ($r[5] ?? '')];
+        $recent[] = [$t, $id, (string) $r[2], $k, $s, (string) ($r[5] ?? ''), (string) ($r[4] ?? '')];
         $got["$k:$s"][$id] = (string) ($r[5] ?? '');   // the log is in time order: the last line wins
         if (count($recent) > HOME_MORE * 4) $recent = array_slice($recent, -HOME_MORE);
     }
@@ -243,11 +243,12 @@ ob_start(); ?>
           <h2>Latest Downloads <a href="/admin/log.php#log">Patron Log →</a></h2>
           <?php if (!$recent): ?><p class="muted">No downloads yet.</p><?php else: ?>
           <table class="hm-recent">
-            <?php foreach ($recent as $i => [$t, $id, $who, $k, $s, $ver]): $dt = (new DateTimeImmutable('@' . $t))->setTimezone($tz); [$name] = $item($k, $s); ?>
+            <?php foreach ($recent as $i => [$t, $id, $who, $k, $s, $ver, $link]): $dt = (new DateTimeImmutable('@' . $t))->setTimezone($tz); [$name] = $item($k, $s); ?>
             <tr<?= $i >= HOME_RECENT ? ' class="more"' : '' ?>>
               <td class="t" title="<?= e($dt->format('D j M Y, H:i T')) ?>"><?= e($dt->format('Y-m-d') === $today->format('Y-m-d') ? $dt->format('H:i') : $dt->format('j M')) ?></td>
               <td class="w"><a href="/admin/log.php?patron=<?= e(rawurlencode($id)) ?>#log"><?= e($who !== '' ? $who : $id) ?></a></td>
-              <td class="i"><b><?= e($name) ?></b></td>
+              <td class="i"><b><?= e($name) ?></b><?php if ($link !== ''): ?><span class="l-s"><?= e($link) ?></span><?php endif ?></td>
+              <td class="l"><?= e($link) ?></td>
               <td class="v"><?= e($ver) ?></td>
             </tr>
             <?php endforeach ?>

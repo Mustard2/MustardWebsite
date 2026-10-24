@@ -10,9 +10,9 @@ defined('M3D_PRIVATE') or exit;
 require_once dirname(__DIR__) . '/app/version.php';
 
 const ALLOWED_EXT = ['php', 'js', 'css', 'svg', 'png', 'jpg', 'jpeg', 'webp', 'gif', 'ico', 'txt', 'md', 'json', 'woff2'];
-const MEDIA_EXT = ['webp', 'png', 'jpg', 'jpeg', 'gif', 'glb'];   // glb: 3D previews (app/model3d.php)
+const MEDIA_EXT = ['webp', 'png', 'jpg', 'jpeg', 'gif', 'glb', 'mp4', 'webm'];   // glb: 3D previews (app/model3d.php); mp4 / webm: videos (app/video.php)
 /** Data files restored only with their own tick box: the counters (stats, likes, who saw the welcome page) and the bug reports; every other one is the site's content. */
-const DATA_PARTS = ['stats' => 'counters', 'likes' => 'counters', '.likes-key' => 'counters', 'welcomed' => 'counters', 'ignored' => 'counters', 'logins' => 'counters', 'comments' => 'counters', 'notify' => 'counters', 'bugs' => 'bugs'];
+const DATA_PARTS = ['stats' => 'counters', 'likes' => 'counters', '.likes-key' => 'counters', 'welcomed' => 'counters', 'ignored' => 'counters', 'logins' => 'counters', 'comments' => 'counters', 'notify' => 'counters', 'polls' => 'counters', 'showcase' => 'counters', 'shares' => 'counters', 'bugs' => 'bugs'];
 
 /** A restore that failed after it had written something: what was put back before the failure stays (the "before restore" backup undoes it). */
 class RestorePartial extends RuntimeException {}
@@ -21,6 +21,12 @@ class RestorePartial extends RuntimeException {}
 function data_part(string $base): string
 {
     return DATA_PARTS[preg_replace('/\.json$/', '', $base)] ?? 'content';
+}
+
+/** A full backup uploaded on the Backups page (not made by this site): its code is never installed. */
+function bk_uploaded(string $file): bool
+{
+    return (bool) preg_match('/^full-\d{8}-\d{6}-uploaded\.zip$/', $file);
 }
 
 function bk_dir(): string
@@ -33,7 +39,7 @@ function bk_dir(): string
 /** A backup file name from a request → its full path, only if it really is a file in the backups folder. */
 function bk_file(string $name): ?string
 {
-    if (!preg_match('/^[A-Za-z0-9._-]{1,160}$/', $name) || str_starts_with($name, '.')) return null;
+    if (!preg_match('/^[A-Za-z0-9._-]{1,160}$/D', $name) || str_starts_with($name, '.')) return null;
     $p = bk_dir() . '/' . $name;
     return is_file($p) ? $p : null;
 }
@@ -235,7 +241,8 @@ function media_files(): array
 
 /**
  * Creates full-<date>-<kind>[-note].zip with the code, all data files and the download log (+ images if asked).
- * config.php (Patreon secret) is never included: these zips can be downloaded and stored elsewhere.
+ * Nothing outside data/ in private/ is included (config.php, the keys in patreon.php / s4.php / github.php, the Discord webhooks in
+ * webhooks.php): these zips can be downloaded and stored elsewhere.
  */
 function backup_full(string $kind = 'manual', bool $withMedia = false, string $note = ''): string
 {
@@ -310,7 +317,7 @@ function restore_full(string $path, array $parts): array
     $want = fn(string $part) => in_array($part, $parts, true);
     $inZip = $data = [];   // data files in the backup; those to restore => their bytes
     for ($i = 0; $i < $zip->numFiles; $i++) {
-        if (!preg_match('#^data/(\.likes-key|[a-z0-9_-]+\.json)$#', (string) $zip->getNameIndex($i), $m)) continue;
+        if (!preg_match('#^data/(\.likes-key|[a-z0-9_-]+\.json)$#D', (string) $zip->getNameIndex($i), $m)) continue;
         $inZip[$m[1]] = true;
         if (!$want(data_part($m[1]))) continue;
         $bytes = $zip->getFromIndex($i);
@@ -328,10 +335,11 @@ function restore_full(string $path, array $parts): array
         if ($want('content') || $want('counters') || $want('bugs')) {
             $dir = M3D_PRIVATE . '/data';
             $prev = m3d_settings(true);
-            $owners = (array) ($prev['owners'] ?? []);   // the admins: kept when the backup's settings have none (else the site goes back to /setup/)
             $announced = array_column(array_filter(m3d_blog(true)['posts'], fn($p) => !empty($p['announced'])), 'id');   // blog posts Discord already has
             foreach ($data as $base => $bytes) {
                 // the version being replaced also goes into the change history, like any other save
+                // webhook addresses stay in private/webhooks.php: a backup's settings (made before they moved there) never brings them back
+                if ($base === 'settings.json') $bytes = (string) json_encode(m3d_webhooks_strip(json_decode($bytes, true)), JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
                 if (str_ends_with($base, '.json') && data_part($base) !== 'counters' && is_file("$dir/$base")) @copy("$dir/$base", bk_dir() . '/' . substr($base, 0, -5) . '-' . gmdate('Ymd-His') . '-' . bin2hex(random_bytes(2)) . '.json');
                 $tmp = "$dir/$base.tmp-" . bin2hex(random_bytes(3));
                 if (file_put_contents($tmp, $bytes) === false || !rename($tmp, "$dir/$base")) { @unlink($tmp); throw new RuntimeException("Could not write data/$base"); }
@@ -342,12 +350,13 @@ function restore_full(string $path, array $parts): array
                 foreach (data_files() as $f) {
                     if (!isset($inZip[basename($f)]) && in_array(preg_replace('/\.json$/', '', basename($f)), ['faq', 'docs', 'settings', 'blog', 'gallery'], true)) { @unlink($f); $changed = true; }
                 }
-                if ($owners && empty(m3d_settings(true)['owners'])) m3d_save_settings(['owners' => $owners]);
                 // settings.json also holds state that isn't content: what Discord already posted and which release dates were
                 // announced (an old copy would post them again), and the bug-report and comment settings (tags, blocked people), which go
                 // with the bug reports' own tick box and with the comments (counters)
+                // The admins always stay those of now: a backup never adds or removes one (an uploaded zip could otherwise
+                // make someone else admin, or lock the owner out; without them the site would also go back to /setup/)
                 $restored = m3d_settings(true);
-                $keep = ['release' => $prev['release'] ?? null];
+                $keep = ['release' => $prev['release'] ?? null, 'owners' => $prev['owners'] ?? null];
                 if (is_array($prev['discord'] ?? null)) {
                     $keep['discord'] = array_intersect_key($prev['discord'], array_flip(['sent', 'retry', 'last', 'stills_sent', 'stills_queue', 'stills_due', 'stills_tries'])) + (is_array($restored['discord'] ?? null) ? $restored['discord'] : []);
                 }
@@ -383,7 +392,7 @@ function restore_full(string $path, array $parts): array
             $n = 0;
             for ($i = 0; $i < $zip->numFiles; $i++) {
                 $name = (string) $zip->getNameIndex($i);
-                if (!preg_match('#^media/([A-Za-z0-9_./-]+)$#', $name, $m) || str_contains($m[1], '..')) continue;
+                if (!preg_match('#^media/([A-Za-z0-9_./-]+)$#D', $name, $m) || str_contains($m[1], '..')) continue;
                 if (!in_array(strtolower(pathinfo($m[1], PATHINFO_EXTENSION)), MEDIA_EXT, true)) continue;
                 $dest = M3D_SITE . '/media/' . $m[1];
                 if (!is_dir(dirname($dest))) @mkdir(dirname($dest), 0755, true);
@@ -438,13 +447,14 @@ function data_history(): array
 /** Puts an old version of one data file back (the current one is kept in the history first). */
 function restore_data_version(string $file): string
 {
-    if (!preg_match('/^([a-z0-9_-]+?)-\d{8}-\d{6}-[0-9a-f]+\.json$/', $file, $m) || !($path = bk_file($file))) throw new RuntimeException('Backup not found.');
+    if (!preg_match('/^([a-z0-9_-]+?)-\d{8}-\d{6}-[0-9a-f]+\.json$/D', $file, $m) || !($path = bk_file($file))) throw new RuntimeException('Backup not found.');
     $data = json_decode((string) file_get_contents($path), true);
     if (!is_array($data)) throw new RuntimeException('This backup file is damaged.');
     if ($m[1] === 'settings') {
         // like a full Content restore (restore_full()): the state that isn't content stays as it is now, so an old copy can't post
-        // release dates and Discord announcements again, lose the admins, or undo the bug reports' tags and blocked people
+        // release dates and Discord announcements again, change the admins, or undo the bug reports' tags and blocked people
         $now = m3d_settings(true);
+        $data = m3d_webhooks_strip($data);   // webhook addresses stay in private/webhooks.php
         foreach (['release', 'owners', 'bugs'] as $k) { if (isset($now[$k])) $data[$k] = $now[$k]; else unset($data[$k]); }
         if (is_array($now['discord'] ?? null)) {
             $data['discord'] = array_intersect_key($now['discord'], array_flip(['sent', 'retry', 'last', 'stills_sent', 'stills_queue', 'stills_due', 'stills_tries'])) + (is_array($data['discord'] ?? null) ? $data['discord'] : []);
@@ -472,6 +482,9 @@ function data_summary(string $name, string $path): string
         'faq'      => m3d_plural(array_sum(array_map(fn($s) => count($s['items'] ?? []), $d['sections'] ?? [])), 'question'),
         'docs'     => m3d_plural(array_sum(array_map(fn($s) => count($s['pages'] ?? []), $d['sections'] ?? [])), 'page'),
         'settings' => m3d_plural(count($d['social'] ?? []), 'social link'),
+        'blog'     => m3d_plural(count($d['posts'] ?? []), 'post'),
+        'gallery'  => m3d_plural(count($d['stills'] ?? []), 'picture'),
+        'exceptions' => m3d_plural(count($d['people'] ?? []), 'person', 'people'),
         default    => '',
     };
 }

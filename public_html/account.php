@@ -6,6 +6,7 @@ require __DIR__ . '/app/_init.php';
 
 $p = m3d_patron($M3D);
 $known = $p !== null && array_key_exists('total_cents', $p);
+showcase_flash();   // a render removed with its ✕ in My Renders (auth/render.php, back=account)
 
 layout_start('My Account', 'Your Patreon membership on ' . site_name() . '.', 'page-account');
 ?>
@@ -39,7 +40,8 @@ layout_start('My Account', 'Your Patreon membership on ' . site_name() . '.', 'p
     // gets its page's download box (#download) instead. null = removed, or a page this
     // visitor can't open (draft, password not entered): those keep only their name. Blurred items are shown in full, their
     // picture blurred unless this visitor may see it (card_pic(), like on the page)
-    $target = function (string $kind, string $slug, string $label) use ($p, $owner): ?array {
+    $dlBan = m3d_banned($p, 'download');   // a Downloads ban (Access): the buttons go, the downloads row says so
+    $target = function (string $kind, string $slug, string $label) use ($p, $owner, $dlBan): ?array {
         $it = m3d_item($kind, $slug);
         if (!$it || !m3d_can_view($kind, $it)) return null;
         $links = array_values(array_filter($it['links'] ?? [], fn($l) => !empty($l['url'])));
@@ -56,7 +58,8 @@ layout_start('My Account', 'Your Patreon membership on ' . site_name() . '.', 'p
         // what blocks it: their value ("2 months"), or for the minimum tier what is needed ("needs the €10 tier or higher")
         $why = $check['ok'] || $check['unknown'] ? [] : array_map(fn($r) => $r[0] === 'Patreon Tier' ? 'needs the ' . $r[1] : $r[2], $check['missing']);
         if (empty($p['access']) && !$owner) $why[] = 'paid tier needed';
-        if (m3d_release_phase($it) === 'free') $why = [];   // past its public date: free for everyone
+        elseif ($dlBan) $why[] = 'downloads are off for you';
+        if (m3d_release_phase($it) === 'free') $why = [];   // past its public date: free for everyone (auth/get.php lets public links pass a ban too)
         // no download while in development or before the patrons date (auth/get.php): a short label instead of the button
         $dev = $kind === 'models' && m3d_status($it) === 'in-development' ? 'In Development'
             : (m3d_release_phase($it) === 'soon' ? 'Coming ' . when_mark((int) m3d_release($it)['patrons'], 'short') : '');
@@ -154,7 +157,7 @@ layout_start('My Account', 'Your Patreon membership on ' . site_name() . '.', 'p
         <p class="acc-meta"><span class="badge tone-<?= e($tone) ?>"><?= e($statusLabel) ?></span><span class="muted small">Patreon User ID: <code><?= e($p['id'] ?? '') ?></code></span></p>
       </div>
       <div class="acc-actions">
-        <?php if (m3d_welcome_on() && !empty($p['access'])): ?><a class="btn btn-ghost btn-sm" href="/welcome/">Welcome Page</a><?php endif ?>
+        <?php if (m3d_welcome_on() && !empty($p['access']) && !m3d_banned($p, 'download')): ?><a class="btn btn-ghost btn-sm" href="/welcome/">Welcome Page</a><?php endif ?>
         <a class="btn btn-ghost btn-sm" rel="nofollow" href="/auth/login.php?return=%2Faccount%2F" title="Fetch your latest membership data from Patreon">Refresh from Patreon</a>
         <a class="btn btn-ghost btn-sm" href="/auth/logout.php?return=%2F">Log Out</a>
       </div>
@@ -165,17 +168,21 @@ layout_start('My Account', 'Your Patreon membership on ' . site_name() . '.', 'p
     <?php endif ?>
 
     <section class="acc-grid acc-dl">   <!-- downloads first: access, then what the limits leave -->
+      <?php if ($dlBan): ?>
+      <div class="acc-stat"><span class="muted small">Downloads</span><b class="warn-text">Off</b><span class="muted small">turned off for you · <a href="<?= e(m3d_ban_url('download')) ?>">Why?</a></span></div>
+      <?php else: ?>
       <div class="acc-stat"><span class="muted small">Downloads</span><b class="<?= $owner || !empty($p['access']) ? 'ok-text' : 'warn-text' ?>"><?= $owner || !empty($p['access']) ? 'Unlocked' : 'Locked' ?></b><span class="muted small"><?= ($p['reason'] ?? '') === 'exception' ? 'by exception ✓' : ($owner || !empty($p['access']) ? 'paid tier ✓' : 'a paid tier is needed') ?></span></div>
-      <?php if ($owner || !empty($p['access'])): $dlLeft = m3d_downloads_left($p);   // downloads left now, per kind (null = no rule: unlimited)
+      <?php endif ?>
+      <?php if (($owner || !empty($p['access'])) && !$dlBan): $dlLeft = m3d_downloads_left($p);   // downloads left now, per kind (null = no rule: unlimited)
         foreach (['models' => 'Model Unlocks Left', 'outfits' => 'Accessory Unlocks Left'] as $k => $lbl): $n = $dlLeft[$k] ?? null; ?>
         <?php $tag = $n === null ? 'div' : 'a';   // with rules the whole box links to (and highlights) the Unlock limits ?>
         <<?= $tag ?> class="acc-stat<?= $n === null ? '' : ' acc-link' ?>"<?= $n === null ? '' : ' href="#limits"' ?>><span class="muted small"><?= $lbl ?></span><b class="<?= $n === 0 ? 'warn-text' : 'ok-text' ?>"><?= $n === null ? 'Unlimited' : $n ?></b><?php if ($n === 0 && !empty($dlLeft['next'][$k])): ?><span class="muted small">next: <?= when_html((int) $dlLeft['next'][$k]) ?></span><?php elseif ($n !== null): ?><span class="muted small acc-link-hint">see the limits →</span><?php endif ?></<?= $tag ?>>
       <?php endforeach; endif ?>
     </section>
     <?php // a card right under the downloads row: the "left" boxes scroll to it and light it up (site.js) ?>
-    <?php if ($allRules): ?>
+    <?php if ($allRules && !$dlBan): ?>
       <section class="acc-card acc-limits" id="limits">
-        <h2>Unlock Limits</h2>
+        <div class="acc-limits-head"><h2>Unlock Limits</h2><?= m3d_unlocks_on() ? how_pill() : '' ?></div>
         <?php if ($limits['exempt']): ?>
           <p class="ok-text">✓ These limits don't apply to you<?= $owner ? ' (admin)' : '' ?>.</p>
         <?php endif ?>
@@ -245,6 +252,8 @@ layout_start('My Account', 'Your Patreon membership on ' . site_name() . '.', 'p
           </div>
         <?php endif ?>
       </details>
+
+    <?= showcase_account() ?>
 
     <?php if ($liked): ?>
       <section class="acc-sec">

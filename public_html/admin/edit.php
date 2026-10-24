@@ -55,7 +55,10 @@ $copyOf = $isNew ? m3d_item($kind, m3d_get_text('copy')) : null;
 if ($copyOf) {
     $item = array_diff_key($copyOf, array_flip(['slug', 'changelog', 'order', 'featured', 'visibility', 'unlisted', 'passwordHash',
         'patronsFrom', 'publicFrom', 'releaseBefore', 'model3d', 'model3dLight']));
-    $item = ['slug' => '', 'name' => mb_substr($copyOf['name'] . ' (Copy)', 0, 120), 'visibility' => 'draft'] + $item;
+    // a second copy of the same item gets "(Copy 2)" and an address of its own (model-copy-2), not "already used" on Save
+    $taken = array_flip(array_column(m3d_items($kind), 'slug'));
+    for ($n = 1; isset($taken[$copySlug = substr((string) $copyOf['slug'], 0, 50) . '-copy' . ($n > 1 ? "-$n" : '')]); $n++);
+    $item = ['slug' => '', 'name' => mb_substr($copyOf['name'], 0, 110) . ($n > 1 ? " (Copy $n)" : ' (Copy)'), 'visibility' => 'draft'] + $item;
 } elseif ($isNew) {
     $item = $kind === 'outfits'
         ? ['slug' => '', 'name' => '', 'models' => [], 'images' => [], 'links' => []]
@@ -70,6 +73,7 @@ $payload = [
     'kind'       => $kind,
     'isNew'      => $isNew,
     'copyOf'     => $copyOf ? (string) $copyOf['name'] : '',
+    'copySlug'   => $copyOf ? $copySlug : '',
     'loaded'     => $loaded,   // History → Load This Version: when that version was replaced ('' = the item as stored)
     'rev'        => $rev,
     'today'      => m3d_site_time(time(), 'd/m/Y'),   // a new version's date: today in site time, not the browser's
@@ -86,13 +90,16 @@ $payload = [
     'comments'   => m3d_comments_on($kind),   // the "Allow Comments" switch shows only while comments are on for this kind (app/comments.php)
     'model3d'    => m3d_model3d_facts($item),   // the 3D preview's facts (size, triangles, textures) or why it can't be shown
     's4'         => m3d_s4()['bucket'] !== '' && m3d_s4_on(),   // MEGA S4 on with a bucket: download links may be "s4:<file>" (the S4… picker)
+    'discord'    => admin_discord_state($kind, $isNew ? null : m3d_item($kind, (string) $item['slug'])),   // the line under "Add New Version": what Discord does with the top version on save
     'deadLinks'  => array_map(fn() => true, lc_dead_for($item)),   // Link Check: these addresses get red fields + a broken chain (markDead() in admin.js)
     // typing # in a version's changes lists the reports (bugMention() in admin.js): newest first, this item's own marked
     'bugs'       => m3d_bugs_on() ? array_map(fn($b) => ['n' => (int) $b['n'], 't' => (string) $b['title'], 's' => isset(BUG_STATUSES[$b['status'] ?? '']) ? $b['status'] : 'new',
         'mine' => !$isNew && ($b['about'] ?? '') === $kind . ':' . $item['slug'], 'a' => m3d_bug_about($b)['name'], 'f' => ($b['status'] ?? '') === 'fixed' ? bug_version_words(m3d_bug_fixed_in($b)) : ''],
         array_slice(m3d_bugs(), 0, 500)) : [],
     'bugStatuses' => array_map(fn($s) => [$s[0], $s[2]], BUG_STATUSES),
-    'models'     => array_map(fn($m) => ['slug' => $m['slug'], 'name' => admin_item_label('models', $m), 'thumb' => img_small(item_pic('models', $m))], $models),
+    // the Optimized For picker: name on one line, Gen / major version / franchise under it
+    'models'     => array_map(fn($m) => ['slug' => $m['slug'], 'name' => (string) $m['name'], 'thumb' => img_small(item_pic('models', $m)),
+        'sub' => implode(' · ', array_filter([($m['generation'] ?? '') !== '' ? 'Gen ' . $m['generation'] : '', m3d_model_versions($m) ? 'v' . (int) $m['majorVersion'] : '', (string) ($m['franchise'] ?? '')]))], $models),
 ];
 $public = m3d_item_url($kind, $item['slug']);
 

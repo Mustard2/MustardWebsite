@@ -2,14 +2,22 @@
 // Admin notifications: the bell in the admin header and, for the creator, in the public header (notify_bell(), its list from
 // /admin/notify.php → notify_list_html(), assets/bell.js), and Settings → Notifications (what shows in the bell, what goes to Discord).
 //
-// settings.json → notify: {bell: {event: bool}, discord: {event: bool}, webhook}, events = NOTIFY_EVENTS. Never saved: every bell
-//   switch on, Discord as the old switches of the Bug Reports / Comments boxes were, with their webhook (m3d_notify_settings()).
-// data/notify.json: {seen (unix: Mark All as Read), read ["c<id>": comments opened from the bell since], posted {update, problem}}:
-//   the creator's own read marks, comment ids only (no visitor data); restored with the counters (DATA_PARTS).
+// settings.json → notify: {bell: {event: bool}, discord: {event: bool}}, events = NOTIFY_EVENTS; the webhook in private/webhooks.php → notify
+//   (m3d_webhook()). Never saved: every bell switch on, Discord as the old switches of the Bug Reports / Comments boxes were, with their
+//   webhook (m3d_notify_settings()).
+// data/notify.json: {seen (unix: Mark All as Read), read ["c<id>": comments opened from the bell since], likes {"kind:key": unix: an item's
+//   likes opened from the bell}, cleared (unix: Clear All), gone {row code: the row's time when removed with its ✕ | "s:links": [md5 of the
+//   dead addresses] | "s:updates": version | "s:problems" / "s:discord": unix}, posted {update, problem, likes}}: the creator's own read
+//   marks, comment ids and item keys only (no visitor data); restored with the counters (DATA_PARTS).
+//
+// Clear All = Mark All as Read, and the list empties: read rows from before it are hidden (waiting comments stay until published), and so
+// are the dead links and the update shown then. A row's ✕ hides it until something newer happens on it (a new like, a new comment on that
+// report: a later time than the one stored); a Needs a Look row until it changes (a new dead link, a newer version, a new problem).
 //
 // New ("New" part of the list): bug reports the creator hasn't opened (the report's own `seen`, the Bugs list's Not Seen; a report
 // opened before that got new comments has `seen_at` = when, so it reads as "commented on"), visitors' comments after `seen` not
-// opened from the bell, and comments waiting for approval (until published or deleted). Needs a Look (m3d_notify_site()): dead
+// opened from the bell, comments waiting for approval (until published or deleted), and items that got likes (one row per item, how
+// many since it was last read; never who: likes.json → fresh holds only times, m3d_likes_fresh()). Needs a Look (m3d_notify_site()): dead
 // links and an update while they last, a failed Discord post and site problems since the last Mark All as Read (7 days at most).
 // The number on the bell comes from small files only (the bug and comment summaries, m3d_data_summary()), so every page stays fast.
 declare(strict_types=1);
@@ -20,6 +28,8 @@ const NOTIFY_EVENTS = [
     'bugs'     => ['New Bug Reports', 'Reports you haven’t opened yet.'],
     'bugc'     => ['Comments on Bug Reports', 'Other people’s comments on reports you had already opened.'],
     'comments' => ['New Comments', 'Comments under models, accessories and blog posts, and the ones waiting for approval.'],
+    'renders'  => ['Patron Renders', 'Renders patrons shared from model and accessory pages, until you approve or reject them.'],
+    'likes'    => ['New Likes', 'Models, accessories, blog posts and gallery pictures that got likes: how many, never who. Discord: one post an hour at most.'],
     'links'    => ['Dead Links', 'Download links the last check found dead. Discord: only those found by the automatic check (Assets → Link Check).'],
     'problems' => ['Site Problems', 'Errors in Settings → Site Problems and failed Discord announcements. Discord: one post an hour at most.'],
     'updates'  => ['Updates', 'A new version on your update channel. Discord: once per version.'],
@@ -28,6 +38,9 @@ const NOTIFY_RECENT = 3 * 86400;      // read items stay in the list, greyed, th
 const NOTIFY_LIST_MAX = 30;           // rows in the New part
 const NOTIFY_PROBLEM_GAP = 3600;      // one Discord post about site problems an hour at most
 const NOTIFY_READ_MAX = 300;          // comment marks kept in data/notify.json
+const NOTIFY_LIKES_GAP = 3600;        // one Discord post about new likes an hour at most
+const NOTIFY_GONE_DAYS = 30;          // removed rows' marks kept this long (their rows aren't shown after NOTIFY_RECENT anyway)
+const NOTIFY_CODE_RE = '/^(?:c\d{1,9}|b\d{1,9}|r[0-9a-f]{8}|l(?:models|outfits|posts|stills):[a-z0-9-]{1,100}|s:(?:links|updates|problems|discord))$/D';
 
 /** A Settings box's address from public pages too (settings_url() lives in the admin's _admin.php). */
 function notify_settings_url(string $id): string
@@ -36,10 +49,10 @@ function notify_settings_url(string $id): string
     return '/admin/settings.php?tab=' . (['discord' => 'features', 'problems' => 'maintenance'][$id] ?? $id) . '#' . $id;
 }
 
-function m3d_notify_settings(): array
+function m3d_notify_settings(bool $fresh = false): array
 {
     static $memo = null;
-    if ($memo !== null) return $memo;
+    if ($memo !== null && !$fresh) return $memo;
     $s = m3d_settings()['notify'] ?? null;
     if (!is_array($s)) {   // never saved: Discord as the switches of the Bug Reports and Comments boxes were
         $b = m3d_bug_settings();
@@ -48,7 +61,7 @@ function m3d_notify_settings(): array
         $s = ['discord' => ['bugs' => $b['notify'] && $ok($b['webhook']), 'comments' => $c['notify'] && $ok($c['webhook'])],
             'webhook' => $b['notify'] && $ok($b['webhook']) ? $b['webhook'] : ($ok($c['webhook']) ? $c['webhook'] : ($ok($b['webhook']) ? $b['webhook'] : ''))];
     }
-    $out = ['bell' => [], 'discord' => [], 'webhook' => (string) ($s['webhook'] ?? '')];
+    $out = ['bell' => [], 'discord' => [], 'webhook' => (string) ($s['webhook'] ?? m3d_webhook('notify'))];
     foreach (NOTIFY_EVENTS as $k => $_) {
         $out['bell'][$k] = (bool) ($s['bell'][$k] ?? true);
         $out['discord'][$k] = !empty($s['discord'][$k]);
@@ -59,7 +72,7 @@ function m3d_notify_settings(): array
 /** The feature an event belongs to is on (bug reports, comments); the others always are. */
 function m3d_notify_feature(string $ev): bool
 {
-    return match ($ev) { 'bugs', 'bugc' => m3d_bugs_on(), 'comments' => m3d_comments_on(), default => true };
+    return match ($ev) { 'bugs', 'bugc' => m3d_bugs_on(), 'comments' => m3d_comments_on(), 'renders' => m3d_showcase_on(), default => true };
 }
 
 function m3d_notify_bell_on(string $ev): bool
@@ -83,6 +96,8 @@ function m3d_notify_state(): array
     }
     $d ??= [];
     return ['seen' => (int) ($d['seen'] ?? 0), 'read' => array_fill_keys(array_map('strval', (array) ($d['read'] ?? [])), true),
+        'likes' => array_map('intval', is_array($d['likes'] ?? null) ? $d['likes'] : []),
+        'cleared' => (int) ($d['cleared'] ?? 0), 'gone' => is_array($d['gone'] ?? null) ? $d['gone'] : [],
         'posted' => is_array($d['posted'] ?? null) ? $d['posted'] : []];
 }
 
@@ -92,6 +107,12 @@ function m3d_notify_store(callable $fn): bool
     return m3d_json_update('notify', function (?array $d) use ($fn) {
         $d = $fn(is_array($d) ? $d : ['seen' => time(), 'read' => []]);
         $d['read'] = array_slice(array_values(array_unique(array_map('strval', (array) ($d['read'] ?? [])))), -NOTIFY_READ_MAX);
+        $old = time() - LIKES_FRESH_DAYS * 86400;   // likes older than that aren't in likes.json → fresh any more
+        $d['likes'] = array_filter(array_map('intval', is_array($d['likes'] ?? null) ? $d['likes'] : []), fn($t) => $t > $old);
+        if (!$d['likes']) unset($d['likes']);
+        $old = time() - NOTIFY_GONE_DAYS * 86400;   // rows' marks: times; the Needs a Look ones ("s:…") stay
+        $d['gone'] = array_slice(array_filter(is_array($d['gone'] ?? null) ? $d['gone'] : [], fn($v, $k) => str_starts_with((string) $k, 's:') || (int) $v > $old, ARRAY_FILTER_USE_BOTH), -NOTIFY_READ_MAX, null, true);
+        if (!$d['gone']) unset($d['gone']);
         return [$d, true];
     }) === true;
 }
@@ -99,35 +120,83 @@ function m3d_notify_store(callable $fn): bool
 /** Whether a visitor's comment is new for the bell: waiting for approval, or written after the last Mark All as Read and not opened. */
 function m3d_notify_comment_new(int $id, int $at, bool $pending, array $state): bool
 {
-    return $pending || ($at > $state['seen'] && !isset($state['read']['c' . $id]));
+    return ($pending || ($at > $state['seen'] && !isset($state['read']['c' . $id]))) && !m3d_notify_gone('c' . $id, $at, true, $state);
+}
+
+/** A row of the New part left out: removed with its ✕ (until something newer happens on it), or read and older than Clear All. */
+function m3d_notify_gone(string $code, int $at, bool $unread, array $state): bool
+{
+    return (isset($state['gone'][$code]) && !str_starts_with($code, 's:') && $at <= (int) $state['gone'][$code]) || (!$unread && $at <= $state['cleared']);
+}
+
+/** Items with likes the bell shows: [key "kind:key" => [new (unread), likes in the last NOTIFY_RECENT seconds, newest time, likes in all]],
+ *  from the likes summary only (no item data read). Read: given before Mark All as Read or before the item was opened from the bell. */
+function m3d_notify_like_counts(array $state): array
+{
+    $l = m3d_likes_fresh();
+    $recent = time() - NOTIFY_RECENT;
+    $out = [];
+    foreach ($l['fresh'] as $k => $ts) {
+        $all = (int) ($l['n'][$k] ?? 0);
+        if (!$all) continue;   // the item or its likes are gone
+        $read = max($state['seen'], (int) ($state['likes'][$k] ?? 0));
+        $new = count(array_filter($ts, fn($t) => $t > $read));
+        $near = count(array_filter($ts, fn($t) => $t > $recent));
+        if ($new || $near) $out[$k] = [min($new, $all), min($new ? $new : $near, $all), max($ts), $all];
+    }
+    return $out;
+}
+
+/** An item that can be liked: [name, what it is, public address], null when it is gone. */
+function m3d_notify_like_item(string $k): ?array
+{
+    [$kind, $key] = explode(':', $k, 2) + ['', ''];
+    if ($kind === 'models' || $kind === 'outfits') {
+        $it = m3d_item($kind, $key);
+        return $it ? [$kind === 'models' ? m3d_model_name($it) : (string) $it['name'], $kind === 'models' ? 'Model' : m3d_accessory_type($it), m3d_item_url($kind, $key)] : null;
+    }
+    if ($kind === 'posts') {
+        $p = m3d_post($key);
+        return $p ? [(string) ($p['title'] ?? '') ?: 'A blog post', 'Blog Post', m3d_post_url($p)] : null;
+    }
+    if ($kind === 'stills') {
+        $st = m3d_still($key);
+        if (!$st) return null;
+        $cap = trim((string) ($st['caption'] ?? ''));
+        return [$cap !== '' ? mb_strimwidth($cap, 0, 60, '…') : 'A gallery picture', 'Gallery Picture', '/gallery/'];
+    }
+    return null;
 }
 
 /**
- * Needs a Look: [[event, tone (warn | info), icon, text, address, where it leads]]. $bell: only the events switched on for the bell
- * (Admin → Home shows them all), and problems only since the last Mark All as Read.
+ * Needs a Look: [[event, tone (warn | info), icon, text, address, where it leads, code (its ✕)]]. $bell: only the events switched on for
+ * the bell and not removed with their ✕ (Admin → Home shows them all), and problems only since the last Mark All as Read.
  */
 function m3d_notify_site(bool $bell = true): array
 {
     $now = time();
     $since = $now - 7 * 86400;
     if ($bell) $since = max($since, m3d_notify_state()['seen']);
+    $gone = $bell ? m3d_notify_state()['gone'] : [];   // rows removed with their ✕ (Clear All too): only from the bell
     $on = fn(string $ev) => !$bell || m3d_notify_bell_on($ev);
     $out = [];
     if ($on('problems')) {
         $disc = m3d_discord();
-        if (m3d_discord_on() && $disc['last'] && empty($disc['last']['ok']) && (!$bell || (int) strtotime((string) ($disc['last']['at'] ?? '')) > $since)) {
-            $out[] = ['problems', 'warn', 'discord', 'Last Discord post failed' . (($w = (string) ($disc['last']['what'] ?? '')) !== '' ? " ($w)" : ''), notify_settings_url('discord'), 'Settings'];
+        if (m3d_discord_on() && $disc['last'] && empty($disc['last']['ok']) && (!$bell || (int) strtotime((string) ($disc['last']['at'] ?? '')) > max($since, (int) ($gone['s:discord'] ?? 0)))) {
+            $out[] = ['problems', 'warn', 'discord', 'Last Discord post failed' . (($w = (string) ($disc['last']['what'] ?? '')) !== '' ? " ($w)" : ''), notify_settings_url('discord'), 'Settings', 's:discord'];
         }
     }
     if ($on('links') && ($dead = lc_dead())) {   // from the last check (Link Check, or its automatic check)
-        $names = array_values(array_unique(array_column($dead, 'name')));
-        $out[] = ['links', 'warn', 'link', m3d_plural(count($dead), 'download link is', 'download links are') . ' dead: ' . implode(', ', array_slice($names, 0, 3)) . (count($names) > 3 ? '…' : ''), '/admin/links.php', 'Link Check'];
+        if (array_diff(array_column($dead, 'h'), (array) ($gone['s:links'] ?? []))) {   // removed: until a link not dead then is
+            $names = array_values(array_unique(array_column($dead, 'name')));
+            $out[] = ['links', 'warn', 'link', m3d_plural(count($dead), 'download link is', 'download links are') . ' dead: ' . implode(', ', array_slice($names, 0, 3)) . (count($names) > 3 ? '…' : ''), '/admin/links.php', 'Link Check', 's:links'];
+        }
     }
-    if ($on('problems') && ($np = count(m3d_problems($since)))) {
-        $out[] = ['problems', 'warn', 'warn', m3d_plural($np, 'site problem') . ($bell && $since > $now - 7 * 86400 ? ' since you last looked' : ' in the last 7 days'), notify_settings_url('problems'), 'Settings'];
+    if ($on('problems') && ($np = count(m3d_problems(max($since, (int) ($gone['s:problems'] ?? 0)))))) {
+        $out[] = ['problems', 'warn', 'warn', m3d_plural($np, 'site problem') . ($bell && $since > $now - 7 * 86400 ? ' since you last looked' : ' in the last 7 days'), notify_settings_url('problems'), 'Settings', 's:problems'];
     }
-    if ($on('updates') && ($new = m3d_notify_updates())) {
-        $out[] = ['updates', 'info', 'up', (count($new) === 1 ? 'Update available: ' : count($new) . ' updates available, newest ') . $new[0]['v'], '/admin/update.php', 'Update'];
+    if ($on('updates') && ($new = m3d_notify_updates()) && ($gone['s:updates'] ?? '') !== (string) $new[0]['v']) {
+        $out[] = ['updates', 'info', 'up', (count($new) === 1 ? 'Update available: ' : count($new) . ' updates available, newest ') . $new[0]['v'], '/admin/update.php', 'Update', 's:updates'];
     }
     return $out;
 }
@@ -153,6 +222,13 @@ function m3d_notify_count(): int
         $state = m3d_notify_state();
         foreach (m3d_comment_summary()['recent'] as [$id, $at, $p]) if (m3d_notify_comment_new((int) $id, (int) $at, (bool) $p, $state)) $n++;
     }
+    if (m3d_notify_bell_on('likes')) {
+        foreach (m3d_notify_like_counts(m3d_notify_state()) as [$new]) if ($new) $n++;   // one per item
+    }
+    if (m3d_notify_bell_on('renders')) {   // waiting renders count until approved or rejected, like waiting comments
+        $state = m3d_notify_state();
+        foreach (m3d_showcase_summary()['waiting'] as [$id, $at]) if (!m3d_notify_gone('r' . $id, (int) $at, true, $state)) $n++;
+    }
     return $n + count(m3d_notify_site());
 }
 
@@ -164,9 +240,9 @@ function m3d_notify_items(): array
 {
     $rows = [];
     $recent = time() - NOTIFY_RECENT;
+    $state = m3d_notify_state();
     $clip = fn(string $t, int $w = 140) => mb_strimwidth(preg_replace('/\s+/u', ' ', $t) ?? '', 0, $w, '…');
     if (m3d_notify_bell_on('comments')) {
-        $state = m3d_notify_state();
         foreach (m3d_comments_flat() as [$k, $key, $c]) {
             if (!empty($c['admin'])) continue;
             $id = (int) ($c['id'] ?? 0);
@@ -210,6 +286,23 @@ function m3d_notify_items(): array
             }
         }
     }
+    if (m3d_notify_bell_on('likes')) {
+        foreach (m3d_notify_like_counts($state) as $k => [$new, $shown, $at, $all]) {
+            if (!($it = m3d_notify_like_item((string) $k))) continue;
+            [$name, $what] = $it;
+            $rows[] = ['l' . $k, 'likes', 'likes', $new > 0, $name, 'got', $shown === 1 ? ($new ? 'a new like' : 'a like') : m3d_plural($shown, $new ? 'new like' : 'like'),
+                $what . ' · ' . m3d_plural($all, 'like') . ' in all', $at, '/admin/notify.php?go=' . rawurlencode('l' . $k), false, 0];
+        }
+    }
+    if (m3d_notify_bell_on('renders')) {
+        foreach (m3d_renders() as $r) {
+            if (!empty($r['ok'])) continue;   // only waiting ones: approving or rejecting is what reads them
+            $it = m3d_item($r['kind'], $r['slug']);
+            $rows[] = ['r' . $r['id'], 'renders', 'renders', true, trim((string) ($r['name'] ?? '')) ?: 'A patron', 'shared a render of', $it ? $it['name'] : $r['slug'],
+                ($c = trim((string) ($r['caption'] ?? ''))) !== '' ? '“' . $clip($c) . '”' : '', (int) ($r['at'] ?? 0), '/admin/showcase.php#r-' . $r['id'], true, 0];
+        }
+    }
+    $rows = array_filter($rows, fn($r) => !m3d_notify_gone($r[0], $r[8], $r[3], $state));
     usort($rows, fn($a, $b) => $b[8] <=> $a[8]);
     return array_slice($rows, 0, NOTIFY_LIST_MAX);
 }
@@ -233,6 +326,8 @@ const NOTIFY_ICONS = [
     'up'       => '<path d="M12 19V6M6.5 11.5 12 6l5.5 5.5M5 20h14"/>',
     'warn'     => '<path d="M12 4 2.8 19.5h18.4zM12 10v4.5M12 17.2v.3"/>',
     'discord'  => '<path d="M7 7.5c3.3-1.3 6.7-1.3 10 0l1.8 8.5c-1.6 1.3-3.2 2-4.8 2.3l-.9-1.6M7 7.5 5.2 16c1.6 1.3 3.2 2 4.8 2.3l.9-1.6M8.5 15c2.3.9 4.7.9 7 0"/>',
+    'renders'  => '<rect x="3.5" y="5" width="17" height="14" rx="2"/><circle cx="9" cy="10" r="1.6"/><path d="m4 17 5-4.5 3.5 3 3-2.5 4.5 4"/>',
+    'likes'    => '<path d="M12 19.5s-7.5-4.4-7.5-10A4.2 4.2 0 0 1 12 7a4.2 4.2 0 0 1 7.5 2.5c0 5.6-7.5 10-7.5 10z"/>',
     'bell'     => '<path d="M6.5 16.5V11a5.5 5.5 0 0 1 11 0v5.5l1.5 2h-15z"/><path d="M10 21h4"/>',
 ];
 
@@ -259,15 +354,19 @@ function notify_list_html(): string
 {
     $items = m3d_notify_items();
     $site = m3d_notify_site();
-    $groups = ['comments' => ['Comments', 0, 0], 'bugs' => ['Bug Reports', 0, 0], 'site' => ['Site', 0, count($site)]];
+    $groups = ['comments' => ['Comments', 0, 0], 'bugs' => ['Bug Reports', 0, 0], 'renders' => ['Renders', 0, 0], 'likes' => ['Likes', 0, 0], 'site' => ['Site', 0, count($site)]];
     foreach ($items as $r) { $groups[$r[2]][1]++; if ($r[3]) $groups[$r[2]][2]++; }
     $groups['site'][1] = count($site);
     $shown = array_filter($groups, fn($g) => $g[1] > 0);
     $unread = count(array_filter($items, fn($r) => $r[3])) + count($site);
-    // Mark All as Read only when it changes something: dead links and an update stay until they are dealt with
-    $clear = count(array_filter($items, fn($r) => $r[3] && !$r[11])) + count(array_filter($site, fn($r) => $r[0] === 'problems'));
+    // Mark All as Read only when it changes something: dead links and an update stay until they are dealt with; Clear All while a row
+    // would leave (waiting comments stay)
+    $read = count(array_filter($items, fn($r) => $r[3] && !$r[11] && $r[1] !== 'renders')) + count(array_filter($site, fn($r) => $r[0] === 'problems'));   // waiting renders stay until dealt with
+    $clear = count(array_filter($items, fn($r) => !$r[11] && $r[1] !== 'renders')) + count($site);
     $h = '<div class="nt-head"><h2>Notifications</h2>'
-        . ($clear ? '<button type="button" class="nt-link" data-nt-readall>Mark All as Read</button>' : '') . '</div>';
+        . ($read ? '<button type="button" class="nt-link" data-nt-readall>Mark All as Read</button>' : '')
+        . ($read && $clear ? '<span class="nt-sep" aria-hidden="true">·</span>' : '')
+        . ($clear ? '<button type="button" class="nt-link" data-nt-clear>Clear All</button>' : '') . '</div>';
     if (count($shown) > 1) {
         $h .= '<div class="nt-tabs" role="group" aria-label="Show"><button type="button" class="chip" aria-pressed="true" data-nt-tab="all">All' . ($unread ? '<span>' . $unread . '</span>' : '') . '</button>';
         foreach ($shown as $k => [$label, , $u]) $h .= '<button type="button" class="chip" aria-pressed="false" data-nt-tab="' . $k . '">' . $label . ($u ? '<span>' . $u . '</span>' : '') . '</button>';
@@ -279,11 +378,12 @@ function notify_list_html(): string
     if ($items) {
         $h .= '<div data-nt-g="' . e(implode(' ', array_unique(array_column($items, 2)))) . '"><p class="nt-sec">New</p><ul class="nt-list">';
         foreach ($items as [$code, $ev, $g, $new, $who, $what, $on, $sub, $at, $url, $wait, $cid]) {
-            $h .= '<li class="nt-row' . ($new ? ' is-unread' : '') . '" data-nt-g="' . $g . '">'
+            $h .= '<li class="nt-row' . ($new ? ' is-unread' : '') . '" data-nt-g="' . $g . '" data-nt-code="' . e($code) . '" data-nt-at="' . $at . '">'
                 . '<a class="nt-hit" href="' . e($url) . '">' . notify_icon($g, 'nt-' . $g) . '<span class="nt-main"><span class="nt-t"><b>' . e($who) . '</b> ' . e($what) . ' <b>' . e($on) . '</b>'
                 . ($wait ? ' <span class="nt-wait">Waiting</span>' : '') . ($new ? '<span class="sr-only"> (new)</span>' : '') . '</span>'
                 . ($sub !== '' ? '<span class="nt-s">' . e($sub) . '</span>' : '') . '</span>'
                 . '<time class="nt-when" datetime="' . e(gmdate('c', $at)) . '" title="' . e(m3d_site_time($at, 'D j M, H:i T')) . '">' . e(notify_ago($at)) . '</time></a>'
+                . notify_tools($new && !$cid && $ev !== 'renders')
                 . ($cid ? '<span class="nt-acts"><button type="button" class="btn btn-primary btn-sm" data-nt-publish="' . $cid . '">Publish</button></span>' : '')
                 . '</li>';
         }
@@ -291,13 +391,22 @@ function notify_list_html(): string
     }
     if ($site) {
         $h .= '<div data-nt-g="site"><p class="nt-sec">Needs a Look</p><ul class="nt-list">';
-        foreach ($site as [, $tone, $ico, $text, $url, $go]) {
-            $h .= '<li class="nt-row nt-site ' . $tone . '" data-nt-g="site"><a class="nt-hit" href="' . e($url) . '">' . notify_icon($ico)
-                . '<span class="nt-main"><span class="nt-t">' . e($text) . '</span></span><span class="nt-go">' . e($go) . ' →</span></a></li>';
+        foreach ($site as [, $tone, $ico, $text, $url, $go, $code]) {
+            $h .= '<li class="nt-row nt-site ' . $tone . '" data-nt-g="site" data-nt-code="' . e($code) . '"><a class="nt-hit" href="' . e($url) . '">' . notify_icon($ico)
+                . '<span class="nt-main"><span class="nt-t">' . e($text) . '</span></span><span class="nt-go">' . e($go) . ' →</span></a>' . notify_tools(false) . '</li>';
         }
         $h .= '</ul></div>';
     }
     return $h . notify_foot();
+}
+
+/** A row's buttons, over its time (on hover; always on touch screens): ✓ Mark as Read (unread rows that can be read) and ✕ Remove. */
+function notify_tools(bool $read): string
+{
+    $svg = fn(string $d) => '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="' . $d . '"/></svg>';
+    return '<span class="nt-tools">'
+        . ($read ? '<button type="button" class="nt-ib" title="Mark as Read" aria-label="Mark as Read" data-nt-read>' . $svg('M5 12.5l4.5 4.5L19 7.5') . '</button>' : '')
+        . '<button type="button" class="nt-ib" title="Remove" aria-label="Remove from the list" data-nt-remove>' . $svg('M6.5 6.5l11 11M17.5 6.5l-11 11') . '</button></span>';
 }
 
 function notify_foot(): string
@@ -309,7 +418,7 @@ function notify_foot(): string
 /** Mark All as Read: comments until now, every bug report not opened yet that the bell shows (its switches: a new report, new comments). */
 function m3d_notify_read_all(): bool
 {
-    $ok = m3d_notify_store(fn(array $d) => ['seen' => time(), 'read' => []] + $d);
+    $ok = m3d_notify_store(fn(array $d) => ['seen' => time(), 'read' => [], 'likes' => []] + $d);
     $shown = fn(array $b) => empty($b['seen']) && m3d_notify_bell_on(isset($b['seen_at']) ? 'bugc' : 'bugs');
     if (array_filter(m3d_bugs(), $shown)) {
         $ok = m3d_bugs_update(function (array $bugs, int $next) use ($shown) {
@@ -321,10 +430,60 @@ function m3d_notify_read_all(): bool
     return $ok;
 }
 
-/** A comment opened from the bell: read from now on. */
-function m3d_notify_read(string $code): void
+/** Clear All: Mark All as Read, then the read rows until now, the dead links and the update shown now leave the list. */
+function m3d_notify_clear(): bool
 {
-    m3d_notify_store(function (array $d) use ($code) { $d['read'][] = $code; return $d; });
+    if (!m3d_notify_read_all()) return false;
+    $site = [];
+    foreach (m3d_notify_site() as $r) $site[$r[6]] = m3d_notify_site_mark($r[6]);
+    return m3d_notify_store(function (array $d) use ($site) {
+        $d['cleared'] = time();
+        foreach ($site as $k => $v) $d['gone'][$k] = $v;
+        return $d;
+    });
+}
+
+/** What a Needs a Look row's ✕ stores: the dead addresses or the version shown now, else the time (problems, Discord: newer ones show). */
+function m3d_notify_site_mark(string $code): array|string|int
+{
+    return match ($code) {
+        's:links' => array_values(array_unique(array_column(lc_dead(), 'h'))),
+        's:updates' => (string) (m3d_notify_updates()[0]['v'] ?? ''),
+        default => time(),
+    };
+}
+
+/** A comment ("c<id>"), an item's likes ("l<kind>:<key>") or a bug report ("b<n>": as if opened) read from now on. False when not saved. */
+function m3d_notify_read(string $code): bool
+{
+    if ($code[0] === 'b') {
+        $n = (int) substr($code, 1);
+        if (!array_filter(m3d_bugs(), fn($b) => (int) $b['n'] === $n && empty($b['seen']))) return true;   // read already, or gone
+        return (bool) m3d_bugs_update(function (array $bugs, int $next) use ($n) {
+            foreach ($bugs as &$b) if ((int) $b['n'] === $n) { $b['seen'] = true; unset($b['seen_at']); }
+            unset($b);
+            return [$bugs, $next, true];
+        });
+    }
+    return m3d_notify_store(function (array $d) use ($code) {
+        if ($code[0] === 'l') $d['likes'][substr($code, 1)] = time(); else $d['read'][] = $code;
+        return $d;
+    });
+}
+
+/** A row's ✕: read, and left out of the list until something happens on it after $at (the row's time); a Needs a Look row until it changes. */
+function m3d_notify_remove(string $code, int $at): bool
+{
+    if (str_starts_with($code, 's:')) {
+        $v = m3d_notify_site_mark($code);
+        return m3d_notify_store(function (array $d) use ($code, $v) { $d['gone'][$code] = $v; return $d; });
+    }
+    if (!m3d_notify_read($code)) return false;
+    $at = min(max(0, $at), time());
+    return m3d_notify_store(function (array $d) use ($code, $at) {
+        $d['gone'][$code] = max($at, (int) ($d['gone'][$code] ?? 0));
+        return $d;
+    });
 }
 
 // ── Discord: one private channel for the creator ──────────────────────────────
@@ -368,6 +527,41 @@ function m3d_notify_problem(string $where, string $msg): void
         m3d_notify_post('problems', [['title' => 'Site problem: ' . mb_substr($where, 0, 60), 'url' => abs_url(notify_settings_url('problems')),
             'description' => m3d_notify_plain($msg, 500) . ($page !== '' ? "\n" . m3d_notify_plain($page, 150) : ''),
             'color' => hexdec('f96854'), 'footer' => ['text' => 'More problems in the next hour are only listed in Settings → Site Problems']]]);
+    });
+}
+
+/** Called by m3d_set_like() for a new like (not the creator's): after the page, one post an hour at most, listing every item's likes
+ *  since the last post (so likes given in the hour after a post come with the next one). Says how many, never who. */
+function m3d_notify_likes_discord(): void
+{
+    static $queued = false;
+    if ($queued || !m3d_notify_discord_on('likes')) return;
+    $queued = true;
+    m3d_after_response(function () {
+        $now = time();
+        $since = 0;
+        m3d_notify_store(function (array $d) use ($now, &$since) {
+            $last = (int) ($d['posted']['likes'] ?? 0);
+            if ($last <= $now - NOTIFY_LIKES_GAP) { $d['posted']['likes'] = $now; $since = $last ?: $now - NOTIFY_LIKES_GAP; }   // the first post: the last hour
+            return $d;
+        });
+        if (!$since) return;
+        $d = m3d_read_json('likes') ?? [];
+        $rows = [];
+        foreach ((array) ($d['fresh'] ?? []) as $k => $ts) {
+            $new = count(array_filter((array) $ts, fn($t) => (int) $t > $since));
+            [$kind, $key] = explode(':', (string) $k, 2) + ['', ''];
+            $all = count((array) ($d[$kind][$key] ?? []));
+            if ($new && $all && ($it = m3d_notify_like_item((string) $k))) $rows[] = [min($new, $all), $all, $it];
+        }
+        if (!$rows) return;
+        usort($rows, fn($a, $b) => $b[0] <=> $a[0]);
+        $total = array_sum(array_column($rows, 0));
+        $lines = array_map(fn($r) => '• [' . m3d_notify_plain($r[2][0], 80) . '](' . abs_url($r[2][2]) . ') (' . $r[2][1] . '): '
+            . m3d_plural($r[0], 'new like') . ' · ' . $r[1] . ' in all', array_slice($rows, 0, 15));
+        if (count($rows) > 15) $lines[] = '…and ' . (count($rows) - 15) . ' more';
+        m3d_notify_post('likes', [['title' => m3d_plural($total, 'new like'), 'description' => implode("\n", $lines), 'color' => hexdec('ff8fa3'),
+            'footer' => ['text' => 'One post an hour at most: likes given meanwhile come with the next one']]]);
     });
 }
 

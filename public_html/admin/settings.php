@@ -86,8 +86,8 @@ if (admin_form_post()) {
             $done = m3d_log_clear() ? 'Download log cleared.' : 'The download log was already empty.';
             break;
         case 'unused':   // the same as Images → "Delete all unused"
-            [$n, , $n3] = media_purge_unused();
-            $done = $n || $n3 ? unused_words($n, $n3) . ' that weren’t used deleted.' : 'There were no unused images to delete.';
+            [$n, , $n3, $nv] = media_purge_unused();
+            $done = $n || $n3 || $nv ? unused_words($n, $n3, $nv) . ' that weren’t used deleted.' : 'There were no unused files to delete.';
             break;
         case 'temp':
             $done = $del(temp_files()) . ' temporary files deleted.';
@@ -100,7 +100,7 @@ if (admin_form_post()) {
             try {
                 $old = m3d_identity();
                 $one = fn(string $k, int $max) => clean_line($_POST[$k] ?? '', $max);
-                $id = ['name' => $one('id_name', 40), 'highlight' => $one('id_highlight', 20), 'tagline' => $one('id_tagline', 90)];
+                $id = ['name' => $one('id_name', 40), 'highlight' => $one('id_highlight', 20), 'tagline' => $one('id_tagline', 90), 'description' => $one('id_description', 200)];
                 if ($id['name'] === '') throw new InvalidArgumentException('Write the name of the site.');
                 if ($id['tagline'] === '') throw new InvalidArgumentException('Write a short line about the site (the tagline).');
                 if ($id['highlight'] !== '' && mb_strpos($id['name'], $id['highlight']) === false) throw new InvalidArgumentException('The coloured part must be written exactly as in the name (“' . $id['name'] . '”), or left empty.');
@@ -144,6 +144,16 @@ if (admin_form_post()) {
                 $error = $ex->getMessage();
             }
             break;
+        case 'menu':
+            try {
+                $save(['menu' => admin_menu_posted()], 'Menu saved: the header and the footer show it in this order.');
+            } catch (InvalidArgumentException $ex) {
+                $error = $ex->getMessage();
+            }
+            break;
+        case 'menu-reset':
+            $save(['menu' => null], 'Menu back to the built-in items in their usual order.');
+            break;
         case 'maintenance':
             $on = ($_POST['state'] ?? '') === 'on';
             $msg = clean_text($_POST['message'] ?? '', 1000);
@@ -177,7 +187,7 @@ if (admin_form_post()) {
                 // Client ID, campaign or redirect address fails for everyone, the owner too (nobody could log in to fix it)
                 $new = [];
                 foreach (['client_id', 'redirect_uri', 'campaign_id', 'client_secret', 'creator_token', 'creator_refresh'] as $k) $new[$k] = $in($k) !== '' ? $in($k) : (string) ($saved[$k] ?? '');
-                if ($new['redirect_uri'] === '') $new['redirect_uri'] = abs_url('/auth/callback.php');   // the address the field suggests
+                if ($new['redirect_uri'] === '') $new['redirect_uri'] = abs_url('/auth/callback.php', true);   // the address the field suggests
                 foreach (['client_id' => 'Client ID', 'client_secret' => 'Client secret'] as $k => $label) {
                     if ($new[$k] !== '' && !preg_match('/^[A-Za-z0-9_\-]{10,200}$/', $new[$k])) throw new InvalidArgumentException("The $label doesn’t look right: copy it again from your Patreon client page (letters, numbers, - and _ only).");
                 }
@@ -185,7 +195,7 @@ if (admin_form_post()) {
                     if ($new[$k] !== '' && !preg_match('/^[A-Za-z0-9_\-.]{10,400}$/', $new[$k])) throw new InvalidArgumentException("The $label doesn’t look right: copy it again from your Patreon client page.");
                 }
                 if ($new['redirect_uri'] !== '' && (!preg_match('#^https?://[^\s<>"]+/auth/callback\.php$#i', $new['redirect_uri']) || !filter_var($new['redirect_uri'], FILTER_VALIDATE_URL))) {
-                    throw new InvalidArgumentException('The redirect address must be this site’s address followed by /auth/callback.php, e.g. ' . abs_url('/auth/callback.php'));
+                    throw new InvalidArgumentException('The redirect address must be this site’s address followed by /auth/callback.php, e.g. ' . abs_url('/auth/callback.php', true));
                 }
                 if ($new['campaign_id'] !== '' && !ctype_digit($new['campaign_id'])) throw new InvalidArgumentException('The campaign ID is a number (digits only).');
                 if (!m3d_patreon_save($new)) throw new RuntimeException('Could not write ' . basename(M3D_PRIVATE) . '/patreon.php. Check that the ' . basename(M3D_PRIVATE) . ' folder is writable.');
@@ -256,18 +266,23 @@ if (admin_form_post()) {
             break;
         case 'discord':
         case 'discord-test':
+        case 'discord-forget':
+            // the webhook lives in private/webhooks.php and is never sent back to the page: an empty field keeps the saved one
             $dc = m3d_discord();
-            $hook = trim((string) ($_POST['discord_webhook'] ?? ''));
+            $forget = $_POST['do'] === 'discord-forget';
+            $typed = trim((string) ($_POST['discord_webhook'] ?? ''));
+            $hook = $forget ? '' : ($typed !== '' ? $typed : $dc['webhook']);
             $msg = mb_substr(trim(str_replace(["\r", "\n"], ' ', (string) ($_POST['discord_message'] ?? ''))), 0, 300);
-            $on = !empty($_POST['discord_on']);
-            if ($hook !== '' && !preg_match(DISCORD_WEBHOOK_RE, $hook)) { $error = 'That isn’t a Discord webhook address: in Discord, open the channel’s settings → Integrations → Webhooks, then “Copy Webhook URL”.'; break; }
+            $on = !$forget && !empty($_POST['discord_on']);
+            if ($typed !== '' && !preg_match(DISCORD_WEBHOOK_RE, $typed)) { $error = 'That isn’t a Discord webhook address: in Discord, open the channel’s settings → Integrations → Webhooks, then “Copy Webhook URL”.'; break; }
             if ($on && $hook === '') { $error = 'Paste the webhook address first.'; break; }
+            if ($hook !== (m3d_webhooks()['discord'] ?? '') && !m3d_webhooks_save(['discord' => $hook])) { $error = 'Could not write ' . basename(M3D_PRIVATE) . '/webhooks.php. Check that the ' . basename(M3D_PRIVATE) . ' folder is writable.'; break; }
             $stored = m3d_settings()['discord'] ?? [];
-            $new = ['on' => $on, 'webhook' => $hook, 'message' => $msg, 'stills' => !empty($_POST['discord_stills'])] + $stored;
+            $new = ['on' => $on, 'message' => $msg, 'stills' => !$forget && !empty($_POST['discord_stills'])] + $stored;
             if (empty($new['stills'])) unset($new['stills_queue'], $new['stills_due'], $new['stills_tries']);   // off: pictures waiting aren't posted
             // turning it on: every version already out counts as posted, so only new ones are announced
             if ($on && (!$dc['on'] || $hook !== $dc['webhook'])) $new['sent'] = array_slice(array_values(array_unique(array_merge($dc['sent'], m3d_discord_current_codes()))), -DISCORD_SENT_MAX);
-            if (!$save(['discord' => $new], $on ? 'Discord announcements are on: the next new version you save goes to the channel.' : 'Discord announcements are off.')) break;
+            if (!$save(['discord' => $new], $forget ? 'Webhook removed: Discord announcements are off.' : ($on ? 'Discord announcements are on: the next new version you save goes to the channel.' : 'Discord announcements are off.'))) break;
             if ($_POST['do'] === 'discord-test') {
                 $done = null;
                 if ($hook === '') { $error = 'Paste the webhook address first.'; break; }
@@ -281,15 +296,23 @@ if (admin_form_post()) {
             break;
         case 'notify':
         case 'notify-test':
-            $hook = trim((string) ($_POST['notify_webhook'] ?? ''));
-            $new = ['bell' => [], 'discord' => [], 'webhook' => $hook];
+        case 'notify-forget':
+            // the webhook lives in private/webhooks.php and is never sent back to the page: an empty field keeps the saved one
+            $forget = $_POST['do'] === 'notify-forget';
+            $typed = trim((string) ($_POST['notify_webhook'] ?? ''));
+            $hook = $forget ? '' : ($typed !== '' ? $typed : m3d_notify_settings(true)['webhook']);
+            $new = ['bell' => [], 'discord' => []];
             foreach (NOTIFY_EVENTS as $k => $_) {
                 $new['bell'][$k] = !empty($_POST['bell_' . $k]);
-                $new['discord'][$k] = !empty($_POST['discord_' . $k]);
+                $new['discord'][$k] = !$forget && !empty($_POST['discord_' . $k]);
             }
-            if ($hook !== '' && !preg_match(DISCORD_WEBHOOK_RE, $hook)) { $error = 'That isn’t a Discord webhook address: in Discord, open the channel’s settings → Integrations → Webhooks, then “Copy Webhook URL”.'; break; }
+            if ($typed !== '' && !preg_match(DISCORD_WEBHOOK_RE, $typed)) { $error = 'That isn’t a Discord webhook address: in Discord, open the channel’s settings → Integrations → Webhooks, then “Copy Webhook URL”.'; break; }
             if ($hook === '' && (array_filter($new['discord']) || $_POST['do'] === 'notify-test')) { $error = 'Paste the webhook address of your private channel first.'; break; }
-            if (!$save(['notify' => $new], 'Notifications saved.')) break;
+            // the old Bug Reports / Comments webhooks are read only until this is saved (m3d_notify_settings()): they go
+            if (!m3d_webhooks_save(['notify' => $hook, 'bugs' => null, 'comments' => null])) { $error = 'Could not write ' . basename(M3D_PRIVATE) . '/webhooks.php. Check that the ' . basename(M3D_PRIVATE) . ' folder is writable.'; break; }
+            $ntOk = $save(['notify' => $new], $forget ? 'Webhook removed: nothing goes to Discord.' : 'Notifications saved.');
+            m3d_notify_settings(true);   // the form below shows what is saved now
+            if (!$ntOk) break;
             if ($_POST['do'] === 'notify-test') {
                 $done = null;
                 $on = array_map(fn($k) => NOTIFY_EVENTS[$k][0], array_keys(array_filter($new['discord'])));
@@ -378,26 +401,12 @@ if (admin_form_post()) {
             if ($ok) $done = $on ? 'Bug reports are on: /bugs/ is in the footer and on model and accessory pages.' : 'Bug reports are off: /bugs/ shows “not found” to visitors.';
             else $error = m3d_write_error();
             break;
-        case 'bugs-unblock':
-            $id = (string) ($_POST['who'] ?? '');
-            $blocked = m3d_bug_settings()['blocked'];
-            if (!in_array($id, $blocked, true)) break;
-            if (m3d_bug_settings_save(['blocked' => array_values(array_diff($blocked, [$id]))])) $done = 'Unblocked: they can post bug reports again.';
-            else $error = m3d_write_error();
-            break;
         case 'comments':
             $on = !empty($_POST['cm_on']);
             $ok = m3d_comment_settings_save(['on' => $on, 'models' => !empty($_POST['cm_models']), 'outfits' => !empty($_POST['cm_outfits']), 'posts' => !empty($_POST['cm_posts']),
                 'who' => ($_POST['cm_who'] ?? '') === 'paying' ? 'paying' : 'any', 'moderate' => !empty($_POST['cm_moderate']),
                 'per_day' => max(1, min(100, (int) ($_POST['cm_per_day'] ?? 10)))]);
             if ($ok) $done = $on ? 'Comments are on: they show under the pages you picked (each page can turn them off in its editor).' : 'Comments are off: none are shown, and they are kept.';
-            else $error = m3d_write_error();
-            break;
-        case 'comments-unblock':
-            $id = (string) ($_POST['who'] ?? '');
-            $blocked = m3d_comment_settings()['blocked'];
-            if (!in_array($id, $blocked, true)) break;
-            if (m3d_comment_settings_save(['blocked' => array_values(array_diff($blocked, [$id]))])) $done = 'Unblocked: they can comment again.';
             else $error = m3d_write_error();
             break;
         case 'comments-approve':
@@ -435,7 +444,13 @@ if (admin_form_post()) {
             if (m3d_welcome_reset()) $done = 'Everyone will see the welcome page again after their next login.';
             else $error = m3d_write_error();
             break;
-        case 'smutbase':
+        case 'showcase':
+            $on = !empty($_POST['sc_on']);
+            $max = trim((string) ($_POST['sc_per_day'] ?? ''));
+            if (m3d_showcase_settings_save(['on' => $on, 'per_day' => $max === '' ? 0 : max(0, min(SHOWCASE_PER_DAY_MAX, (int) $max))]))
+                $done = $on ? 'Patron renders are on: patrons can share theirs from model and accessory pages.' : 'Patron renders are off: nobody can share new ones and none show on the pages.';
+            else $error = m3d_write_error();
+            break;
         case 'mustardui':
             $k = $_POST['do'];
             $on = !empty($_POST[$k . '_on']);
@@ -489,11 +504,12 @@ if (isset($_GET['tools'])) {
             $use = usage_map(m3d_models());   // the same count as the Images page
             $unImg = unused_images($use);
             $un3d = unused_3d($use);
-            [$unN, $un3, $unB] = [count($unImg), count($un3d), array_sum(array_column($unImg, 'bytes')) + array_sum(array_column($un3d, 'bytes'))];
+            $unVid = unused_videos($use);
+            [$unN, $un3, $unV, $unB] = [count($unImg), count($un3d), count($unVid), array_sum(array_column($unImg, 'bytes')) + array_sum(array_column($un3d, 'bytes')) + array_sum(array_column($unVid, 'bytes'))];
             [$tmpN, $tmpB] = files_stats(array_unique(temp_files($media)));
             [$medN, $medB] = files_stats($media);
             $out = [
-                'unused' => ['text' => unused_words($unN, $un3) . ' not used anywhere (' . m3d_size($unB) . ').', 'n' => $unN + $un3],
+                'unused' => ['text' => unused_words($unN, $un3, $unV) . ' not used anywhere (' . m3d_size($unB) . ').', 'n' => $unN + $un3 + $unV],
                 'temp' => ['text' => $tmpN . ' leftovers from interrupted uploads (' . m3d_size($tmpB) . ').', 'n' => $tmpN],
                 'media' => ['text' => $medN . ' files, ' . m3d_size($medB)],
             ];
@@ -571,7 +587,8 @@ admin_start('Settings', 'settings');
         <div class="id-grid">
           <label class="field"><span class="lbl">Site Name</span><input class="input" name="id_name" value="<?= e($id['name']) ?>" maxlength="40" required data-id="name" /></label>
           <label class="field"><span class="lbl">Highlighted Word<?= tip('Part of the name shown in the accent colour, written exactly as in the name (e.g. “Studio” in “PixelStudio”). Empty = one colour.') ?></span><input class="input" name="id_highlight" value="<?= e($id['highlight']) ?>" maxlength="20" data-id="highlight" /></label>
-          <label class="field id-wide"><span class="lbl">Tagline<?= tip('Homepage title (“' . $id['name'] . ' · …”), footer line under the logo, and default page description.') ?></span><input class="input" name="id_tagline" value="<?= e($id['tagline']) ?>" maxlength="90" required data-id="tagline" /></label>
+          <label class="field id-wide"><span class="lbl">Tagline<?= tip('Homepage title (“' . $id['name'] . ' · …”) and footer line under the logo.') ?></span><input class="input" name="id_tagline" value="<?= e($id['tagline']) ?>" maxlength="90" required data-id="tagline" /></label>
+          <label class="field id-wide"><span class="lbl">Search Description<?= tip('The text Google and other search engines show under the homepage’s title, and in link previews of the homepage. One or two sentences about the site (about 150 characters). Empty = the tagline.') ?></span><input class="input" name="id_description" value="<?= e($id['description']) ?>" maxlength="200" placeholder="<?= e($id['tagline']) ?>." /></label>
           <div class="field"><span class="lbl">Accent Colour</span>
             <span class="id-color"><input type="color" name="id_color" value="<?= e($id['color']) ?>" data-id="color" aria-label="Accent colour" /><code data-id-hex><?= e($id['color']) ?></code>
               <?php if ($id['color'] !== IDENTITY_DEFAULTS['color']): ?><button type="button" class="linklike small muted" data-id-color-reset="<?= e(IDENTITY_DEFAULTS['color']) ?>">Reset Colour</button><?php endif ?></span>
@@ -635,6 +652,25 @@ admin_start('Settings', 'settings');
       </form>
     </section>
 
+    <?php $menuSaved = isset(m3d_settings()['menu']); ?>
+    <section style="margin-top:20px" class="sec" id="menu">
+      <h2 class="small-h">Header Menu<?= tip('The links in the header, in this order (the footer lists them too). Drag to reorder; the switch hides an item without removing it. Links to other websites open in a new tab. Built-in items show only while their page has something to show.') ?></h2>
+      <form method="post" class="menu-form" data-rows-form>
+        <?= form_keys('menu') ?>
+        <?= admin_site_pages_datalist() ?>
+        <div class="menu-rows" data-rows><?php foreach (menu_entries() as $i => $it) echo admin_menu_row($it['key'] !== '' ? $it['key'] : 'c' . $i, $it['key'], $it['label'], $it['url'], !$it['off']); ?></div>
+        <template data-row-template><?= admin_menu_row('') ?></template>
+        <div class="form-actions">
+          <button type="button" class="btn btn-ghost btn-sm act-left" data-row-add>+ Add Link</button>
+          <?php if ($menuSaved): ?><button class="btn btn-ghost btn-sm" form="menu-reset" title="Only the built-in items, in their usual order">Reset</button><?php endif ?>
+          <button class="btn btn-primary btn-sm">Save Menu</button>
+        </div>
+      </form>
+      <?php if ($menuSaved): ?>
+        <form method="post" id="menu-reset" hidden onsubmit="return confirm('Go back to the usual menu? Your added links are removed and hidden items shown again.')"><?= form_keys('menu-reset') ?></form>
+      <?php endif ?>
+    </section>
+
     <?php $pl = home_plans(); ?>
     <details style="margin-top:20px" class="sec fold" id="homepage"<?= $open('plans') ?>>
       <summary><h2 class="small-h">Homepage Section <span class="badge tone-<?= $pl['on'] ? 'green' : 'grey' ?>"><?= $pl['on'] ? 'Shown' : 'Hidden' ?></span><?= tip('Two boxes at the bottom of the homepage explaining how to get the downloads (e.g. free releases and Patreon membership). Hidden for patrons who can already download.') ?></h2></summary>
@@ -652,7 +688,7 @@ admin_start('Settings', 'settings');
               <legend><?= $i === 0 ? 'Box 1' : 'Box 2 (Highlighted)' ?></legend>
               <label class="field"><span class="lbl">Tag</span><input class="input" name="pl_tag_<?= $i ?>" value="<?= e($b['tag']) ?>" maxlength="40" placeholder="<?= $i ? 'Membership' : 'Open access' ?>" /></label>
               <label class="field"><span class="lbl">Title</span><input class="input" name="pl_title_<?= $i ?>" value="<?= e($b['title']) ?>" maxlength="80" placeholder="<?= $i ? 'Every download' : 'Free releases' ?>" /></label>
-              <label class="field"><span class="lbl">Text<?= tip('Supports **bold**, *italic* and [links](https://…).') ?></span><textarea class="input" name="pl_text_<?= $i ?>" rows="3" maxlength="600"><?= e($b['text']) ?></textarea></label>
+              <label class="field"><span class="lbl">Text</span><textarea class="input" name="pl_text_<?= $i ?>" rows="3" maxlength="600"><?= e($b['text']) ?></textarea></label>
               <label class="field"><span class="lbl">Bullet Points<?= tip('One per line.') ?></span><textarea class="input" name="pl_items_<?= $i ?>" rows="3"><?= e(implode("
 ", $b['items'])) ?></textarea></label>
               <div class="field"><span class="lbl">Buttons<?= tip('Discord and Patreon use the Social Links addresses (left out when not set). “Log In” opens the Patreon login.') ?></span>
@@ -684,7 +720,7 @@ admin_start('Settings', 'settings');
           </label>
           <label class="field"><span class="lbl">End Date<?= tip('Optional. Shown until the end of this day.') ?></span><input class="input" type="date" name="notice_until" value="<?= e($notice['until']) ?>" /></label>
         </div>
-        <label class="field"><span class="lbl">Message<?= tip('Supports **bold**, *italic* and [links](https://…).') ?></span>
+        <label class="field"><span class="lbl">Message</span>
           <textarea class="input" name="notice_text" rows="2" maxlength="600" placeholder="**New:** a new model is out for patrons! [See it](/models/your-model/)"><?= e($notice['text']) ?></textarea>
         </label>
         <label class="toggle"><input type="checkbox" class="switch" name="notice_closable" value="1" <?= $notice['closable'] ? 'checked' : '' ?> /><span>Allow Closing<?= tip('Visitors can close it. It reappears when the message changes.') ?></span></label>
@@ -730,15 +766,17 @@ admin_start('Settings', 'settings');
           <?php foreach (NOTIFY_EVENTS as $k => [$label, $help]):
               $off = !m3d_notify_feature($k); ?>
             <div class="nt-set-row<?= $off ? ' is-off' : '' ?>" role="row">
-              <span role="cell"><?= e($label) ?><?= tip($help . ($off ? ' ' . ($k === 'comments' ? 'Comments are' : 'Bug reports are') . ' off in Features.' : '')) ?></span>
+              <span role="cell"><?= e($label) ?><?= tip($help . ($off ? ' ' . (['comments' => 'Comments are', 'renders' => 'Patron renders are'][$k] ?? 'Bug reports are') . ' off in Features.' : '')) ?></span>
               <span role="cell"><input type="checkbox" class="switch" name="bell_<?= $k ?>" value="1" aria-label="<?= e($label) ?> in the bell" <?= $ns['bell'][$k] ? 'checked' : '' ?> /></span>
               <span role="cell"><input type="checkbox" class="switch" name="discord_<?= $k ?>" value="1" aria-label="<?= e($label) ?> on Discord" <?= $ns['discord'][$k] ? 'checked' : '' ?> /></span>
             </div>
           <?php endforeach ?>
         </div>
         <label class="field"><span class="lbl">Private Webhook URL<?= tip('A Discord channel only you can read: posts include patrons’ names and what they wrote. In Discord: channel settings → Integrations → Webhooks → New Webhook → “Copy Webhook URL”.') ?></span>
-          <input class="input dc-hook" type="url" name="notify_webhook" value="<?= e($ns['webhook']) ?>" placeholder="https://discord.com/api/webhooks/…" spellcheck="false" autocomplete="off" /></label>
+          <?php /* never printed back (private/webhooks.php): an empty field keeps the saved one */ ?>
+          <?= key_field('Private Webhook URL', $ns['webhook'] !== '', null, 'class="dc-hook" type="url" name="notify_webhook" placeholder="https://discord.com/api/webhooks/…" spellcheck="false" autocomplete="off"') ?></label>
         <div class="form-actions">
+          <?php if ($ns['webhook'] !== ''): ?><button class="btn btn-ghost btn-sm" name="do" value="notify-forget" onclick="return confirm('Remove the saved webhook? Nothing goes to Discord until you paste one again.')">Remove Webhook</button><?php endif ?>
           <button class="btn btn-ghost btn-sm" name="do" value="notify-test">Save and Send a Test</button><button class="btn btn-primary btn-sm" name="do" value="notify">Save</button>
         </div>
       </form>
@@ -750,25 +788,25 @@ admin_start('Settings', 'settings');
           $ptVal = fn(string $k) => (string) ($pt[$k] ?? '');
           $ptReal = fn(string $k) => m3d_cfg_real($ptVal($k));
           $ptFrom = fn(string $k) => $ptReal($k) ? '' : '<span class="badge tone-red">Missing</span>';
-          $callback = abs_url('/auth/callback.php'); ?>
+          $callback = abs_url('/auth/callback.php', true); ?>
     <section class="sec" id="patreon">
       <h2 class="small-h">Patreon</h2>
       <form method="post" class="pt-form" autocomplete="off" onsubmit="return confirm(<?= e(json_encode('Save the Patreon keys? If they are wrong, nobody can log in (you stay logged in here). Test in a private window afterwards.')) ?>)">
         <?= form_keys('patreon') ?>
         <div class="id-grid">
           <label class="field"><span class="lbl">Client ID <?= $ptFrom('client_id') ?><?= tip('From patreon.com/portal/registration/register-clients → your client → “Client ID”.') ?></span>
-            <input class="input" name="pt_client_id" value="<?= e($ptReal('client_id') ? $ptVal('client_id') : '') ?>" spellcheck="false" autocomplete="off" /></label>
-          <label class="field"><span class="lbl">Client Secret <?= $ptFrom('client_secret') ?><?= tip('Same page, “Client Secret”. Never shown again: leave empty to keep the current one.') ?></span>
-            <input class="input" type="password" name="pt_client_secret" value="" placeholder="<?= $ptReal('client_secret') ? '•••••••• (leave empty to keep it)' : 'Paste the client secret' ?>" spellcheck="false" autocomplete="new-password" /></label>
+            <?= key_field('Client ID', $ptReal('client_id'), $ptReal('client_id') ? $ptVal('client_id') : '', 'name="pt_client_id" spellcheck="false" autocomplete="off"') ?></label>
+          <label class="field"><span class="lbl">Client Secret <?= $ptFrom('client_secret') ?><?= tip('Same page, “Client Secret”. Never shown again once saved.') ?></span>
+            <?= key_field('Client Secret', $ptReal('client_secret'), null, 'type="password" name="pt_client_secret" placeholder="Paste the client secret" spellcheck="false" autocomplete="new-password"') ?></label>
           <?php foreach (['creator_token' => 'Creator’s Access Token', 'creator_refresh' => 'Creator’s Refresh Token'] as $k => $label): $has = !empty($pt[$k]); ?>
-          <label class="field"><span class="lbl"><?= e($label) ?><?= tip('Same page, “' . $label . '”. Never shown again: leave empty to keep the current one.') ?></span>
-            <input class="input" type="password" name="pt_<?= $k ?>" value="" placeholder="<?= $has ? '•••••••• (leave empty to keep it)' : 'Paste the ' . e(mb_strtolower($label)) ?>" spellcheck="false" autocomplete="new-password" /></label>
+          <label class="field"><span class="lbl"><?= e($label) ?><?= tip('Same page, “' . $label . '”. Never shown again once saved.') ?></span>
+            <?= key_field($label, $has, null, 'type="password" name="pt_' . $k . '" placeholder="' . e('Paste the ' . mb_strtolower($label)) . '" spellcheck="false" autocomplete="new-password"') ?></label>
           <?php endforeach ?>
           <label class="field id-wide"><span class="lbl">Redirect URI <?= $ptFrom('redirect_uri') ?><?= tip('Must match one of your Patreon client’s “Redirect URIs” exactly.') ?></span>
-            <span class="pt-row"><input class="input" name="pt_redirect_uri" value="<?= e($ptReal('redirect_uri') ? $ptVal('redirect_uri') : '') ?>" placeholder="<?= e($callback) ?>" spellcheck="false" data-pt-redirect />
+            <span class="pt-row"><?= key_field('Redirect URI', $ptReal('redirect_uri'), $ptReal('redirect_uri') ? $ptVal('redirect_uri') : '', 'name="pt_redirect_uri" placeholder="' . e($callback) . '" spellcheck="false" data-pt-redirect') ?>
               <?php if ($ptVal('redirect_uri') !== $callback): ?><button type="button" class="btn btn-ghost btn-sm" data-pt-use="<?= e($callback) ?>" title="<?= e($callback) ?>">Use This Site’s Address</button><?php endif ?></span></label>
           <label class="field"><span class="lbl">Campaign ID <?= $ptFrom('campaign_id') ?><?= tip('Your Patreon campaign number. Only its paying members can download.') ?></span>
-            <input class="input" name="pt_campaign_id" value="<?= e($ptReal('campaign_id') ? $ptVal('campaign_id') : '') ?>" inputmode="numeric" spellcheck="false" /></label>
+            <?= key_field('Campaign ID', $ptReal('campaign_id'), $ptReal('campaign_id') ? $ptVal('campaign_id') : '', 'name="pt_campaign_id" inputmode="numeric" spellcheck="false"') ?></label>
         </div>
         <div class="form-actions">
           <button class="btn btn-primary btn-sm">Save Patreon Keys</button>
@@ -806,7 +844,7 @@ admin_start('Settings', 'settings');
         <label class="toggle"><input type="checkbox" class="switch" name="blog_on" value="1" <?= $bl['on'] ? 'checked' : '' ?> /><span>Enable Blog<?= tip('Adds “Blog” to the menu and the footer once there is a post. Off: /blog/ returns “not found” (admins still see it).') ?></span></label>
         <label class="field"><span class="lbl">Page Title</span>
           <input class="input" name="blog_title" maxlength="80" value="<?= e((string) ($blRaw['title'] ?? '')) ?>" placeholder="Blog" /></label>
-        <label class="field"><span class="lbl">Line Under the Title<?= tip('Optional. Links and **bold** work.') ?></span>
+        <label class="field"><span class="lbl">Line Under the Title</span>
           <input class="input" name="blog_intro" maxlength="300" value="<?= e($bl['intro']) ?>" placeholder="Release notes, works in progress and how the models are made." /></label>
         <div class="form-actions">
           <a class="btn btn-ghost btn-sm" href="/admin/blog.php">Write Posts</a>
@@ -841,19 +879,7 @@ admin_start('Settings', 'settings');
         </div>
         <div class="form-actions"><a class="btn btn-ghost btn-sm" href="/bugs/">Open Bug Reports</a><button class="btn btn-primary btn-sm">Save</button></div>
       </form>
-      <?php if ($bs['blocked']):
-          $names = [];   // the name each blocked person last posted with
-          foreach (m3d_bugs() as $b) foreach (array_merge([$b], array_filter((array) ($b['log'] ?? []), fn($x) => ($x['t'] ?? '') === 'c')) as $x) {
-              if (($x['by'] ?? '') !== '' && ($x['name'] ?? '') !== '' && (int) ($x['at'] ?? 0) >= ($names[(string) $x['by']][1] ?? 0)) $names[(string) $x['by']] = [(string) $x['name'], (int) ($x['at'] ?? 0)];
-          } ?>
-        <div class="field bugs-blocked"><span class="lbl">Blocked Users</span>
-          <?php foreach ($bs['blocked'] as $id): ?>
-            <form method="post" class="inline-row"><?= form_keys('bugs-unblock') ?><input type="hidden" name="who" value="<?= e($id) ?>" />
-              <span><b><?= e($names[$id][0] ?? 'Someone') ?></b> <span class="muted small">Patreon ID <?= e($id) ?></span></span>
-              <button class="btn btn-ghost btn-sm">Unblock</button></form>
-          <?php endforeach ?>
-        </div>
-      <?php endif ?>
+      <?php if ($n = count($bs['blocked'])): ?><p class="muted small set-banned"><?= e(m3d_plural($n, 'person', 'people')) ?> can’t post bug reports. <a href="/admin/users.php?tab=exceptions&amp;f=banned">Manage bans in Access →</a></p><?php endif ?>
     </section>
 
     <?php $cs = m3d_comment_settings(); $cmCount = m3d_comments_count(); $cmWait = m3d_comments_pending(); ?>
@@ -898,16 +924,19 @@ admin_start('Settings', 'settings');
           <?php endforeach ?>
         </div>
       <?php endif ?>
-      <?php if ($cs['blocked']):
-          $names = m3d_known_patrons(); ?>
-        <div class="field bugs-blocked"><span class="lbl">Blocked Users</span>
-          <?php foreach ($cs['blocked'] as $id): ?>
-            <form method="post" class="inline-row"><?= form_keys('comments-unblock') ?><input type="hidden" name="who" value="<?= e($id) ?>" />
-              <span><b><?= e(($names[$id] ?? '') ?: 'Someone') ?></b> <span class="muted small">Patreon ID <?= e($id) ?></span></span>
-              <button class="btn btn-ghost btn-sm">Unblock</button></form>
-          <?php endforeach ?>
-        </div>
-      <?php endif ?>
+      <?php if ($n = count($cs['blocked'])): ?><p class="muted small set-banned"><?= e(m3d_plural($n, 'person', 'people')) ?> can’t comment. <a href="/admin/users.php?tab=exceptions&amp;f=banned">Manage bans in Access →</a></p><?php endif ?>
+    </section>
+
+    <?php $sc = m3d_showcase_settings(); ?>
+    <section style="margin-top:20px" class="sec" id="showcase">
+      <h2 class="small-h">Patron Renders <span class="badge tone-<?= $sc['on'] ? 'green' : 'grey' ?>"><?= $sc['on'] ? 'On' : 'Off' ?></span><?= tip('Paying patrons share renders they made with a model or accessory from its page (the “Made a Render?” box). You approve each one in Admin → Gallery → From Patrons; approved ones show in the page’s gallery, after your pictures.') ?></h2>
+      <form method="post" autocomplete="off" class="set-list">
+        <?= form_keys('showcase') ?>
+        <label class="toggle"><input type="checkbox" class="switch" name="sc_on" value="1" <?= $sc['on'] ? 'checked' : '' ?> /><span>Enable Patron Renders<?= tip('Off: nobody can share new renders and none show on the pages. They are kept, and come back when you turn this on again.') ?></span></label>
+        <label class="field bugs-num"><span class="lbl">Renders per Day<?= tip('How many renders one patron can send in 24 hours, on all pages together. 0 = no limit. A patron never has more than ' . SHOWCASE_WAITING . ' waiting for your approval at once.') ?></span>
+          <input class="input" type="number" name="sc_per_day" min="0" max="<?= SHOWCASE_PER_DAY_MAX ?>" value="<?= (int) $sc['per_day'] ?>" /></label>
+        <div class="form-actions"><?php if ($sc['on'] || m3d_showcase_stored()): ?><a class="btn btn-ghost btn-sm" href="/admin/showcase.php">Open From Patrons</a><?php endif ?><button class="btn btn-primary btn-sm">Save</button></div>
+      </form>
     </section>
 
     <?php $dc = m3d_discord(); $dcOn = m3d_discord_on(); ?>
@@ -920,8 +949,9 @@ admin_start('Settings', 'settings');
           <div class="dc-fields">
             <label class="toggle"><input type="checkbox" class="switch" name="discord_on" value="1" <?= $dc['on'] ? 'checked' : '' ?> /><span>Announce New Versions<?= tip('Only versions added from now on are posted, not the existing ones.') ?></span></label>
             <label class="toggle"><input type="checkbox" class="switch" name="discord_stills" value="1" <?= $dc['stills'] ? 'checked' : '' ?> /><span>Announce New Gallery Pictures<?= tip('Pictures added or made visible in Admin → Gallery are posted together as “New render”, ' . intdiv(DISCORD_STILLS_DELAY, 60) . ' minutes after your last change there (time for captions and characters). Drafts are never posted; teaser and patron-only pictures are posted without the image. Existing pictures are not posted.') ?></span></label>
-            <label class="field"><span class="lbl">Webhook URL<?= tip('Channel settings (gear icon) → Integrations → Webhooks → New Webhook → “Copy Webhook URL”. Anyone with this URL can post in the channel: keep it private (shown only while editing).') ?></span>
-              <input class="input dc-hook" type="url" name="discord_webhook" value="<?= e($dc['webhook']) ?>" placeholder="https://discord.com/api/webhooks/…" spellcheck="false" autocomplete="off" data-dc-hook />
+            <label class="field"><span class="lbl">Webhook URL<?= tip('Channel settings (gear icon) → Integrations → Webhooks → New Webhook → “Copy Webhook URL”. Anyone with this URL can post in the channel: keep it private (never shown again once saved).') ?></span>
+              <?php /* never printed back (private/webhooks.php): an empty field keeps the saved one */ ?>
+              <?= key_field('Webhook URL', $dc['webhook'] !== '', null, 'class="dc-hook" type="url" name="discord_webhook" placeholder="https://discord.com/api/webhooks/…" spellcheck="false" autocomplete="off" data-dc-hook') ?>
               <span class="dc-hook-state small" data-dc-hook-state></span></label>
             <label class="field"><span class="lbl">Intro Message<?= tip('Optional line above each post, e.g. “New update!”. Use @everyone, @here or a role’s code to ping people: a role written as plain text (@Notifications) pings no one. To get the code, send \\@RoleName in any Discord channel and copy what Discord shows (<@&…>).') ?></span>
               <input class="input" name="discord_message" value="<?= e($dc['message']) ?>" maxlength="300" placeholder="New update!" data-dc-message />
@@ -937,6 +967,7 @@ admin_start('Settings', 'settings');
           <?php if ($l = $dc['last']): $at = m3d_site_time((string) ($l['at'] ?? ''), 'j M Y, H:i T'); ?>
             <p class="act-left dc-last small muted">Last post, <?= e($at) ?>: <?= !empty($l['ok']) ? '<b class="res-ok">✓</b> ' . e((string) ($l['what'] ?? '')) : '<b class="res-err">failed</b> (' . e((string) ($l['what'] ?? '')) . '): ' . e((string) ($l['error'] ?? '')) . (empty($l['stills']) ? ' It will be tried again the next time you save it.' : ' Pictures are tried again ' . intdiv(DISCORD_STILLS_DELAY, 60) . ' minutes later, ' . DISCORD_STILLS_TRIES . ' times at most.') ?></p>
           <?php endif ?>
+          <?php if ($dc['webhook'] !== ''): ?><button class="btn btn-ghost btn-sm" name="do" value="discord-forget" onclick="return confirm('Remove the saved webhook? Discord announcements turn off until you paste one again.')">Remove Webhook</button><?php endif ?>
           <button class="btn btn-ghost btn-sm" name="do" value="discord-test">Save and Send a Test Message</button><button class="btn btn-primary btn-sm" name="do" value="discord">Save</button>
         </div>
       </form>
@@ -973,17 +1004,17 @@ admin_start('Settings', 'settings');
         <label class="toggle s4-switch"><input type="checkbox" class="switch" name="s4_on" value="1" <?= $s4['on'] ? 'checked' : '' ?> /><span>Use S4 Downloads<?= tip('Off: S4 is gone from the site (no S4… button in the editors, no S4 checks in Link Check) and “s4:” links don’t download. The keys and bucket stay saved here for later.') ?></span></label>
         <div class="id-grid">
           <label class="field"><span class="lbl">Access Key ID<?= tip('In MEGA, open Object Storage (S4) → Access Keys and create a key. Paste its access key ID here.') ?></span>
-            <input class="input" name="s4_key" value="<?= e($s4['key']) ?>" maxlength="128" spellcheck="false" autocomplete="off" /></label>
-          <label class="field"><span class="lbl">Secret Key<?= tip('Shown by MEGA when you create the key. Never shown again here: leave empty to keep the current one.') ?></span>
-            <input class="input" type="password" name="s4_secret" value="" maxlength="200" placeholder="<?= $s4['secret'] !== '' ? '•••••••• (leave empty to keep it)' : 'Paste the secret key' ?>" spellcheck="false" autocomplete="new-password" /></label>
+            <?= key_field('Access Key ID', $s4['key'] !== '', $s4['key'], 'name="s4_key" maxlength="128" spellcheck="false" autocomplete="off"') ?></label>
+          <label class="field"><span class="lbl">Secret Key<?= tip('Shown by MEGA when you create the key. Never shown again here once saved.') ?></span>
+            <?= key_field('Secret Key', $s4['secret'] !== '', null, 'type="password" name="s4_secret" maxlength="200" placeholder="Paste the secret key" spellcheck="false" autocomplete="new-password"') ?></label>
           <?php $inHours = $s4['minutes'] % 60 === 0; ?>
           <div class="field"><label class="lbl" for="s4-life">Link Lifetime<?= tip('How long a download address works after the patron starts the download. A download already running finishes; resuming it later needs a new click. From ' . S4_MINUTES_MIN . ' minutes to 7 days.') ?></label>
             <div class="s4-life"><input class="input" id="s4-life" type="number" name="s4_life" min="1" max="<?= S4_MINUTES_MAX ?>" step="1" value="<?= $inHours ? intdiv($s4['minutes'], 60) : $s4['minutes'] ?>" />
               <select class="input" name="s4_unit" aria-label="Unit"><option value="minutes"<?= $inHours ? '' : ' selected' ?>>Minutes</option><option value="hours"<?= $inHours ? ' selected' : '' ?>>Hours</option></select></div></div>
           <label class="field"><span class="lbl">Bucket Address<?= tip('Your bucket, e.g. https://s3.g.megas4.com/your-bucket/ (MEGA’s Object URL of any file in it works too). Then a download link only needs “s4:” and the file name: s4:model.zip, or s4:folder/file.zip.') ?></span>
-            <input class="input" type="url" name="s4_bucket" value="<?= e($s4['bucket']) ?>" maxlength="1000" placeholder="https://s3.g.megas4.com/your-bucket/" spellcheck="false" /></label>
+            <?= key_field('Bucket Address', $s4['bucket'] !== '', $s4['bucket'], 'type="url" name="s4_bucket" maxlength="1000" placeholder="https://s3.g.megas4.com/your-bucket/" spellcheck="false"') ?></label>
           <label class="field"><span class="lbl">Download Domain<?= tip('Optional. Your own address for downloads, e.g. files.example.com: a proxy on it (e.g. a CDN worker) passes each temporary address on to the bucket’s host unchanged. Downloads of files in the bucket above then show your address instead of MEGA’s. Empty: downloads go straight to MEGA.') ?></span>
-            <input class="input" name="s4_domain" value="<?= e($s4['domain']) ?>" maxlength="253" placeholder="files.example.com" spellcheck="false" autocomplete="off" /></label>
+            <?= key_field('Download Domain', $s4['domain'] !== '', $s4['domain'], 'name="s4_domain" maxlength="253" placeholder="files.example.com" spellcheck="false" autocomplete="off"') ?></label>
         </div>
         <?php $s4TestVal = m3d_s4_short($s4['test']) ? ltrim(substr($s4['test'], 3), '/') : $s4['test']; ?>
         <details class="s4-more"<?= $s4TestVal !== '' ? ' open' : '' ?>>
@@ -1098,8 +1129,8 @@ admin_start('Settings', 'settings');
           <a class="btn btn-ghost btn-sm" href="/admin/backups.php">Open Backups</a>
         </div>
         <div class="tool">
-          <div><b>Unused Images</b><p class="muted small"><span data-stat="unused">Counting…</span> <a href="/admin/images.php?unused=1">Review them in Images</a>.</p></div>
-          <?= $action('unused', 'Delete Unused Images', 'Delete all images and 3D files that are not used anywhere? This can\'t be undone.', 'unused') ?>
+          <div><b>Unused Media</b><p class="muted small"><span data-stat="unused">Counting…</span> <a href="/admin/images.php?unused=1">Review them in Media</a>.</p></div>
+          <?= $action('unused', 'Delete Unused Media', 'Delete all images, 3D files and videos that are not used anywhere? This can\'t be undone.', 'unused') ?>
         </div>
         <div class="tool">
           <div><b>Temporary Files</b><p class="muted small"><span data-stat="temp">Counting…</span></p></div>
@@ -1159,7 +1190,7 @@ admin_start('Settings', 'settings');
           <table class="pd-table">
             <thead><tr><th>What</th><th>Found</th></tr></thead>
             <tbody><?php foreach (pd_summary($pdOne) as $what => $found): ?>
-              <tr><td><?= e($what) ?></td><td<?= $found === '' ? ' class="muted"' : '' ?>><?= e($found !== '' ? $found : (str_starts_with($what, 'Blocked from') ? 'No' : 'None')) ?></td></tr>
+              <tr><td><?= e($what) ?></td><td<?= $found === '' ? ' class="muted"' : '' ?>><?= e($found !== '' ? $found : (str_starts_with($what, 'Banned') ? 'No' : 'None')) ?></td></tr>
             <?php endforeach ?></tbody>
           </table>
           <?php endif ?>
@@ -1176,7 +1207,7 @@ admin_start('Settings', 'settings');
                   <li>Their comments under models, accessories and blog posts go.</li>
                   <li>Their likes, ignored updates, welcome page mark and access exception go. The like counts drop.</li>
                 </ul>
-                <p class="muted small">What stays: the all-time download totals (numbers only), a bug-report or comments block (only their ID, so the block keeps working), and the copies inside backups until those backups are deleted. If they log in again, new data starts from zero. Download their data first if you need to send it.</p>
+                <p class="muted small">What stays: the all-time download totals (numbers only), their bans (their ID, what is banned and the reason, so the ban keeps working), and the copies inside backups until those backups are deleted. If they log in again, new data starts from zero. Download their data first if you need to send it.</p>
                 <label class="field"><span class="lbl">Type <code><?= e($pdOne['id']) ?></code> to Confirm</span><input class="input" name="typed" required autocomplete="off"<?= ctype_digit($pdOne['id']) ? ' pattern="' . e($pdOne['id']) . '"' : '' ?> /></label>
                 <div class="form-actions"><button class="btn btn-danger btn-sm">Delete All Their Data</button></div>
               </form>

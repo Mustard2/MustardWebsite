@@ -19,6 +19,23 @@ function el(tag, attrs = {}, ...kids) {
 // Text compared without accents or case: searches and suggestions (the same as searchFold() in site.js).
 const fold = (t) => String(t ?? '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
 const foldWords = (q) => fold(q).split(/\s+/).filter(Boolean);   // the typed words, each to be found
+// the first max of a sorted list, shared fairly between its groups (models can't crowd out the accessories), in the list's order
+const fairSlice = (list, group, max) => {
+  if (list.length <= max) return list;
+  const by = new Map();
+  for (const x of list) { const g = group(x); if (!by.has(g)) by.set(g, []); by.get(g).push(x); }
+  const keep = new Set();
+  for (let round = 0; keep.size < max; round++) for (const xs of by.values()) if (keep.size < max && xs[round]) keep.add(xs[round]);
+  return list.filter((x) => keep.has(x));
+};
+const headBottom = () => Math.max(0, document.querySelector('.site-header')?.getBoundingClientRect().bottom || 0);   // the sticky header's lower edge in the window
+// a suggestion list (.g-sugg) opens above its field when it doesn't fit under it in the window and there is more room above
+const suggFlip = (sugg) => {
+  sugg.classList.remove('up');
+  if (sugg.hidden) return;
+  const r = sugg.parentElement.getBoundingClientRect(), below = innerHeight - r.bottom, above = r.top - headBottom();
+  sugg.classList.toggle('up', below < sugg.offsetHeight + 8 && above > below);
+};
 
 // A page address from a title: lowercase letters and digits joined by single dashes, at most `max` characters, never ending with a dash.
 const slugify = (t, max = 64) => fold(t).replace(/[^a-z0-9]+/g, '-').replace(/^-+/, '').slice(0, max).replace(/-+$/, '');
@@ -60,6 +77,32 @@ function toastWire(t) {
 }
 document.querySelectorAll('[data-toasts] .toast').forEach(toastWire);
 
+// Unsaved changes: isDirty() says whether a part of the page holds some. Closing the tab, reloading or typing an address then asks the
+// browser's own question (beforeunload); a click on a link that leaves the page in this tab (View Post, the menu, the bell…) asks first
+// with confirm(), because some browsers never show the beforeunload question (Safari on iPhone and iPad). Every editor uses this one;
+// a page with several (Docs: the pages and the links box) still asks once.
+const leaveChecks = [];
+function guardLeave(isDirty) {
+  if (!leaveChecks.length) {
+    let leaving = false;   // the question was just answered with OK: the browser doesn't ask again on its way out
+    const dirty = () => leaveChecks.some((f) => f());
+    addEventListener('beforeunload', (e) => { if (!leaving && dirty()) { e.preventDefault(); e.returnValue = ''; } });
+    document.addEventListener('click', (e) => {
+      const a = e.target.closest?.('a[href]');
+      if (!a || e.defaultPrevented || e.button !== 0 || e.ctrlKey || e.metaKey || e.shiftKey || e.altKey) return;   // a new tab or window keeps this page
+      if ((a.target && a.target !== '_self') || a.hasAttribute('download')) return;
+      const u = new URL(a.href, location.href);
+      if (u.protocol !== 'http:' && u.protocol !== 'https:') return;   // mailto: and the like
+      if (u.origin === location.origin && u.pathname === location.pathname && u.search === location.search && u.hash) return;   // a place on this page
+      if (!dirty()) return;
+      if (!confirm('You have unsaved changes. Leave without saving them?')) { e.preventDefault(); return; }
+      leaving = true;
+      setTimeout(() => { leaving = false; }, 1000);   // the link didn't leave the page after all (a file download): ask again next time
+    });
+  }
+  leaveChecks.push(isDirty);
+}
+
 async function post(url, body, again = true) {
   const r = await fetch(url, {
     method: 'POST',
@@ -90,24 +133,27 @@ async function freshCsrf() {
 function upload(file, model, onProgress) {
   return sendFile('/admin/upload.php', file, model, onProgress).then((d) => d.url);
 }
-// POSTs a file (+ the folder and the CSRF token) to an upload endpoint with progress; resolves to its JSON answer ({ok, url, …})
-function sendFile(endpoint, file, model, onProgress, retried = false) {
+// POSTs a file (+ the folder and the CSRF token) to an upload endpoint with progress; resolves to its JSON answer ({ok, url, …}).
+// extra: more fields ({name: string | Blob}), e.g. a video's cover
+function sendFile(endpoint, file, model, onProgress, extra = {}, retried = false) {
   const fd = new FormData();
-  fd.append('file', file);
+  if (file) fd.append('file', file);
   fd.append('model', model || 'misc');
+  for (const [k, v] of Object.entries(extra)) if (v !== null && v !== undefined) fd.append(k, v);
   fd.append('csrf', CSRF);
   return new Promise((resolve, reject) => {
     const x = new XMLHttpRequest();   // not fetch: only XHR tells how much of the file has gone
     x.open('POST', endpoint);
     // at 100% the server (through any proxy) still receives, checks and saves the file: shown as busy, not as a bar stuck at 100%
-    x.upload.onprogress = (e) => { if (e.lengthComputable) onProgress?.(file.size * e.loaded / e.total, e.loaded >= e.total); };
-    x.upload.onload = () => onProgress?.(file.size, true);
+    const size = file?.size || 0;
+    x.upload.onprogress = (e) => { if (e.lengthComputable) onProgress?.(size * e.loaded / e.total, e.loaded >= e.total); };
+    x.upload.onload = () => onProgress?.(size, true);
     x.onload = () => {
       let data = null;
       try { data = JSON.parse(x.responseText); } catch { /* not JSON */ }
       if (x.status >= 200 && x.status < 300 && data?.ok) resolve(data);
       // a new login in another tab changed the token: send once more with the new one (like post())
-      else if (x.status === 403 && !retried) freshCsrf().then((ok) => (ok ? sendFile(endpoint, file, model, onProgress, true).then(resolve, reject) : reject(new Error(data?.error || 'Upload failed (403)'))));
+      else if (x.status === 403 && !retried) freshCsrf().then((ok) => (ok ? sendFile(endpoint, file, model, onProgress, extra, true).then(resolve, reject) : reject(new Error(data?.error || 'Upload failed (403)'))));
       else reject(new Error(data?.error || (x.status === 413 ? 'The file is larger than the server or a proxy in front of it accepts (often 100 MB).' : `Upload failed (${x.status})`)));
     };
     x.onerror = () => reject(new Error('Upload failed: the connection was interrupted.'));
@@ -158,7 +204,9 @@ function uploadProgress() {
 // every change it makes (the editors mark themselves unsaved; the textarea also gets an input event).
 const DROP_IMG_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];   // what upload.php takes
 let dropQueue = Promise.resolve();   // one upload at a time, across every text of the page
-function imageDrop(ta, folder = 'misc', onEdit = () => {}) {
+// video(file, i): a video dropped at caret index i (texts that take videos: blog posts); without it a video is refused with a toast.
+function imageDrop(ta, folder = 'misc', onEdit = () => {}, { video = null } = {}) {
+  itemMention(ta);   // every text in the md_html() format comes here: "@" lists the models, accessories and docs pages too
   const changed = () => { ta.dispatchEvent(new Event('input', { bubbles: true })); onEdit(); };
   // where a picture goes for a caret at i: [start, end] of the text it replaces (an empty line's spaces) — see above
   const spot = (i) => {
@@ -211,7 +259,7 @@ function imageDrop(ta, folder = 'misc', onEdit = () => {}) {
       const ph = marks[k];
       const swap = (text) => {   // the placeholder (wherever it is now) becomes text; '' = its line goes
         const at = ta.value.indexOf(ph);
-        if (at < 0) return;   // removed meanwhile: the picture stays in the Images library only
+        if (at < 0) return;   // removed meanwhile: the picture stays in the Media library only
         let s = at, e = at + ph.length;
         if (text === '') {   // the line goes with the line breaks around it, leaving the wider of the two gaps (none at the ends)
           const v = ta.value;
@@ -253,7 +301,10 @@ function imageDrop(ta, folder = 'misc', onEdit = () => {}) {
     off();
     const files = [...e.dataTransfer.files];
     const pics = files.filter((f) => DROP_IMG_TYPES.includes(f.type));
-    if (pics.length < files.length) toast('Only pictures (JPG, PNG, WebP, GIF) can be added to the text.', 'err');
+    const vids = files.filter((f) => /^video\//.test(f.type) || /\.(mp4|webm|m4v|mov)$/i.test(f.name));
+    if (vids.length && video) video(vids[0], spot(indexAt(e.clientX, e.clientY))[0]);   // one at a time: its window checks it first
+    if (pics.length + (video ? vids.length : 0) < files.length) toast(video ? 'Only pictures (JPG, PNG, WebP, GIF) and videos (MP4, WebM) can be added to the text.' : 'Only pictures (JPG, PNG, WebP, GIF) can be added to the text.', 'err');
+    else if (vids.length > 1) toast('One video at a time: drop the others after this one.', 'err');
     if (pics.length) insert(pics, indexAt(e.clientX, e.clientY));
   });
   ta.addEventListener('paste', (e) => {
@@ -313,11 +364,15 @@ function bugMention(ta, o) {
     m.append(ta.value.slice(0, at), mk);
     document.body.append(m);
     const r = ta.getBoundingClientRect();
-    const x = r.left + mk.offsetLeft - ta.scrollLeft - 12, y = r.top + mk.offsetTop + mk.offsetHeight - ta.scrollTop + 8;
+    const x = r.left + mk.offsetLeft - ta.scrollLeft - 12, y = Math.min(r.top + mk.offsetTop + mk.offsetHeight - ta.scrollTop + 8, r.bottom + 6);
+    const top = Math.max(r.top, r.top + mk.offsetTop - ta.scrollTop) - 6;   // the typed line's top, for a list above it
     m.remove();
     const vw = document.documentElement.clientWidth;
     pop.style.left = Math.max(12, Math.min(x, vw - pop.offsetWidth - 12)) + scrollX + 'px';
-    pop.style.top = Math.min(y, r.bottom + 6) + scrollY + 'px';
+    // no room under the line (end of the page): above it, when there is more room there (under the header); shorter when neither fits
+    const below = innerHeight - 8 - y, above = top - headBottom() - 8, up = pop.offsetHeight > below && above > below;
+    if (pop.offsetHeight > (up ? above : below)) pop.style.maxHeight = Math.max(120, up ? above : below) + 'px';
+    pop.style.top = (up ? top - pop.offsetHeight : y) + scrollY + 'px';
   };
   const close = () => { pop?.remove(); pop = null; items = []; };
   const pick = (b) => {
@@ -376,6 +431,193 @@ function bugMention(ta, o) {
   ta.addEventListener('click', () => { if (pop && !token()) close(); });
   ta.addEventListener('blur', close);
   window.addEventListener('resize', close);
+}
+
+// Model, accessory and docs links for the texts (md_html() shows a link alone on its line as a card, md_link_cards()): the list comes from
+// jump.php?cards=1 ({t, k, s, p, l (the public page), x}), loaded once, on the first "@" or Card button.
+let cardList = null;
+const loadCards = () => cardList ||= fetch('/admin/jump.php?cards=1', { credentials: 'same-origin', headers: { Accept: 'application/json' } })
+  .then((r) => r.json()).then((d) => (d.items || []).filter((i) => i.l)).catch(() => { cardList = null; return []; });
+const CARD_LINE_RE = /^\[[^\]\n]+\]\(\/(?:models|accessories|docs)\/[^)\s]*\)$/;
+const cardLink = (i) => '[' + i.t.replace(/[[\]]/g, '') + '](' + i.l + ')';
+const cardGroup = (i) => i.k === 'Model' ? 'Models' : i.k === 'Docs' ? 'Docs' : 'Accessories';
+// the matches of q (every word in the name, the line under it or the extra words), models first, then accessories, then docs; in each
+// group the names that start with q, then those holding every word; max = shared between the groups, so each one keeps its place
+const cardFind = (list, q, max = 0) => {
+  const words = foldWords(q);
+  const hit = (i) => words.every((w) => fold(i.t + ' ' + i.s + ' ' + (i.x || '')).includes(w));
+  const named = (i) => (fold(i.t).startsWith(fold(q)) ? 2 : 0) + (words.every((w) => fold(i.t).includes(w)) ? 1 : 0);
+  const order = ['Models', 'Accessories', 'Docs'];
+  const out = list.filter(hit).sort((a, b) => (order.indexOf(cardGroup(a)) - order.indexOf(cardGroup(b))) || (named(b) - named(a)));
+  return max ? fairSlice(out, cardGroup, max) : out;
+};
+const cardThumb = (i) => i.p ? el('img', { src: i.p, alt: '', loading: 'lazy' })
+  : el('span', { class: 'cm-ico', 'aria-hidden': 'true' }, i.k === 'Docs' ? '¶' : (i.t || '?').charAt(0));
+
+// "@" in a text (itemMention(), every text in the md_html() format through imageDrop()): "@tifa" lists the models, accessories and docs pages;
+// Enter / a click puts the link in its place: on a line of its own it becomes a card (a blank line before it when the line above is text, a new
+// line after it for the next one), inside a sentence a plain link. Same keys and look as the # list of bug reports (bugMention()).
+function itemMention(ta) {
+  if (ta.dataset.mention) return;
+  ta.dataset.mention = '1';
+  let pop = null, items = [], sel = 0, skip = false, asked = 0;
+  const token = () => {   // the "@…" just before the caret: [index of the @, what follows it]
+    const pos = ta.selectionStart;
+    if (pos !== ta.selectionEnd) return null;
+    const m = /(^|[\s(])@([^\s@()[\]]{0,40})$/.exec(ta.value.slice(0, pos));
+    return m ? [pos - m[2].length - 1, m[2]] : null;
+  };
+  const close = () => { pop?.remove(); pop = null; items = []; };
+  const place = (at) => {   // under the @ (a hidden copy of the field finds where it is), like bugMention()
+    const cs = getComputedStyle(ta);
+    const m = el('div', { 'aria-hidden': 'true' });
+    for (const k of ['boxSizing', 'width', 'fontFamily', 'fontSize', 'fontWeight', 'letterSpacing', 'lineHeight', 'paddingTop', 'paddingRight', 'paddingBottom', 'paddingLeft', 'borderTopWidth', 'borderRightWidth', 'borderBottomWidth', 'borderLeftWidth', 'borderStyle', 'textIndent', 'wordSpacing', 'tabSize']) m.style[k] = cs[k];
+    Object.assign(m.style, { position: 'absolute', top: '0', left: '-9999px', visibility: 'hidden', whiteSpace: 'pre-wrap', overflowWrap: 'break-word' });
+    const mk = el('span', {}, '@');
+    m.append(ta.value.slice(0, at), mk);
+    document.body.append(m);
+    const r = ta.getBoundingClientRect();
+    const x = r.left + mk.offsetLeft - ta.scrollLeft - 12, y = Math.min(r.top + mk.offsetTop + mk.offsetHeight - ta.scrollTop + 8, r.bottom + 6);
+    const top = Math.max(r.top, r.top + mk.offsetTop - ta.scrollTop) - 6;   // the typed line's top, for a list above it
+    m.remove();
+    const vw = document.documentElement.clientWidth;
+    pop.style.left = Math.max(12, Math.min(x, vw - pop.offsetWidth - 12)) + scrollX + 'px';
+    // no room under the line (end of the page): above it, when there is more room there (under the header); shorter when neither fits
+    const below = innerHeight - 8 - y, above = top - headBottom() - 8, up = pop.offsetHeight > below && above > below;
+    if (pop.offsetHeight > (up ? above : below)) pop.style.maxHeight = Math.max(120, up ? above : below) + 'px';
+    pop.style.top = (up ? top - pop.offsetHeight : y) + scrollY + 'px';
+  };
+  const pick = (it) => {
+    const t = token();
+    if (!t) return close();
+    const v = ta.value, pos = ta.selectionStart;
+    let before = v.slice(0, t[0]), after = v.slice(pos);
+    const lineStart = before.lastIndexOf('\n') + 1, lineEnd = after.indexOf('\n');
+    const alone = before.slice(lineStart).trim() === '' && (lineEnd < 0 ? after : after.slice(0, lineEnd)).trim() === '';
+    let ins = cardLink(it);
+    if (alone) {   // a card: a block of its own (cards on the lines right under each other sit side by side), the caret after a blank line
+      before = before.slice(0, lineStart);
+      after = lineEnd < 0 ? '' : after.slice(lineEnd + 1);
+      const above = before.replace(/\n+$/, '').split('\n').pop().trim();
+      if (CARD_LINE_RE.test(above)) before = before.replace(/\n+$/, '\n');   // right under the card above: the two sit side by side
+      else if (before !== '' && !before.endsWith('\n\n')) before = before.replace(/\n?$/, '\n\n');
+      const next = after.replace(/^\n+/, '');
+      if (CARD_LINE_RE.test(next.split('\n')[0].trim())) { ins += '\n'; after = next; }
+      else { ins += '\n\n'; after = next; }
+    } else if (!/^[\s,.;:!?)]/.test(after)) ins += ' ';
+    ta.value = before + ins + after;
+    ta.setSelectionRange(before.length + ins.length, before.length + ins.length);
+    close();
+    skip = true;
+    ta.dispatchEvent(new Event('input', { bubbles: true }));   // grows the field, marks the editor unsaved, redraws a preview
+  };
+  const show = () => {
+    if (!pop) return;
+    pop.querySelectorAll('.bm-row').forEach((r, i) => { r.classList.toggle('on', i === sel); r.setAttribute('aria-selected', String(i === sel)); if (i === sel) r.scrollIntoView({ block: 'nearest' }); });
+  };
+  const mark = (text, q) => {
+    const i = q ? fold(text).indexOf(fold(q)) : -1;
+    return i < 0 || fold(text).length !== text.length ? [text] : [text.slice(0, i), el('span', { class: 'bm-mark' }, text.slice(i, i + q.length)), text.slice(i + q.length)];
+  };
+  const update = async () => {
+    const t = token();
+    if (!t) return close();
+    const n = ++asked;
+    const list = await loadCards();
+    if (n !== asked || !token()) return;   // typed on meanwhile
+    const q = t[1];
+    items = cardFind(list, q, 9);
+    sel = 0;
+    const row = (it) => {
+      const r = el('div', { class: 'bm-row cm-row', role: 'option' }, cardThumb(it),
+        el('span', { class: 'bm-t' }, el('b', {}, mark(it.t, q.split(/\s+/)[0])), it.s && el('small', {}, it.s)));
+      r.addEventListener('pointerdown', (e) => e.preventDefault());   // keeps the caret in the field
+      r.addEventListener('click', () => pick(it));
+      r.addEventListener('pointermove', () => { if (sel !== items.indexOf(it)) { sel = items.indexOf(it); show(); } });
+      return r;
+    };
+    const groups = [];
+    for (const it of items) { const g = cardGroup(it); if (groups.at(-1)?.[0] !== g) groups.push([g, []]); groups.at(-1)[1].push(it); }
+    pop?.remove();
+    pop = el('div', { class: 'bm-pop', role: 'listbox', 'aria-label': 'Models, accessories and docs pages' },
+      items.length ? groups.flatMap(([h, list], i) => [i ? el('div', { class: 'bm-sep' }) : null, el('div', { class: 'bm-head' }, h), ...list.map(row)])
+        : el('div', { class: 'bm-none' }, q ? 'Nothing matches “' + q + '”.' : 'No models, accessories or docs pages yet.'),
+      items.length ? el('div', { class: 'bm-foot' }, el('kbd', {}, '↑'), ' ', el('kbd', {}, '↓'), ' to choose · ', el('kbd', {}, 'Enter'), ' to add · alone on its line it shows as a card') : null);
+    pop.addEventListener('pointerdown', (e) => e.preventDefault());
+    document.body.append(pop);
+    place(t[0]);
+    show();
+  };
+  ta.addEventListener('input', () => { if (skip) { skip = false; return; } update(); });
+  ta.addEventListener('keydown', (e) => {
+    if (!pop) return;
+    const stop = () => { e.preventDefault(); e.stopImmediatePropagation(); };
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { if (items.length) { sel = (sel + (e.key === 'ArrowDown' ? 1 : items.length - 1)) % items.length; show(); } stop(); }
+    else if ((e.key === 'Enter' || e.key === 'Tab') && items.length && !e.shiftKey) { stop(); pick(items[sel]); }
+    else if (e.key === 'Escape') { stop(); close(); }
+  });
+  ta.addEventListener('keyup', (e) => { if (['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(e.key)) { if (token()) update(); else close(); } });
+  ta.addEventListener('click', () => { if (pop && !token()) close(); });
+  ta.addEventListener('blur', close);
+  window.addEventListener('resize', close);
+}
+
+// The Card button of the docs and blog toolbars (mdTools()): a window to search and tick models, accessories and docs pages; resolves to the
+// ticked ones in the order they were ticked ([] = cancelled).
+function cardPicker() {
+  return new Promise((resolve) => {
+    const picked = [];
+    let kind = '';
+    const search = el('input', { class: 'input', type: 'search', placeholder: 'Search models, accessories and docs pages…', 'aria-label': 'Search' });
+    const chips = el('div', { class: 'cp-chips' });
+    const list = el('div', { class: 'cp-list', role: 'listbox', 'aria-multiselectable': 'true' }, el('p', { class: 'muted small' }, 'Loading…'));
+    const count = el('span', { class: 'muted small' });
+    const go = el('button', { type: 'button', class: 'btn btn-primary btn-sm', disabled: true });
+    const dlg = el('dialog', { class: 'g-modal cp-modal', 'aria-label': 'Add Cards' },
+      el('div', { class: 'g-modal-head' }, el('h2', {}, 'Add Cards'), el('button', { type: 'button', class: 'icon-btn', 'aria-label': 'Close', onclick: () => done([]) }, '✕')),
+      el('div', { class: 'g-modal-body' }, search, chips, list),
+      el('div', { class: 'g-modal-foot' }, count, el('div', { class: 'row-btns' }, el('button', { type: 'button', class: 'btn btn-ghost btn-sm', onclick: () => done([]) }, 'Cancel'), go)));
+    const done = (out) => { dlg.close(); dlg.remove(); resolve(out); };
+    dlg.addEventListener('cancel', (e) => { e.preventDefault(); done([]); });
+    go.addEventListener('click', () => done(picked.slice()));
+    const foot = () => {
+      const n = picked.length;
+      go.disabled = !n;
+      go.textContent = n > 1 ? `Add ${n} Cards` : 'Add Card';
+      count.textContent = n ? (n > 1 ? `${n} picked, added in the order you picked them` : '1 picked') : 'Tick the ones to add.';
+    };
+    let all = [];
+    const draw = () => {
+      const shown = cardFind(all, search.value).filter((i) => !kind || cardGroup(i) === kind);
+      list.replaceChildren(...(shown.length ? shown.map((it) => {
+        const box = el('input', { type: 'checkbox', checked: picked.includes(it), 'aria-label': it.t });
+        const row = el('label', { class: 'cp-row' + (picked.includes(it) ? ' on' : '') }, box, cardThumb(it),
+          el('span', { class: 'bm-t' }, el('b', {}, it.t), it.s && el('small', {}, it.s)), el('span', { class: 'cp-kind' }, it.k));
+        box.addEventListener('change', () => {
+          const i = picked.indexOf(it);
+          if (box.checked && i < 0) picked.push(it); else if (!box.checked && i >= 0) picked.splice(i, 1);
+          row.classList.toggle('on', box.checked);
+          foot();
+        });
+        return row;
+      }) : [el('p', { class: 'muted small' }, 'Nothing matches.')]));
+    };
+    search.addEventListener('input', draw);
+    document.body.append(dlg);
+    dlg.showModal();
+    search.focus();
+    foot();
+    loadCards().then((items) => {
+      all = items;
+      const kinds = ['Models', 'Accessories', 'Docs'].filter((k) => all.some((i) => cardGroup(i) === k));
+      if (kinds.length > 1) chips.replaceChildren(...['', ...kinds].map((k) => {
+        const b = el('button', { type: 'button', class: 'chip' + (k === kind ? ' is-on' : ''), 'aria-pressed': String(k === kind) }, k || 'All');
+        b.addEventListener('click', () => { kind = k; chips.querySelectorAll('.chip').forEach((c) => { const on = c === b; c.classList.toggle('is-on', on); c.setAttribute('aria-pressed', String(on)); }); draw(); });
+        return b;
+      }));
+      draw();
+    });
+  });
 }
 
 // "Box" menu for the text editors: wraps the selected lines (or a placeholder) in "> [!TYPE]".
@@ -549,27 +791,178 @@ function cropTools(src, { aspect = 0, onState = () => {}, onError = () => {} } =
   };
 }
 
+// "S4…" (only while a Bucket Address is set in Settings → MEGA S4): the bucket's folders and files from admin/s4-files.php,
+// one folder at a time, with a filter. One file (a link row's S4… button): a click picks it. multiple (the list's "+ Add from S4…"):
+// tick boxes that stay ticked across folders, "Select all" for the files shown, and the files already in the list greyed out (have);
+// done gets the chosen files [{key, size}] and, with multiple, who the new links are for
+const pickS4 = ({ start = '', multiple = false, have = new Set(), done }) => {
+  const sizeTxt = (b) => (b >= 1073741824 ? (b / 1073741824).toFixed(1) + ' GB' : b >= 1048576 ? (b / 1048576).toFixed(1) + ' MB' : Math.max(1, Math.ceil(b / 1024)) + ' KB');
+  const crumbs = el('div', { class: 's4-crumbs' });
+  const filter = el('input', { class: 'input', type: 'search', placeholder: 'Filter this folder', autocomplete: 'off', spellcheck: 'false', 'aria-label': 'Filter' });
+  const list = el('div', { class: 's4-list' + (multiple ? ' is-multi' : '') });
+  const note = el('p', { class: 'muted small s4-note' });
+  const close = () => { dlg.close(); dlg.remove(); };
+  const picked = new Map();   // key → file, in the order ticked (the new links come in that order)
+  const all = el('input', { type: 'checkbox', 'aria-label': 'Select all files shown' });
+  const allRow = el('label', { class: 's4-all', hidden: true }, all, el('span', {}, 'Select All Files Shown'));
+  const count = el('span', { class: 's4-count muted small' });
+  const clear = el('button', { type: 'button', class: 'linklike s4-clear', onclick: () => { picked.clear(); sync(); } }, 'Clear');
+  const access = el('select', { class: 'input', 'aria-label': 'New links are for' }, el('option', { value: 'patrons' }, 'Patrons Only'), el('option', { value: 'public' }, 'Public'));
+  const go = el('button', { type: 'button', class: 'btn btn-primary', disabled: true, onclick: () => { close(); done([...picked.values()], access.value); } });
+  let rows = [], seq = 0;   // seq: only the folder asked for last is drawn
+  const boxes = () => rows.filter((r) => r.querySelector('input:not(:disabled)') && !r.hidden).map((r) => r.querySelector('input'));
+  // the tick boxes, "Select all", the count and the button follow `picked`
+  const sync = () => {
+    if (!multiple) return;
+    rows.forEach((r) => { const b = r.querySelector('input'); if (b && !b.disabled) b.checked = picked.has(r.dataset.key); });
+    const shown = boxes();
+    allRow.hidden = !shown.length;
+    all.checked = shown.length > 0 && shown.every((b) => b.checked);
+    all.indeterminate = !all.checked && shown.some((b) => b.checked);
+    const n = picked.size;
+    count.textContent = n ? `${n} ${n === 1 ? 'file' : 'files'} selected` : 'Tick the files to add.';
+    clear.hidden = !n;
+    go.disabled = !n;
+    go.textContent = n ? `Add ${n} ${n === 1 ? 'Link' : 'Links'}` : 'Add Links';
+  };
+  const show = () => {
+    const words = foldWords(filter.value);
+    let n = 0;
+    rows.forEach((r) => { const ok = words.every((w) => r.dataset.name.includes(w)); r.hidden = !ok; if (ok) n++; });
+    note.textContent = rows.length && !n ? 'Nothing matches the filter.' : note.dataset.base || '';
+    sync();
+  };
+  all.addEventListener('change', () => { const on = all.checked; boxes().forEach((b) => { const r = b.closest('.s4-row'); if (on) picked.set(r.dataset.key, r.s4file); else picked.delete(r.dataset.key); }); sync(); });
+  const fileRow = (f, prefix) => {
+    const name = f.key.slice(prefix.length);
+    const facts = [el('span', { class: 'muted small' }, sizeTxt(f.size)), el('span', { class: 'muted small' }, f.date)];
+    if (!multiple) return el('button', { type: 'button', class: 's4-row', 'data-name': fold(name), onclick: () => { close(); done([f]); } },
+      el('span', { class: 's4-ico', 'aria-hidden': 'true' }, '📄'), el('span', { class: 's4-name' }, name), ...facts);
+    const had = have.has(f.key);
+    const box = el('input', { type: 'checkbox', disabled: had, checked: had });
+    box.addEventListener('change', () => { if (box.checked) picked.set(f.key, f); else picked.delete(f.key); sync(); });
+    const r = el('label', { class: 's4-row' + (had ? ' had' : ''), 'data-name': fold(name), 'data-key': f.key, title: had ? 'Already in the download links' : null },
+      box, el('span', { class: 's4-name' }, name, had ? el('span', { class: 's4-had' }, 'Already Added') : null), ...facts);
+    r.s4file = f;
+    return r;
+  };
+  const open = async (prefix) => {
+    const mine = ++seq;
+    list.replaceChildren(el('p', { class: 'muted small' }, 'Loading…'));
+    rows = [];
+    filter.value = '';
+    note.dataset.base = '';
+    note.textContent = '';
+    sync();
+    let d;
+    try {
+      const r = await fetch('/admin/s4-files.php?prefix=' + encodeURIComponent(prefix), { credentials: 'same-origin', cache: 'no-store' });
+      d = await r.json();
+      if (!d.ok) throw new Error(d.error || 'S4 didn’t answer.');
+    } catch (err) { if (mine === seq) list.replaceChildren(el('p', { class: 'res-err small' }, err.message)); return; }
+    if (mine !== seq || !dlg.isConnected) return;
+    const parts = prefix.split('/').filter(Boolean);
+    crumbs.replaceChildren(el('button', { type: 'button', class: 'linklike', onclick: () => open('') }, d.bucket),
+      ...parts.flatMap((p, i) => [el('span', { class: 'muted' }, ' / '), el('button', { type: 'button', class: 'linklike', onclick: () => open(parts.slice(0, i + 1).join('/') + '/') }, p)]));
+    rows = [
+      ...d.folders.map((f) => el('button', { type: 'button', class: 's4-row is-folder', 'data-name': fold(f.slice(prefix.length)), onclick: () => open(f) },
+        el('span', { class: 's4-ico', 'aria-hidden': 'true' }, '📁'), el('span', { class: 's4-name' }, f.slice(prefix.length, -1)), el('span'), el('span'))),
+      ...d.files.map((f) => fileRow(f, prefix)),
+    ];
+    list.replaceChildren(...(rows.length ? rows : [el('p', { class: 'muted small' }, 'This folder is empty.')]));
+    note.dataset.base = d.more ? 'Only the first files are shown: use a folder or the filter.' : '';
+    show();
+    filter.focus();
+  };
+  filter.addEventListener('input', show);
+  const title = multiple ? 'Add from S4' : 'Choose from S4';
+  const cancel = el('button', { type: 'button', class: 'btn btn-ghost', onclick: close }, 'Cancel');
+  const body = el('div', { class: 'lc-dlg-body' },
+    el('h2', null, title), crumbs, filter, multiple ? allRow : null, list, note,
+    multiple
+      ? el('div', { class: 'form-actions s4-foot' }, el('div', { class: 'act-left s4-picked' }, count, clear), el('label', { class: 's4-for' }, el('span', { class: 'muted small' }, 'For'), access), cancel, go)
+      : el('div', { class: 'form-actions' }, cancel));
+  const dlg = el('dialog', { class: 'lc-dlg s4-dlg', 'aria-label': title }, body);
+  dlg.addEventListener('cancel', (e) => { e.preventDefault(); close(); });
+  dlg.addEventListener('click', (e) => { if (e.target === dlg && !picked.size) close(); });   // a click beside it never loses ticked files
+  document.body.append(dlg);
+  dlg.showModal();
+  sync();
+  open(start);
+};
+// the folder of an "s4:" address ('' = the bucket's top), where the S4 window starts
+const s4Folder = (v) => { const m = String(v || '').trim().match(/^s4:\/*(.*\/)?[^/]*$/i); return m && m[1] ? m[1] : ''; };
+
+// The picture window's Full Size Download box (Details): the link behind the viewer's "Download Full Size" of a picture shown in a
+// viewer (a Gallery picture, a model's gallery row, an accessory's pictures). state = image_info()'s `full` (full_size_state()).
+// save(link) (the Images page): its own Save / Remove buttons, every place showing the picture at once; else onChange(link) on every
+// edit (the editor's gallery card, saved with the editor). An empty address = no link.
+function fullSizeBox(state, { save = null, onChange = null } = {}) {
+  const l = state.link || {};
+  const url = el('input', { class: 'input', type: 'url', value: l.url || '', placeholder: state.s4 ? 'https://… or s4:file' : 'https://…', maxlength: 1000 });
+  const access = el('select', { class: 'input' }, el('option', { value: 'patrons' }, 'Patrons'), el('option', { value: 'public', selected: l.access === 'public' }, 'Everyone'));
+  const size = el('input', { class: 'input', type: 'text', value: l.size || '', maxlength: 40, placeholder: 'e.g. 4K' });
+  const value = () => (url.value.trim() ? { url: url.value.trim(), access: access.value, size: size.value.trim() } : null);
+  const s4 = state.s4 ? el('button', { type: 'button', class: 'btn btn-ghost btn-sm', title: 'Choose a file from your S4 bucket', onclick: () => pickS4({ start: s4Folder(url.value), done: ([f]) => {
+    url.value = 's4:' + f.key;
+    url.dispatchEvent(new Event('input', { bubbles: true }));
+  } }) }, 'S4…') : null;
+  const field = (label, input) => el('label', { class: 'field' }, el('span', { class: 'lbl' }, label), input);
+  // no link yet: only the title and "+ Add", the fields open on a click
+  const closed = !l.url && !state.mixed;
+  const fields = el('div', { class: 'iw-dl-fields', hidden: closed },
+    s4 ? el('span', { class: 'iw-dl-url' }, url, s4) : url,
+    el('div', { class: 'grid2' }, field('Access', access), field('Size Label', size)));
+  const add = closed ? el('button', { type: 'button', class: 'btn btn-ghost btn-sm iw-dl-add', onclick: () => { fields.hidden = false; add.remove(); box.querySelector('.form-actions')?.removeAttribute('hidden'); url.focus(); } }, '+ Add') : null;
+  url.setAttribute('aria-label', 'Full size link');
+  const box = el('section', { class: 'iw-sec iw-dl' },
+    el('h3', {}, 'Full Size Download', tip('A link to the full resolution file (pictures on the site are at most 2560 px). Visitors get a “Download Full Size” button in the viewer; the address itself never appears in the page, and every download is counted.'), add),
+    fields,
+    state.mixed ? el('p', { class: 'muted small' }, `The ${state.n} places showing it have different links: saving gives them all this one.`) : null,
+    state.dls ? el('p', { class: 'muted small' }, `Downloaded ${state.dls} ${state.dls === 1 ? 'time' : 'times'}.`) : null);
+  if (!save) {
+    box.addEventListener('input', () => onChange?.(value()));
+    box.addEventListener('change', () => onChange?.(value()));
+    return box;
+  }
+  const send = async (link, btn) => {
+    btn.disabled = true;
+    try { await save(link); } catch { btn.disabled = false; }
+  };
+  const saveBtn = el('button', { type: 'button', class: 'btn btn-primary btn-sm', onclick: () => {
+    if (!url.value.trim()) { toast('Paste the link first.', 'err'); url.focus(); return; }
+    send(value(), saveBtn);
+  } }, 'Save Link');
+  const remove = state.link ? el('button', { type: 'button', class: 'btn btn-ghost btn-sm', onclick: () => {
+    if (confirm(state.n > 1 ? `Remove the full size link from the ${state.n} places showing this picture?` : 'Remove the full size link of this picture?')) send(null, remove);
+  } }, 'Remove Link') : null;
+  box.append(el('div', { class: 'form-actions', hidden: closed }, remove, saveBtn));
+  return box;
+}
+
 // The Details tab of the picture window: what images.php says about a picture (image_info(): size, file, folder, date, what uses it, sizes made)
-// + Copy link / Download. Shared by the Images page's window and cropImage().
-function pictureFacts(d, url) {
+// + Copy link / Download. Shared by the Images page's window and cropImage(). extra = a box after Used By (fullSizeBox()).
+function pictureFacts(d, url, extra = null) {
   const copy = el('button', { type: 'button', class: 'btn btn-ghost btn-sm' }, 'Copy Link');
   copy.addEventListener('click', async () => {
     try { await navigator.clipboard.writeText(url); copy.textContent = 'Copied ✓'; setTimeout(() => { copy.textContent = 'Copy Link'; }, 1500); }
     catch { prompt('Copy this address:', url); }
   });
-  const acts = el('section', { class: 'iw-sec iw-acts' }, copy, el('a', { class: 'btn btn-ghost btn-sm', href: url, download: d?.name || '' }, 'Download'));
-  if (!d) return [iwSection('Picture', el('p', { class: 'iw-none' }, url.startsWith('/media/') ? 'Its details couldn’t be loaded.' : 'This picture is on another website: copy it here (Images page) to crop it.')), acts];
+  const acts = el('div', { class: 'iw-acts' }, copy, el('a', { class: 'btn btn-ghost btn-sm', href: url, download: d?.name || '' }, 'Download'));
+  if (!d) return [iwSection('Picture', el('p', { class: 'iw-none' }, url.startsWith('/media/') ? 'Its details couldn’t be loaded.' : 'This picture is on another website: copy it here (Media page) to crop it.'), acts), extra].filter(Boolean);
+  // the sizes made = one line of widths, each opening that file
+  const vers = d.vers?.length > 1 ? d.vers.map(([n, u, w], i) => [i ? ' · ' : '', el('a', { href: u, target: '_blank', rel: 'noopener', title: `${n}: open this size` }, String(w))]).flat().concat(' px') : null;
   return [
     iwSection('Picture', el('dl', { class: 'iw-facts' },
       el('dt', {}, 'Size'), el('dd', {}, `${d.w} × ${d.h} px`),
       el('dt', {}, 'File'), el('dd', {}, `${d.size} · ${({ WEBP: 'WebP', JPG: 'JPEG' })[d.type] || d.type}`),
+      vers ? el('dt', {}, 'Sizes') : null, vers ? el('dd', { class: 'iw-vers' }, ...vers) : null,
       el('dt', {}, 'Folder'), el('dd', {}, d.folder),
-      el('dt', {}, 'Added'), el('dd', {}, d.added))),
+      el('dt', {}, 'Added'), el('dd', {}, d.added)), acts),
     iwSection('Used By', d.uses?.length
       ? el('ul', { class: 'iw-uses' }, d.uses.map(([n, href, what]) => el('li', {}, el('a', { href }, n), what ? el('span', { class: 'what' }, ' · ' + what) : null)))
       : el('p', { class: 'iw-none' }, el('span', { class: 'warn-dot' }, 'Not used'), ' anywhere yet')),
-    d.vers?.length > 1 ? iwSection('Sizes Made', el('div', { class: 'iw-vers' }, d.vers.map(([n, u, w]) => el('a', { href: u, target: '_blank', rel: 'noopener', title: 'Open this size' }, el('b', {}, n), ` ${w} px`)))) : null,
-    acts,
+    extra,
   ].filter(Boolean);
 }
 const pictureInfo = {};   // url → promise of its details (one request per picture and page)
@@ -578,11 +971,12 @@ const loadPictureInfo = (url) => (pictureInfo[url] ??= url.startsWith('/media/')
   : Promise.resolve(null));
 
 // ── Picture window outside the Images page (editors' image fields and gallery cards, Admin → Gallery): Details (pictureFacts()) and
-// Crop & rotate (cropTools()); tab = the one it opens on. Resolves with {x, y, w, h, rotate, flip} for images.php action crop,
+// Crop & rotate (cropTools()); tab = the one it opens on; full: the Full Size Download box (fullSizeBox()) of the editor's gallery card. Resolves with {x, y, w, h, rotate, flip} for images.php action crop,
 // 'skip' (Keep as is) or null (closed without saving).
-function cropImage(src, { aspect = 0, title = 'Crop Image', skip = false, tab = 'crop' } = {}) {
+function cropImage(src, { aspect = 0, title = 'Crop Image', skip = false, tab = 'crop', full = null } = {}) {
   return new Promise((resolve) => {
     let tools = null, mode = '', info;
+    const fullEl = full && fullSizeBox(full.state, { onChange: full.onChange });   // full = {state, onChange}: the editor's gallery card (Details)
     const msg = el('p', { class: 'iw-msg err', role: 'status' });
     const body = el('div', { class: 'iw-body' });
     const foot = el('footer', { class: 'iw-foot' });
@@ -605,9 +999,9 @@ function cropImage(src, { aspect = 0, title = 'Crop Image', skip = false, tab = 
       tools?.destroy(); tools = null;
       if (mode === 'details') {
         stage.replaceChildren(view);
-        body.replaceChildren(...pictureFacts(info, src));
+        body.replaceChildren(...pictureFacts(info, src, fullEl));
         if (info === undefined) body.replaceChildren(el('p', { class: 'muted small' }, 'Loading…'));
-        foot.replaceChildren(...[ghost('Close', () => close(null)), canCrop() && el('button', { type: 'button', class: 'btn btn-primary btn-sm', onclick: () => show('crop') }, 'Crop & Rotate…')].filter(Boolean));
+        foot.replaceChildren(ghost('Close', () => close(null)));   // Crop & Rotate is the tab above (Pi: no second button)
         return;
       }
       const saveBtn = el('button', { type: 'button', class: 'btn btn-primary btn-sm', disabled: true, onclick: () => { const b = tools?.result(); if (b) close(b); } }, 'Save');
@@ -765,7 +1159,7 @@ if (sortable) {
   });
 }
 
-// ── Folder pickers (Images page) ─────────────────────────────────────────────
+// ── Folder pickers (Media page) ─────────────────────────────────────────────
 // The long folder menus ([data-folder-pick]) become a button + panel: a search box, the folders used last (upload only),
 // one row per character with its generations as buttons, then accessories and the other folders (Docs / FAQ tabs: one
 // row per page or question, under its docs section or FAQ topic). The <select> stays,
@@ -951,12 +1345,13 @@ function folderPicker(sel) {
 }
 document.querySelectorAll('select[data-folder-pick]').forEach((s) => { if (!s.hidden) folderPicker(s); });
 
-// ── Picture picker: one window to pick pictures from the Images library or upload new ones (every image field in the admin) ──
-// pickImages({ multiple, folder, title, exclude, excludeLabel, note }) → Promise of the chosen addresses ([] = cancelled; .uploaded = new files).
+// ── Picture picker: one window to pick pictures from the Media library or upload new ones (every image field in the admin) ──
+// pickImages({ multiple, folder, title, exclude, excludeLabel, note, files }) → Promise of the chosen addresses ([] = cancelled; .uploaded = new files).
 // folder: where uploads go (a model's media folder, docs, faq…), also the library's first filter when it has pictures.
+// files: pictures dropped outside the window (Admin → Gallery's page): it opens on Upload New and uploads them, as if dropped there.
 // exclude: addresses shown greyed out with excludeLabel (Admin → Gallery: pictures already in it). Library from admin/library.php.
 let pickLib = null;   // the library, loaded once per page (an upload clears it)
-function pickImages({ multiple = false, folder = 'misc', title = '', exclude = [], excludeLabel = 'Already Added', note = '' } = {}) {
+function pickImages({ multiple = false, folder = 'misc', title = '', exclude = [], excludeLabel = 'Already Added', note = '', files: dropped = [] } = {}) {
   return new Promise((resolve) => {
     const LIB_MAX = 120;   // pictures drawn at once: a search or a folder narrows the rest
     const excluded = new Set(exclude);
@@ -982,7 +1377,7 @@ function pickImages({ multiple = false, folder = 'misc', title = '', exclude = [
       el('label', { class: 'field' }, lbl('Upload Into'), upFolder), drop, prog.node, upMsg));
     const dlg = el('dialog', { class: 'g-modal', 'aria-label': title || 'Pictures' },
       el('div', { class: 'g-modal-head' }, el('h2', {}, title || (multiple ? 'Add Pictures' : 'Choose a Picture')), el('button', { type: 'button', class: 'icon-btn', 'aria-label': 'Close', onclick: () => close([]) }, '✕')),
-      el('nav', { class: 'lib-tabs g-modal-tabs', 'aria-label': 'Where from' }, tabBtn('library', 'From the Images Library'), tabBtn('upload', 'Upload New')),
+      el('nav', { class: 'lib-tabs g-modal-tabs', 'aria-label': 'Where from' }, tabBtn('library', 'From the Media Library'), tabBtn('upload', 'Upload New')),
       libPane, upPane,
       el('div', { class: 'g-modal-foot' }, picked, el('div', { class: 'row-btns' }, el('button', { type: 'button', class: 'btn btn-ghost btn-sm', onclick: () => close([]) }, 'Cancel'), go)));
     const close = (v) => { if (busy) return; files.forEach((f) => URL.revokeObjectURL(f.preview)); dlg.close(); dlg.remove(); resolve(v); };
@@ -1010,7 +1405,7 @@ function pickImages({ multiple = false, folder = 'misc', title = '', exclude = [
         n >= 0 ? el('span', { class: 'g-lib-n' }, multiple ? n + 1 : '✓') : null, had ? el('span', { class: 'g-lib-had' }, excludeLabel) : null);
       }));
       msg.hidden = match.length > 0 && match.length <= LIB_MAX;
-      msg.textContent = !match.length ? (lib.length ? 'No pictures match.' : 'The Images library is empty: upload new pictures instead.') : `Showing ${LIB_MAX} of ${match.length}: search or pick a folder to see the others.`;
+      msg.textContent = !match.length ? (lib.length ? 'No pictures match.' : 'The Media library is empty: upload new pictures instead.') : `Showing ${LIB_MAX} of ${match.length}: search or pick a folder to see the others.`;
     };
     const setPane = (p) => {
       pane = p;
@@ -1060,6 +1455,7 @@ function pickImages({ multiple = false, folder = 'misc', title = '', exclude = [
     });
     document.body.append(dlg);
     dlg.showModal();
+    if (dropped.length) setPane('upload');
     drawPicked();
     (async () => {
       try {
@@ -1076,7 +1472,348 @@ function pickImages({ multiple = false, folder = 'misc', title = '', exclude = [
         upFolder.fp.set(folder);   // the picker would start on the folder used last: here it is this item's own
         drawLib();
       } catch (e) { pickLib = null; msg.textContent = e.message; }
+      if (dropped.length && dlg.isConnected) addFiles(dropped);   // once the Upload Into menu is ready (it is locked while uploading)
     })();
+  });
+}
+
+// ── Videos in texts (app/video.php): "Add a Video" checks the file here, before it is sent (size, format, whether every browser plays
+// it, whether it starts at once), then uploads it with a cover (a frame of the video drawn on a canvas, or a picture of the library) to
+// admin/upload-video.php, which checks it again (m3d_video_read(): videoInfo() reads the same headers). ──
+const VIDEO_CODECS = {   // the same as VIDEO_CODECS in app/video.php: codec => [name, plays in every current browser]
+  avc1: ['H.264', true], avc3: ['H.264', true], hvc1: ['H.265 (HEVC)', false], hev1: ['H.265 (HEVC)', false],
+  av01: ['AV1', false], vp09: ['VP9', true], mp4v: ['MPEG-4 Part 2', false], V_VP8: ['VP8', true], V_VP9: ['VP9', true], V_AV1: ['AV1', false],
+};
+const VIDEO_AUDIO_OK = ['', 'AAC', 'Opus', 'Vorbis', 'MP3'];
+const fmtMB = (b) => Math.max(0.1, b / 1048576).toFixed(1).replace(/\.0$/, '') + ' MB';   // "24.8 MB", "50 MB" (m3d_mb() without the ".0")
+const fmtDur = (s) => { s = Math.round(s); const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), x = String(s % 60).padStart(2, '0'); return h ? `${h}:${String(m).padStart(2, '0')}:${x}` : `${m}:${x}`; };
+
+// {type: 'mp4' | 'webm', w, h, dur, codec, plays, audio, fast}; throws an Error saying what is wrong (like m3d_video_read())
+async function videoInfo(file) {
+  const buf = async (pos, len) => file.slice(pos, pos + len).arrayBuffer();
+  const str = (u8, o, n) => String.fromCharCode(...u8.subarray(o, o + n));
+  const head = new Uint8Array(await buf(0, 12));
+  if (head.length >= 8 && str(head, 4, 4) === 'ftyp') {
+    let pos = 0, moov = null, mdatFirst = false;
+    while (pos + 8 <= file.size) {
+      const h = new DataView(await buf(pos, 16));
+      if (h.byteLength < 8) break;
+      let len = h.getUint32(0), hdr = 8;
+      const type = str(new Uint8Array(h.buffer), 4, 4);
+      if (len === 1) { len = Number(h.getBigUint64(8)); hdr = 16; } else if (len === 0) len = file.size - pos;
+      if (len < hdr) throw new Error('The file is damaged.');
+      if (type === 'mdat' && !moov) mdatFirst = true;
+      if (type === 'moov') {
+        if (len > 64 * 1048576) throw new Error('The file is damaged.');
+        moov = new Uint8Array(await buf(pos + hdr, len - hdr));
+        break;
+      }
+      pos += len;
+    }
+    if (!moov) throw new Error('The video’s index (moov) is missing: the file is damaged or still being written.');
+    const boxes = (d) => {   // [type, body] of the boxes in d
+      const out = [], dv = new DataView(d.buffer, d.byteOffset, d.byteLength);
+      for (let p = 0; p + 8 <= d.length;) {
+        let l = dv.getUint32(p), hd = 8;
+        if (l === 1) { l = Number(dv.getBigUint64(p + 8)); hd = 16; } else if (l === 0) l = d.length - p;
+        if (l < hd) break;
+        out.push([str(d, p + 4, 4), d.subarray(p + hd, p + l)]);
+        p += l;
+      }
+      return out;
+    };
+    const find = (d, path) => { for (const [t, b] of boxes(d)) if (t === path[0]) return path.length === 1 ? b : find(b, path.slice(1)); return null; };
+    const u32 = (b, o) => new DataView(b.buffer, b.byteOffset + o, 4).getUint32(0);
+    const out = { type: 'mp4', w: 0, h: 0, dur: 0, codec: '', plays: false, audio: '', fast: !mdatFirst };
+    for (const [t, b] of boxes(moov)) {
+      if (t === 'mvhd' && b.length >= 32) {
+        const v1 = b[0] === 1;
+        const scale = u32(b, v1 ? 20 : 12), dur = v1 ? Number(new DataView(b.buffer, b.byteOffset + 24, 8).getBigUint64(0)) : u32(b, 16);
+        if (scale) out.dur = dur / scale;
+      }
+      if (t !== 'trak') continue;
+      const hdlr = find(b, ['mdia', 'hdlr']);
+      const kind = hdlr && hdlr.length >= 12 ? str(hdlr, 8, 4) : '';
+      const stsd = find(b, ['mdia', 'minf', 'stbl', 'stsd']);
+      const fourcc = stsd && stsd.length >= 16 ? str(stsd, 12, 4) : '';
+      if (kind === 'vide' && !out.codec) {
+        [out.codec, out.plays] = VIDEO_CODECS[fourcc] || [fourcc.trim() || 'unknown', false];
+        const tk = find(b, ['tkhd']);
+        if (tk && tk.length >= 84) {
+          const w = Math.round(u32(tk, tk.length - 8) / 65536), h = Math.round(u32(tk, tk.length - 4) / 65536);
+          const turned = u32(tk, tk.length - 44) === 0 && u32(tk, tk.length - 40) !== 0;   // a phone filming upright: a quarter turn
+          [out.w, out.h] = turned ? [h, w] : [w, h];
+        }
+      } else if (kind === 'soun' && !out.audio) {
+        out.audio = { mp4a: 'AAC', Opus: 'Opus', 'ac-3': 'AC-3', 'ec-3': 'E-AC-3', '.mp3': 'MP3', alac: 'ALAC' }[fourcc] || fourcc.trim() || 'unknown';
+      }
+    }
+    if (!out.codec) throw new Error('There is no video in this file.');
+    return out;
+  }
+  if (head.length >= 4 && head[0] === 0x1A && head[1] === 0x45 && head[2] === 0xDF && head[3] === 0xA3) {
+    const d = new Uint8Array(await buf(0, 4 * 1048576));
+    let p = 0, scale = 1000000, durRaw = null, doc = '';
+    const out = { type: 'webm', w: 0, h: 0, dur: 0, codec: '', plays: false, audio: '', fast: true };
+    const vint = (keep) => {   // an EBML number; null = unknown size
+      if (p >= d.length) return 0;
+      const b = d[p];
+      let len = 1;
+      while (len <= 8 && !(b & (0x80 >> (len - 1)))) len++;
+      if (len > 8) throw new Error('The file is damaged.');
+      let v = keep ? b : b & ((0x80 >> (len - 1)) - 1), all = v === (0x80 >> (len - 1)) - 1;
+      for (let i = 1; i < len; i++) { const c = d[p + i] ?? 0; v = v * 256 + c; all = all && c === 0xFF; }
+      p += len;
+      return !keep && all ? null : v;
+    };
+    const uint = (a, b) => { let n = 0; for (let i = a; i < b; i++) n = n * 256 + d[i]; return n; };
+    const float = (a, b) => (b - a === 4 ? new DataView(d.buffer, a, 4).getFloat32(0) : b - a === 8 ? new DataView(d.buffer, a, 8).getFloat64(0) : 0);
+    const walk = (end, track, depth = 0) => {
+      if (depth > 6) return;   // these elements nest 4 deep at most: anything deeper is a damaged file
+      while (p < end && p < d.length) {
+        const id = vint(true), size = vint(false), start = p, stop = size === null ? end : Math.min(end, p + size);
+        if ([0x1A45DFA3, 0x18538067, 0x1549A966, 0x1654AE6B, 0xE0].includes(id)) { walk(stop, track, depth + 1); if (p === Infinity) return; }
+        else if (id === 0xAE) {
+          const t = { type: 0, codec: '', w: 0, h: 0, dw: 0, dh: 0 };
+          walk(stop, t, depth + 1);
+          if (t.type === 1 && !out.codec) { [out.codec, out.plays] = VIDEO_CODECS[t.codec] || [t.codec || 'unknown', false]; [out.w, out.h] = t.dw && t.dh ? [t.dw, t.dh] : [t.w, t.h]; }
+          else if (t.type === 2 && !out.audio) out.audio = { A_OPUS: 'Opus', A_VORBIS: 'Vorbis' }[t.codec] || t.codec || 'unknown';
+        }
+        else if (id === 0x4282) doc = str(d, start, stop - start);
+        else if (id === 0x2AD7B1) scale = uint(start, stop) || 1000000;
+        else if (id === 0x4489) durRaw = float(start, stop);
+        else if (track && id === 0x83) track.type = uint(start, stop);
+        else if (track && id === 0x86) track.codec = str(d, start, stop - start);
+        else if (track && id === 0xB0) track.w = uint(start, stop);
+        else if (track && id === 0xBA) track.h = uint(start, stop);
+        else if (track && id === 0x54B0) track.dw = uint(start, stop);
+        else if (track && id === 0x54BA) track.dh = uint(start, stop);
+        else if (id === 0x1F43B675) { p = Infinity; return; }   // Cluster: the pictures start, everything needed was before
+        if (size === null && id !== 0x18538067) return;
+        p = stop;
+      }
+    };
+    walk(d.length, null);
+    if (doc !== 'webm') throw new Error('This is a Matroska (.mkv) file, not a WebM video: export as MP4 (H.264) or WebM.');
+    if (durRaw !== null) out.dur = (durRaw * scale) / 1e9;
+    if (!out.codec) throw new Error('There is no video in this file.');
+    return out;
+  }
+  throw new Error('This is not an MP4 or WebM video.');
+}
+
+// The checks shown in "Add a Video": [{k: ok | bad | warn, t: text, h: hint}]; a "bad" one stops the upload
+function videoChecks(file, info, max) {
+  const out = [];
+  const limit = fmtMB(max.bytes);
+  if (file.size > max.bytes) out.push({ k: 'bad', t: `${fmtMB(file.size)}: over the ${limit} limit` + (max.why ? ` (${max.why})` : ''), h: 'Export a shorter or lighter copy: 1080p H.264 at about 6 Mbit/s keeps a minute near 45 MB.' });
+  else out.push({ k: 'ok', t: `${fmtMB(file.size)}: small enough` });
+  const sound = info.audio ? `, ${info.audio} sound` : ', no sound';
+  if (info.plays) out.push({ k: 'ok', t: `${info.type === 'mp4' ? 'MP4' : 'WebM'} · ${info.codec} video${sound}: plays in every browser` });
+  else out.push({ k: 'warn', t: `${info.codec} video: ` + (/HEVC/.test(info.codec) ? 'doesn’t play in Firefox and in Chrome on many computers' : /AV1/.test(info.codec) ? 'older iPhones and Macs can’t play it' : 'may not play in every browser'), h: 'Export as MP4 with H.264 video (in Blender: Output → FFmpeg Video, Container MPEG-4, Video Codec H.264).' });
+  if (!VIDEO_AUDIO_OK.includes(info.audio)) out.push({ k: 'warn', t: `${info.audio} sound: most browsers play the video silent`, h: 'Export the sound as AAC.' });
+  if (info.type === 'mp4') out.push(info.fast ? { k: 'ok', t: 'Starts playing at once (no wait for the whole file)' }
+    : { k: 'warn', t: 'Its index is at the end of the file: visitors wait longer before it starts', h: 'Export with “Web Optimized” (HandBrake) or “Fast Start” on.' });
+  return out;
+}
+
+// The cover part of the video windows: a frame of the video (a slider picks the moment), or a picture of the library, or none.
+// src = the video's address (an object URL of the chosen file, or /media/… for a saved one). state(): {mode: 'frame' | 'pic' | 'none', pic};
+// blob(): the frame as a picture file (WebP, or PNG where the browser can't make WebP). onChange() after every change.
+function videoCover(src, { folder = 'blog', current = '', onChange = () => {} } = {}) {
+  const vid = el('video', { preload: 'auto', playsinline: true, muted: true });
+  vid.muted = true;
+  const canvas = el('canvas', { class: 'vd-canvas' });
+  const img = el('img', { class: 'vd-canvas', alt: '', hidden: true });
+  const none = el('span', { class: 'vd-none', hidden: true }, 'No Cover');
+  const thumb = el('div', { class: 'vd-thumb' }, canvas, img, none);
+  const range = el('input', { type: 'range', min: '0', max: '1', step: '0.04', value: '0', 'aria-label': 'Frame for the cover', disabled: true });
+  const at = el('span', { class: 'muted small vd-at' }, 'Loading frames…');
+  const pick = el('button', { type: 'button', class: 'btn btn-ghost btn-sm' }, 'Choose Picture…');
+  const useFrame = el('button', { type: 'button', class: 'btn btn-ghost btn-sm', hidden: true }, 'Use a Frame');
+  const noCover = el('button', { type: 'button', class: 'btn btn-ghost btn-sm' }, 'No Cover');
+  let mode = current ? 'pic' : 'frame', pic = current, frames = false, seekTo = null, seeking = false, note = 'Loading frames…';
+  const draw = () => {
+    canvas.hidden = mode !== 'frame'; img.hidden = mode !== 'pic'; none.hidden = mode !== 'none';
+    if (mode === 'pic') img.src = pic;
+    range.disabled = !frames;
+    range.hidden = !frames && note !== 'Loading frames…';   // can't be shown here: only a picture
+    useFrame.hidden = mode === 'frame' || !frames;
+    noCover.hidden = mode === 'none';
+    at.textContent = mode === 'pic' ? (pic === current ? 'The current cover' : 'A picture') : !frames ? note : mode === 'frame' ? 'Frame at ' + fmtDur(+range.value) : 'The video’s first frame shows';
+    onChange();
+  };
+  const seek = (t) => {   // one seek at a time: the slider moves faster than the video
+    if (seeking) { seekTo = t; return; }
+    seeking = true;
+    vid.currentTime = t;
+  };
+  vid.addEventListener('seeked', () => {
+    const w = vid.videoWidth, h = vid.videoHeight, k = Math.min(1, 1920 / Math.max(w, h));
+    if (w && h) {
+      canvas.width = Math.round(w * k); canvas.height = Math.round(h * k);
+      canvas.getContext('2d').drawImage(vid, 0, 0, canvas.width, canvas.height);
+    }
+    seeking = false;
+    if (seekTo !== null) { const t = seekTo; seekTo = null; seek(t); }
+  });
+  vid.addEventListener('loadedmetadata', () => {
+    frames = true;
+    range.max = String(Math.max(0.04, vid.duration || 0));
+    range.value = String(Math.min(3, (vid.duration || 0) * 0.1));
+    seek(+range.value);
+    draw();
+  });
+  vid.addEventListener('error', () => {   // a codec this browser can't play (H.265 on many computers): only a picture can be the cover
+    frames = false;
+    if (mode === 'frame') mode = 'none';
+    note = 'This browser can’t show the video’s frames: choose a picture for the cover.';
+    draw();
+  });
+  range.addEventListener('input', () => { mode = 'frame'; seek(+range.value); draw(); });
+  pick.addEventListener('click', async () => {
+    const [u] = await pickImages({ folder, title: 'Cover for the Video' });
+    if (u) { mode = 'pic'; pic = u; draw(); }
+  });
+  useFrame.addEventListener('click', () => { mode = 'frame'; seek(+range.value); draw(); });
+  noCover.addEventListener('click', () => { mode = 'none'; draw(); });
+  vid.src = src;
+  draw();
+  return {
+    thumb,
+    row: el('div', { class: 'vd-cover' }, el('b', {}, 'Cover'), range, at, el('span', { class: 'row-btns' }, useFrame, pick, noCover)),
+    state: () => ({ mode: mode === 'frame' && !frames ? 'none' : mode, pic }),
+    blob: () => new Promise((res) => canvas.toBlob((b) => res(b), 'image/webp', 0.9)),
+    stop: () => { vid.removeAttribute('src'); vid.load(); },
+  };
+}
+
+// "Add a Video": resolves to the text line ("![caption](/media/blog/name.mp4)") or null. file = one dropped on the text (else chosen here).
+// max = {bytes, why} (m3d_video_max(): the 50 MB limit, or the server's when lower).
+function videoDialog({ folder = 'blog', file = null, max = { bytes: 50 * 1048576, why: '' } } = {}) {
+  return new Promise((resolve) => {
+    let busy = false, cover = null, url = '', checks = [];
+    const input = el('input', { type: 'file', accept: 'video/mp4,video/webm,.mp4,.webm,.m4v,.mov', hidden: true });
+    const drop = el('label', { class: 'g-drop' }, input, el('b', {}, 'Choose a Video'), el('span', { class: 'muted small' }, `or drop it here · MP4 or WebM, up to ${fmtMB(max.bytes)}`));
+    const name = el('div', { class: 'vd-name' });
+    const sub = el('div', { class: 'muted small' });
+    const fill = el('span', { class: 'up-prog-fill' });
+    const meterTx = el('span', { class: 'up-prog-tx' });
+    const meter = el('div', { class: 'up-prog vd-meter' }, el('span', { class: 'up-prog-bar' }, fill), meterTx);
+    const head = el('div', { class: 'vd-file' }, el('div', { class: 'vd-thumb' }), el('div', { class: 'vd-facts' }, name, sub, meter));
+    const list = el('ul', { class: 'vd-checks' });
+    const caption = el('input', { class: 'input', maxlength: '200', placeholder: 'Shown under the video (optional)' });
+    const capField = el('label', { class: 'field' }, lbl('Caption'), caption);
+    const coverSlot = el('div');
+    const info = el('div', { class: 'vd-info', hidden: true }, head, list, coverSlot, capField);
+    const body = el('div', { class: 'g-modal-body vd-body' }, drop, info);
+    const again = el('button', { type: 'button', class: 'btn btn-ghost btn-sm', hidden: true, onclick: () => input.click() }, 'Choose Another File…');
+    const cancel = el('button', { type: 'button', class: 'btn btn-ghost btn-sm', onclick: () => close(null) }, 'Cancel');
+    const go = el('button', { type: 'button', class: 'btn btn-primary btn-sm', disabled: true }, 'Upload and Add');
+    const dlg = el('dialog', { class: 'g-modal vd', 'aria-label': 'Add a Video' },
+      el('div', { class: 'g-modal-head' }, el('h2', {}, 'Add a Video'), el('button', { type: 'button', class: 'icon-btn', 'aria-label': 'Close', onclick: () => close(null) }, '✕')),
+      body, el('div', { class: 'g-modal-foot' }, el('span'), el('div', { class: 'row-btns' }, again, cancel, go)));
+    const close = (v) => { if (busy) return; cover?.stop(); if (url) URL.revokeObjectURL(url); dlg.close(); dlg.remove(); resolve(v); };
+    dlg.addEventListener('cancel', (e) => { e.preventDefault(); close(null); });
+    let chosen = null;
+    const take = async (f) => {
+      if (!f || busy) return;
+      cover?.stop();
+      if (url) URL.revokeObjectURL(url);
+      url = ''; cover = null; chosen = f;
+      drop.hidden = true; info.hidden = false; again.hidden = false;
+      name.textContent = f.name;
+      sub.textContent = 'Reading the file…';
+      list.replaceChildren(); coverSlot.replaceChildren(); head.firstChild.replaceWith(el('div', { class: 'vd-thumb' }));
+      const pct = Math.min(100, (100 * f.size) / max.bytes);
+      fill.style.width = pct + '%';
+      meter.classList.toggle('is-over', f.size > max.bytes);
+      meterTx.replaceChildren(el('span', {}, fmtMB(f.size)), el('span', {}, 'Limit ' + fmtMB(max.bytes)));
+      let vi = null;
+      try { vi = await videoInfo(f); }
+      catch (e) { checks = [{ k: 'bad', t: e.message }]; }
+      if (chosen !== f) return;   // another file was chosen meanwhile
+      if (vi) {
+        checks = videoChecks(f, vi, max);
+        sub.textContent = [vi.w && vi.h ? `${vi.w} × ${vi.h}` : '', vi.dur ? fmtDur(vi.dur) : ''].filter(Boolean).join(' · ');
+        url = URL.createObjectURL(f);
+        cover = videoCover(url, { folder, onChange: () => {} });
+        head.firstChild.replaceWith(cover.thumb);
+        coverSlot.replaceChildren(cover.row);
+      } else sub.textContent = '';
+      list.replaceChildren(...checks.flatMap((c) => [el('li', { class: 'vd-' + c.k }, el('b', { 'aria-hidden': 'true' }, { ok: '✓', bad: '✕', warn: '!' }[c.k]), el('span', {}, c.t)), c.h ? el('li', { class: 'vd-hint' }, c.h) : []]));
+      go.disabled = !vi || checks.some((c) => c.k === 'bad');
+      if (!go.disabled && !caption.value) caption.focus();
+    };
+    input.addEventListener('change', () => { take(input.files[0]); input.value = ''; });
+    for (const t of [drop, body]) {
+      t.addEventListener('dragover', (e) => { if ([...(e.dataTransfer?.types || [])].includes('Files')) { e.preventDefault(); drop.classList.add('over'); } });
+      t.addEventListener('dragleave', () => drop.classList.remove('over'));
+      t.addEventListener('drop', (e) => { if (!e.dataTransfer?.files.length) return; e.preventDefault(); drop.classList.remove('over'); take(e.dataTransfer.files[0]); });
+    }
+    go.addEventListener('click', async () => {
+      if (!chosen || go.disabled) return;
+      const st = cover ? cover.state() : { mode: 'none' };
+      busy = true; go.disabled = true; again.disabled = true; cancel.disabled = true;
+      go.textContent = 'Uploading…';
+      meter.classList.remove('is-over');
+      try {
+        const extra = st.mode === 'frame' ? { cover: await cover.blob() } : {};
+        const d = await sendFile('/admin/upload-video.php', chosen, folder, (sent, done) => {
+          fill.style.width = Math.round((100 * sent) / chosen.size) + '%';
+          meter.classList.toggle('busy', done);
+          meterTx.replaceChildren(el('span', {}, done ? 'Checking and saving…' : `Uploading · ${Math.round((100 * sent) / chosen.size)}%`));
+        }, extra);
+        if (st.mode === 'pic') {
+          try { await sendFile('/admin/upload-video.php', null, folder, null, { do: 'cover', video: d.url, from: st.pic }); }
+          catch (e) { toast('The video was saved, but its cover couldn’t be: ' + e.message, 'err'); }
+        }
+        if (d.warn) toast(d.warn, 'err');
+        busy = false;
+        const cap = caption.value.replace(/[\[\]()\n\r]/g, ' ').replace(/\s+/g, ' ').trim();
+        close(`![${cap}](${d.url})`);
+      } catch (e) {
+        busy = false; go.disabled = false; again.disabled = false; cancel.disabled = false;
+        go.textContent = 'Upload and Add';
+        meter.classList.remove('busy');
+        meterTx.replaceChildren(el('span', {}, fmtMB(chosen.size)), el('span', {}, 'Limit ' + fmtMB(max.bytes)));
+        toast(e.message, 'err');
+      }
+    });
+    document.body.append(dlg);
+    dlg.showModal();
+    if (file) take(file);
+  });
+}
+
+// "Change Cover…" of a saved video (Media → Videos): a frame, a picture or none, saved at once (do=cover). Resolves true when changed.
+function videoCoverDialog(video, current) {
+  return new Promise((resolve) => {
+    let busy = false;
+    const cover = videoCover(video, { current, folder: video.split('/')[2] || 'blog' });
+    const save = el('button', { type: 'button', class: 'btn btn-primary btn-sm' }, 'Save Cover');
+    const cancel = el('button', { type: 'button', class: 'btn btn-ghost btn-sm', onclick: () => close(false) }, 'Cancel');
+    const dlg = el('dialog', { class: 'g-modal vd', 'aria-label': 'Video Cover' },
+      el('div', { class: 'g-modal-head' }, el('h2', {}, 'Video Cover'), el('button', { type: 'button', class: 'icon-btn', 'aria-label': 'Close', onclick: () => close(false) }, '✕')),
+      el('div', { class: 'g-modal-body vd-body' }, el('div', { class: 'vd-file' }, cover.thumb, el('div', { class: 'vd-facts' }, el('div', { class: 'vd-name' }, video.split('/').pop()))), cover.row),
+      el('div', { class: 'g-modal-foot' }, el('span'), el('div', { class: 'row-btns' }, cancel, save)));
+    const close = (v) => { if (busy) return; cover.stop(); dlg.close(); dlg.remove(); resolve(v); };
+    dlg.addEventListener('cancel', (e) => { e.preventDefault(); close(false); });
+    save.addEventListener('click', async () => {
+      const st = cover.state();
+      busy = true; save.disabled = cancel.disabled = true; save.textContent = 'Saving…';
+      try {
+        const extra = { do: 'cover', video };
+        if (st.mode === 'frame') extra.cover = await cover.blob();
+        else if (st.mode === 'pic') extra.from = st.pic;
+        else extra.remove = '1';
+        await sendFile('/admin/upload-video.php', null, '', null, extra);
+        busy = false;
+        close(true);
+      } catch (e) { busy = false; save.disabled = cancel.disabled = false; save.textContent = 'Save Cover'; toast(e.message, 'err'); }
+    });
+    document.body.append(dlg);
+    dlg.showModal();
   });
 }
 
@@ -1106,7 +1843,6 @@ if (lib) {
   const search = document.querySelector('[data-lib-search]');
   const folder = document.querySelector('[data-lib-folder]');
   const unused = document.querySelector('[data-lib-unused]');
-  const count = document.querySelector('[data-lib-count]');
   const empty = document.querySelector('[data-lib-empty]');
   const pager = document.querySelector('[data-lib-pager]');
   const tabs = [...document.querySelectorAll('[data-lib-tab]')];
@@ -1148,7 +1884,6 @@ if (lib) {
     const on = new Set(match.slice((page - 1) * PER, page * PER));
     for (const c of cards) c.hidden = !on.has(c);
     const n = match.length;
-    count.textContent = pages > 1 ? `${(page - 1) * PER + 1}–${Math.min(n, page * PER)} of ${n}` : n === cards.length ? '' : `${n} shown`;
     empty.hidden = n > 0;
     renderPager(pages);
     const u = new URL(location.href);
@@ -1186,9 +1921,10 @@ if (lib) {
     }
     if (e.target.closest('[data-crop]')) imageWindow(card, 'crop');
     if (e.target.closest('[data-v3d]')) preview3d(card.dataset.url, card.querySelector('.lib-name').textContent);   // the 3D Files tab
+    if (e.target.closest('[data-video-cover]') && await videoCoverDialog(card.dataset.url, card.dataset.cover || '')) location.reload();   // the Videos tab
     if (e.target.closest('[data-del]')) {
       if (!confirm(`Delete ${card.dataset.url.split('/').pop()}? This can't be undone.`)) return;
-      try { await post('/admin/images.php', { action: 'delete', url: card.dataset.url }); delCard(card); toast(card.matches('.lib-3d') ? 'File deleted' : 'Image deleted'); }
+      try { await post('/admin/images.php', { action: 'delete', url: card.dataset.url }); delCard(card); toast(card.matches('.lib-3d') ? 'File deleted' : card.matches('.lib-video') ? 'Video deleted' : 'Image deleted'); }
       catch (err) { toast(err.message, 'err'); }
     }
   });
@@ -1259,7 +1995,17 @@ if (lib) {
 
     const details = () => {
       const d = I();
-      body.replaceChildren(...pictureFacts(d, cur.dataset.url));
+      const at = cur.dataset.url;
+      const full = d.full ? fullSizeBox(d.full, { save: async (link) => {   // every place showing the picture at once
+        try {
+          const r = await post('/admin/images.php', { action: 'fullsize', url: at, link: link || { url: '' } });
+          d.full = r.full;
+          if (cur.dataset.url !== at || mode !== 'details') return;
+          details();
+          say(link ? `Link saved ✓${r.n > 1 ? ` In ${r.n} places.` : ''}` : 'Link removed ✓', 'ok');
+        } catch (err) { say(err.message); throw err; }
+      } }) : null;
+      body.replaceChildren(...pictureFacts(d, cur.dataset.url, full));
       const del = el('button', { type: 'button', class: 'btn btn-ghost btn-sm iw-del', disabled: used() > 0, title: used() ? 'In use: remove it there first' : 'Delete this picture' }, 'Delete');
       del.addEventListener('click', async () => {
         if (!confirm(`Delete ${d.name}? This can't be undone.`)) return;
@@ -1271,7 +2017,7 @@ if (lib) {
           if (after && after !== gone) { cur = after; render(); say('Picture deleted ✓', 'ok'); } else { close(); toast('Image deleted'); }
         } catch (err) { say(err.message); }
       });
-      foot.replaceChildren(...[del, d.crop && el('button', { type: 'button', class: 'btn btn-primary btn-sm', onclick: () => show('crop') }, 'Crop & Rotate…')].filter(Boolean));
+      foot.replaceChildren(del);
     };
     const cropTab = () => {
       tools?.destroy();
@@ -1340,6 +2086,49 @@ if (lib) {
   }
 }
 
+// ── Key fields (key_field() in _admin.php): a saved webhook / secret / key shows locked; Change opens the field, Cancel or Esc locks it
+// again with its saved value (a secret's field is empty: the server keeps the saved one). keyField() gives an editor's field the same look. ──
+const KEY_LOCK_ICON = '<rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/>';   // KEY_LOCK_ICON in _admin.php
+function keyFieldSet(sf, open, focus = true) {
+  const input = sf.querySelector(':scope > input'), btn = sf.querySelector('[data-sf-btn]'), name = btn.getAttribute('aria-label').replace(/^\S+ /, '');
+  sf.classList.toggle('is-locked', !open);
+  btn.textContent = open ? 'Cancel' : 'Change';
+  btn.setAttribute('aria-label', (open ? 'Cancel ' : 'Change ') + name);
+  if (open) { if (focus) input.focus(); return; }
+  if (input.value !== input.defaultValue) { input.value = input.defaultValue; input.dispatchEvent(new Event('input', { bubbles: true })); }
+  if (focus) btn.focus();
+}
+// an editor's field (the item password): locked like key_field() prints it once `saved`; returns the function that locks it (again) after a save
+function keyField(input, label, saved) {
+  let sf = null;
+  const lock = () => {
+    if (!sf) {
+      sf = el('span', { class: 'sf', 'data-sf': '' });
+      input.replaceWith(sf);
+      const box = el('span', { class: 'sf-lock' }, el('span', { class: 'sf-dots', 'aria-label': 'Hidden', text: '••••••••••' }), el('span', { class: 'sf-ok', text: '✓ Saved' }));
+      box.insertAdjacentHTML('afterbegin', `<svg viewBox="0 0 24 24" aria-hidden="true">${KEY_LOCK_ICON}</svg>`);
+      sf.append(box, input, el('button', { type: 'button', class: 'btn btn-ghost btn-sm sf-btn', 'data-sf-btn': '', 'aria-label': 'Change ' + label, text: 'Change' }));
+    }
+    input.value = input.defaultValue = '';
+    keyFieldSet(sf, false, false);
+  };
+  if (saved) lock();
+  return lock;
+}
+document.addEventListener('click', (e) => {
+  const btn = e.target.closest('[data-sf-btn]');
+  if (!btn) return;
+  e.preventDefault();   // inside a <label>
+  const sf = btn.closest('[data-sf]');
+  keyFieldSet(sf, sf.classList.contains('is-locked'));
+});
+document.addEventListener('keydown', (e) => {
+  const sf = e.key === 'Escape' && e.target.matches?.('[data-sf] > input') ? e.target.parentElement : null;
+  if (!sf || sf.classList.contains('is-locked')) return;
+  e.preventDefault();
+  keyFieldSet(sf, false);
+});
+
 // ── Editor ────────────────────────────────────────────────────────────────────
 const form = document.querySelector('[data-editor]');
 if (form) {
@@ -1352,7 +2141,8 @@ if (form) {
 
 // ── A long text in the md_html() format (Docs pages, blog posts): Write / Preview tabs, the formatting toolbar, Ctrl+B / I / K ──
 // body = its textarea; folder = where the toolbar's Image button uploads; onEdit = called after the toolbar changed the text
-function mdTools(body, { folder = 'misc', imgTitle = 'Pictures', onEdit = () => {}, paywall = false } = {}) {
+// video: {bytes, why} (m3d_video_max()) = the text takes videos (blog posts): a Video button, and videos dropped on the text open "Add a Video"
+function mdTools(body, { folder = 'misc', imgTitle = 'Pictures', onEdit = () => {}, paywall = false, video = null } = {}) {
   const replaceSel = (ta, fn) => {
     const a = ta.selectionStart, b = ta.selectionEnd;
     const [text, selA, selB] = fn(ta.value.slice(a, b));
@@ -1375,7 +2165,14 @@ function mdTools(body, { folder = 'misc', imgTitle = 'Pictures', onEdit = () => 
     const pre = before === '' || before.endsWith('\n\n') ? '' : before.endsWith('\n') ? '\n' : '\n\n';
     replaceSel(ta, () => [pre + text + '\n\n']);
   };
-  imageDrop(body, folder, onEdit);   // pictures dropped on or pasted into the text
+  const addVideo = async (file, at) => {
+    const line = await videoDialog({ folder, file, max: video });
+    if (!line) return;
+    if (at !== undefined) body.setSelectionRange(at, at);
+    block(body, line);
+    onEdit();
+  };
+  imageDrop(body, folder, onEdit, { video: video ? addVideo : null });   // pictures dropped on or pasted into the text
   const link = () => { const url = prompt('Link address (https://… or a site page like /docs/requirements/):'); if (url) wrap(body, '[', `](${url.trim()})`, 'link text'); };
   body.addEventListener('keydown', (e) => {
     if (!(e.ctrlKey || e.metaKey)) return;
@@ -1383,11 +2180,15 @@ function mdTools(body, { folder = 'misc', imgTitle = 'Pictures', onEdit = () => 
     if (e.key === 'i') { e.preventDefault(); wrap(body, '*', '*', 'italic text'); }
     if (e.key === 'k') { e.preventDefault(); link(); }
   });
-  const imgBtn = el('button', { type: 'button', class: 'tb', title: 'Pictures from the Images library or uploaded (several = side-by-side gallery); pictures can also be dropped on or pasted into the text', onclick: async () => {
+  const imgBtn = el('button', { type: 'button', class: 'tb', title: 'Pictures from the Media library or uploaded (several = side-by-side gallery); pictures can also be dropped on or pasted into the text', onclick: async () => {
     const urls = await pickImages({ multiple: true, folder, title: imgTitle });
     if (urls.length) { block(body, urls.map((u) => `![](${u})`).join('\n')); onEdit(); }
   } }, 'Image');
   const tb = (label, title, fn) => el('button', { type: 'button', class: 'tb', title, onclick: fn }, label);
+  const cardBtn = tb('Card', 'Cards of models, accessories or docs pages (or type @ in the text)', async () => {
+    const its = await cardPicker();
+    if (its.length) { block(body, its.map(cardLink).join('\n')); onEdit(); }
+  });
   const toolbar = el('div', { class: 'dp-toolbar', role: 'toolbar', 'aria-label': 'Formatting' },
     tb('B', 'Bold (Ctrl+B)', () => wrap(body, '**', '**', 'bold text')),
     tb('I', 'Italic (Ctrl+I)', () => wrap(body, '*', '*', 'italic text')),
@@ -1404,6 +2205,8 @@ function mdTools(body, { folder = 'misc', imgTitle = 'Pictures', onEdit = () => 
       block(body, `=== Manual\n${t || '1. First step'}\n=== With MustardUI\n1. First step\n===`);
     }),
     imgBtn,
+    video ? tb('Video', `A video (MP4 or WebM, up to ${fmtMB(video.bytes)}), checked before it uploads; videos can also be dropped on the text`, () => addVideo(null)) : null,
+    cardBtn,
     paywall ? tb('Patreon', 'Patrons only from here: everyone reads the text above this line, patrons the rest', () => {
       if (/^[ ]{0,3}-{3,}[ ]*patreon[ ]*-{3,}[ ]*$/im.test(body.value)) return toast('The post already has a Patreon line: the patrons’ part starts there.', 'err');
       block(body, '--- Patreon ---');
@@ -1568,7 +2371,7 @@ function initDocsEditor(data) {
 
   form.addEventListener('input', mark);
   form.addEventListener('submit', (e) => e.preventDefault());
-  window.addEventListener('beforeunload', (e) => { if (dirty) { e.preventDefault(); e.returnValue = ''; } });
+  guardLeave(() => dirty);
 
   const saveBtn = document.querySelector('[data-save]');
   const save = async () => {
@@ -1691,13 +2494,16 @@ function initBlogEditor(data) {
       const typed = input.value.trim().replace(/\s+/g, ' ');
       const words = foldWords(typed);
       sugg.replaceChildren();
-      const hits = options().filter((o) => !list.some((x) => fold(x) === fold(o.v)) && words.every((w) => fold(o.label + ' ' + (o.sub || '')).includes(w))).slice(0, 8);
+      const named = (o) => (fold(o.label).startsWith(fold(typed)) ? 2 : 0) + (words.every((w) => fold(o.label).includes(w)) ? 1 : 0);
+      const hits = fairSlice(options().filter((o) => !list.some((x) => fold(x) === fold(o.v)) && words.every((w) => fold(o.label + ' ' + (o.sub || '') + ' ' + (o.x || '')).includes(w)))
+        .sort((a, b) => named(b) - named(a)), (o) => o.group || '', 10);   // the name before the line under it; models and accessories share the rows
       if (allowNew && typed && !options().some((o) => fold(o.v) === fold(typed)) && !list.some((x) => fold(x) === fold(typed))) hits.push({ v: typed, label: `Add “${typed}”`, isNew: true });
       if (!hits.length || (!typed && !document.activeElement?.isSameNode(input))) { sugg.hidden = true; return; }
       hits.forEach((h, i) => sugg.append(el('button', { type: 'button', class: 'g-sugg-row' + (i === 0 ? ' act' : ''), onmousedown: (e) => e.preventDefault(), onclick: () => add(h.v) },
         h.pic ? el('img', { class: 'ga-av', src: h.pic, alt: '' }) : h.isNew ? el('span', { class: 'ga-av ga-ini' }, '+') : null, el('span', {}, h.label), h.sub ? el('small', { class: 'muted' }, h.sub) : null)));
       act = 0;
       sugg.hidden = false;
+      suggFlip(sugg);
     };
     input.addEventListener('input', (e) => { e.stopPropagation(); suggest(); });   // typing isn't a change until a chip is added
     input.addEventListener('focus', suggest);
@@ -1713,7 +2519,98 @@ function initBlogEditor(data) {
     });
     input.addEventListener('blur', () => setTimeout(() => { sugg.hidden = true; }, 150));
     draw();
-    return el('div', { class: 'g-chars-field' }, box, sugg);
+    const field = el('div', { class: 'g-chars-field' }, box, sugg);
+    field.addValue = (v) => {   // from outside (a card in the text): false when it is there already or the list is full
+      if (list.length >= max || list.some((x) => fold(x) === fold(v))) return false;
+      list.push(v); draw(); mark();
+      return true;
+    };
+    return field;
+  }
+
+  // the post's poll (app/blog.php → "Polls"): question, 2–8 choices (text, a picture or a model / accessory's card picture), picks, closing date,
+  // when results show; p.pollEdit = what the editor holds ({on: false} = no poll; votes stay stored and come back with it)
+  const POLL_MAX = 8;
+  const POLL_RESULTS = { after: 'After Voting', always: 'Always', closed: 'When Closed' };
+  function pollField(p) {
+    p.pollEdit ??= p.poll ? { on: true, ...structuredClone(p.poll), closes: p.closesLocal || '' }
+      : { on: false, q: '', opts: [{ id: '', text: '' }, { id: '', text: '' }], max: 1, closes: '', results: 'after', change: false };
+    const pl = p.pollEdit;
+    const counts = p.votes ? p.votes[1] || {} : {};
+    const voters = p.votes ? p.votes[0] : 0;
+    const on = el('input', { type: 'checkbox', class: 'switch', checked: pl.on });
+    const body = el('div', { class: 'ba-poll-body', hidden: !pl.on });
+    on.addEventListener('change', () => { pl.on = on.checked; body.hidden = !on.checked; if (on.checked) body.querySelector('input')?.focus(); });
+
+    const q = el('input', { class: 'input', type: 'text', value: pl.q || '', maxlength: 200, placeholder: 'e.g. Who Should Be the Next Model?' });
+    q.addEventListener('input', () => (pl.q = q.value));
+    const rows = el('div', { class: 'ba-poll-opts' });
+    const addBtn = el('button', { type: 'button', class: 'btn btn-ghost btn-sm', onclick: () => { pl.opts.push({ id: '', text: '' }); draw(); mark(); rows.lastChild?.querySelector('input')?.focus(); } }, '+ Add Choice');
+    const maxSel = el('select', { class: 'input' });
+    const fillMax = () => {
+      const n = Math.max(2, pl.opts.length);
+      pl.max = Math.min(Math.max(1, +pl.max || 1), n);
+      maxSel.replaceChildren(...Array.from({ length: n }, (_, i) => el('option', { value: i + 1, selected: i + 1 === pl.max }, i ? `Up to ${i + 1}` : 'One')));
+    };
+    maxSel.addEventListener('change', () => (pl.max = +maxSel.value));
+    const itemOpts = () => [el('option', { value: '' }, 'No Link'),
+      ...[['models', 'Models'], ['outfits', 'Accessories']].map(([k, t]) => el('optgroup', { label: t }, ...data.items.filter((it) => it.ref.startsWith(k + ':')).map((it) => el('option', { value: it.ref }, it.name))))];
+    function draw() {
+      rows.replaceChildren(...pl.opts.map((o) => {
+        const pic = el('button', { type: 'button', class: 'ba-poll-pic', title: 'Choose a picture', 'aria-label': 'Choose a picture' });
+        const showPic = () => {
+          const src = o.pic || itemBy[o.item]?.pic || '';
+          pic.replaceChildren(src ? el('img', { src, alt: '' }) : el('span', { 'aria-hidden': 'true' }, '+'));
+          picDel.hidden = !o.pic;
+        };
+        pic.addEventListener('click', async () => {
+          const picked = await pickImages({ folder: 'blog', title: 'Picture for This Choice' });
+          if (!picked[0]) return;
+          o.pic = picked[0]; showPic(); mark();
+        });
+        const picDel = el('button', { type: 'button', class: 'btn btn-ghost btn-sm', title: 'Remove the picture', onclick: () => { delete o.pic; showPic(); mark(); } }, 'No Picture');
+        const text = el('input', { class: 'input', type: 'text', value: o.text || '', maxlength: 80, placeholder: 'Choice', 'aria-label': 'Choice' });
+        text.addEventListener('input', () => (o.text = text.value));
+        const item = el('select', { class: 'input ba-poll-item', 'aria-label': 'Link to a model or accessory' }, ...itemOpts());
+        item.value = o.item && itemBy[o.item] ? o.item : '';
+        item.addEventListener('change', () => {
+          o.item = item.value;
+          if (o.item && !text.value.trim()) text.value = o.text = itemBy[o.item].name;
+          showPic();
+        });
+        const n = o.id && counts[o.id] ? counts[o.id] : 0;
+        const del = el('button', { type: 'button', class: 'btn btn-ghost btn-sm', 'aria-label': 'Remove this choice', onclick: () => {
+          if (pl.opts.length <= 2) return toast('A poll needs two choices at least.', 'err');
+          if (n && !confirm(`Remove “${o.text}”? Its ${n === 1 ? 'vote goes' : n + ' votes go'} with it.`)) return;
+          pl.opts.splice(pl.opts.indexOf(o), 1); draw(); mark();
+        } }, '✕');
+        const row = el('div', { class: 'ba-poll-row' }, dragHandle((h) => h.closest('.ba-poll-row'), () => { pl.opts = [...rows.children].map((r) => r._o); mark(); }),
+          pic, el('div', { class: 'ba-poll-mid' }, text, el('div', { class: 'ba-poll-sub' }, item, picDel, o.id ? el('span', { class: 'muted small' }, n === 1 ? '1 vote' : `${n} votes`) : null)), del);
+        row._o = o;
+        showPic();
+        return row;
+      }));
+      addBtn.hidden = pl.opts.length >= POLL_MAX;
+      fillMax();
+    }
+    draw();
+    const closes = el('input', { class: 'input', type: 'datetime-local', value: pl.closes || '', step: 60 });
+    closes.addEventListener('input', () => (pl.closes = closes.value));
+    const res = el('select', { class: 'input' }, ...Object.entries(POLL_RESULTS).map(([k, t]) => el('option', { value: k, selected: k === (pl.results || 'after') }, t)));
+    res.addEventListener('change', () => (pl.results = res.value));
+    const change = el('input', { type: 'checkbox', class: 'switch', checked: !!pl.change });
+    change.addEventListener('change', () => (pl.change = change.checked));
+    body.append(
+      el('label', { class: 'field' }, el('span', { class: 'lbl' }, 'Question'), q),
+      el('div', { class: 'field' }, lbl('Choices', 'Two to eight. A choice linked to a model or accessory shows its catalog picture (unless you pick one) and links to its page in the results.'), rows, el('div', { class: 'row-btns' }, addBtn)),
+      el('div', { class: 'ba-poll-set' },
+        el('label', { class: 'field' }, el('span', { class: 'lbl' }, 'Each Patron Picks'), maxSel),
+        el('label', { class: 'field' }, lbl('Closes', `Site time (${data.tz}). Empty = open until you remove the poll.`), closes),
+        el('label', { class: 'field' }, lbl('Show Results', 'After Voting: to patrons who voted. Always: to everyone who can read the post. When Closed: to nobody until it closes. You always see them.'), res)),
+      el('label', { class: 'toggle' }, change, el('span', {}, 'Patrons Can Change Their Vote')),
+      p.votes ? el('p', { class: 'muted small' }, voters === 1 ? '1 patron voted so far.' : `${voters} patrons voted so far.`) : null);
+    return el('div', { class: 'field ba-poll' },
+      el('label', { class: 'toggle' }, on, el('span', {}, 'Add a Poll to This Post'), tip('Paying patrons vote under the post (once each). Votes are kept under a scrambled code, like likes.')), body);
   }
 
   const F = {};   // the open post's fields that a save writes back (address and date made by the server, the delete button)
@@ -1768,9 +2665,9 @@ function initBlogEditor(data) {
     };
     const topics = chipField({ list: p.topics, max: 6, options: topicsInUse, label: (v) => v, allowNew: true, placeholder: 'Add a topic…' });
     const items = chipField({ list: p.items, max: 12, maxlength: 80, placeholder: 'Add a model or accessory…',
-      options: () => data.items.map((it) => ({ v: it.ref, label: it.name, sub: it.sub, pic: it.pic })), label: (v) => itemBy[v]?.name || v });
+      options: () => data.items.map((it) => ({ v: it.ref, label: it.name, sub: it.sub, x: it.x, pic: it.pic, group: it.ref.split(':')[0] })), label: (v) => itemBy[v]?.name || v });
 
-    // cover: a picture of the Images library or a new upload (folder "blog"); Crop… makes a new file (16:9 is best)
+    // cover: a picture of the Media library or a new upload (folder "blog"); Crop… makes a new file (16:9 is best)
     const cover = el('input', { class: 'input', type: 'text', value: p.cover || '', placeholder: '/media/…', maxlength: 1000 });
     const prev = el('div', { class: 'img-prev' });
     const show = () => {
@@ -1811,13 +2708,26 @@ function initBlogEditor(data) {
     const body = el('textarea', { class: 'input dp-body', spellcheck: 'true', maxlength: 200000, placeholder: 'Write the post here. See "How to format posts" above.' });
     body.value = p.body || '';
     body.addEventListener('input', () => (p.body = body.value));
-    const { tabs, toolbar, preview } = mdTools(body, { folder: 'blog', imgTitle: 'Pictures for This Post', onEdit: mark, paywall: true });
+    // a model / accessory card put in the text (a line holding only its link: "@", the Card button, pasted) joins "Models and Accessories
+    // in This Post"; only cards new since the last look, so a chip removed by hand stays removed while its card stays in the text
+    const cardRefs = () => new Set([...body.value.matchAll(/^[ \t]*\[[^\]\n]+\]\(\/(models|accessories)\/([a-z0-9][a-z0-9_-]*)\/?(?:#[\w-]*)?\)[ \t]*$/gim)]
+      .map((m) => (m[1].toLowerCase() === 'models' ? 'models:' : 'outfits:') + m[2].toLowerCase()).filter((r) => itemBy[r]));
+    let inText = cardRefs();
+    body.addEventListener('input', () => {
+      const now = cardRefs();
+      const added = [...now].filter((r) => !inText.has(r) && items.addValue(r));
+      inText = now;
+      if (added.length) toast(`Added ${added.map((r) => itemBy[r].name).join(', ')} to Models and Accessories in This Post.`);
+    });
+    const { tabs, toolbar, preview } = mdTools(body, { folder: 'blog', imgTitle: 'Pictures for This Post', onEdit: mark, paywall: true, video: data.video });
 
     const dsc = el('input', { type: 'checkbox', class: 'switch', checked: !!p.discord });
     dsc.addEventListener('change', () => (p.discord = dsc.checked));
     const discord = p.announced ? el('p', { class: 'muted small' }, '✓ Announced on Discord.')
       : data.discord ? el('label', { class: 'toggle' }, dsc, el('span', {}, 'Announce on Discord When Published'), tip('Posted by the Discord webhook once the post is Public or Patrons Only and its date has come (title, summary, link; the cover only for Public posts).'))
         : el('p', { class: 'muted small' }, 'Discord announcements are off. ', el('a', { href: data.discordUrl }, 'Turn them on'), ' to post new blog posts there too.');
+
+    const pollBox = pollField(p);
 
     pane.replaceChildren(
       el('div', { class: 'dp-fields ba-fields' },
@@ -1832,13 +2742,14 @@ function initBlogEditor(data) {
         el('label', { class: 'field dp-wide' }, el('span', { class: 'lbl' }, 'Summary'), sum)),
       tabs, toolbar, body, preview,
       el('div', { class: 'field ba-items' }, lbl('Models and Accessories in This Post', 'Shown as cards under the post (only the ones visitors can see).'), items),
+      pollBox,
       el('div', { class: 'ba-discord' }, discord),
       el('div', { class: 'dp-foot' }, F.del = el('button', { type: 'button', class: 'btn btn-ghost btn-sm dp-del', onclick: del }, p.id ? 'Delete Post' : 'Discard')));
   }
 
   async function del() {
     if (!cur.id) { dirty = false; const first = data.posts[0]; first ? open(first.id) : close(); return; }
-    if (!confirm(`Delete the post "${cur.title}"? This can’t be undone (its likes go too).`)) return;
+    if (!confirm(`Delete the post "${cur.title}"? This can’t be undone (its likes and poll votes go too).`)) return;
     try {
       data.posts = (await post('/admin/save.php', { kind: 'blog', action: 'delete', id: cur.id, rev: cur.rev })).posts;
       dirty = false;
@@ -1849,7 +2760,7 @@ function initBlogEditor(data) {
 
   form.addEventListener('input', mark);
   form.addEventListener('submit', (e) => e.preventDefault());
-  window.addEventListener('beforeunload', (e) => { if (dirty) { e.preventDefault(); e.returnValue = ''; } });
+  guardLeave(() => dirty);
   const save = async () => {
     if (saveBtn.disabled || !cur) return;
     if (!cur.title.trim()) { toast('The post needs a title.', 'err'); pane.querySelector('input').focus(); return; }
@@ -1858,13 +2769,17 @@ function initBlogEditor(data) {
     try {
       const at = edits;
       const out = { title: p.title.trim(), slug: p.slug, date: p.local || '', summary: (p.summary || '').trim(), cover: (p.cover || '').trim(), body: p.body || '',
-        topics: p.topics, items: p.items, visibility: p.visibility, pinned: !!p.pinned, discord: !!p.discord, comments: !p.noComments };
+        topics: p.topics, items: p.items, visibility: p.visibility, pinned: !!p.pinned, discord: !!p.discord, comments: !p.noComments,
+        poll: p.pollEdit ? { on: p.pollEdit.on, q: (p.pollEdit.q || '').trim(), opts: p.pollEdit.opts.map((o) => ({ id: o.id || '', text: (o.text || '').trim(), pic: o.pic || '', item: o.item || '' })),
+          max: p.pollEdit.max, closes: p.pollEdit.closes || '', results: p.pollEdit.results || 'after', change: !!p.pollEdit.change } : (p.poll ? { on: true, ...p.poll, closes: p.closesLocal || '' } : null) };
       const r = await post('/admin/save.php', { kind: 'blog', id: p.id, rev: p.rev, post: out });
       data.posts = r.posts;
       const saved = data.posts.find((x) => x.id === r.id);
       if (cur === p && saved) {
         // the server may have made the address or the date: write them back, keep what was typed meanwhile
         Object.assign(p, { id: saved.id, rev: saved.rev, state: saved.state, slug: saved.slug, local: saved.local, announced: saved.announced, thumb: saved.thumb, isNew: false });
+        // the poll as saved (new choices got their ids): drawn again only when nothing was typed meanwhile
+        if (edits === at) { p.poll = saved.poll; p.votes = saved.votes; p.closesLocal = saved.closesLocal; p.pollEdit = null; const old = pane.querySelector('.ba-poll'); old?.replaceWith(pollField(p)); }
         F.slug.value = saved.slug; F.date.value = saved.local; F.del.textContent = 'Delete Post';
         viewLink.href = `/blog/${saved.slug}/`;
         history.replaceState(null, '', `?post=${encodeURIComponent(saved.id)}`);
@@ -1906,7 +2821,7 @@ function initFaqEditor(data) {
   const question = (it = {}) => {
     const q = el('input', { class: 'input', type: 'text', value: it.q || '', placeholder: 'The question', maxlength: 300 });
     const a = imageDrop(growArea(it.a, 4, 'The answer…', 20000), 'faq');
-    const imgBtn = el('button', { type: 'button', class: 'btn btn-ghost btn-sm', title: 'Pictures from the Images library or uploaded (several = side-by-side gallery); pictures can also be dropped on or pasted into the answer', onclick: async () => {
+    const imgBtn = el('button', { type: 'button', class: 'btn btn-ghost btn-sm', title: 'Pictures from the Media library or uploaded (several = side-by-side gallery); pictures can also be dropped on or pasted into the answer', onclick: async () => {
       const urls = await pickImages({ multiple: true, folder: 'faq', title: 'Pictures for This Answer' });
       if (urls.length) insertAt(a, '\n\n' + urls.map((u) => `![](${u})`).join('\n') + '\n\n');
     } }, 'Add Image');
@@ -1944,7 +2859,7 @@ function initFaqEditor(data) {
     el('fieldset', { class: 'sec' }, el('legend', {}, 'Topics and Questions'), topics, addTopic));
   form.addEventListener('input', mark);
   form.addEventListener('submit', (e) => e.preventDefault());
-  window.addEventListener('beforeunload', (e) => { if (dirty) { e.preventDefault(); e.returnValue = ''; } });
+  guardLeave(() => dirty);
 
   const saveBtn = document.querySelector('[data-save]');
   const save = async () => {
@@ -2017,6 +2932,7 @@ function suggestField(input, values, o) {
     act = 0;
     [...sugg.children].forEach((r, i) => r.classList.toggle('act', i === act));
     sugg.hidden = !sugg.children.length;
+    suggFlip(sugg);
     input.setAttribute('aria-expanded', String(!sugg.hidden));
   };
   // under the field: "New" for a value no other item uses, with the closest one in use when it looks like a typo
@@ -2184,7 +3100,7 @@ function initEditor(data) {
     prev.addEventListener('click', () => { if (input.value.trim()) crop(false, 'details'); });   // the picture: its details (Crop… opens on crop)
     input.addEventListener('input', show);
     show();
-    const btn = el('button', { type: 'button', class: 'btn btn-ghost btn-sm', title: 'Pick a picture from the Images library or upload a new one', onclick: async () => {
+    const btn = el('button', { type: 'button', class: 'btn btn-ghost btn-sm', title: 'Pick a picture from the Media library or upload a new one', onclick: async () => {
       const picked = await pickImages({ folder: slugNow(), title: label });
       const url = picked[0];
       if (!url) return;
@@ -2313,15 +3229,18 @@ function initEditor(data) {
   // Gallery: image cards with caption, reorder, remove; multi-upload
   const gallery = (items, hint = '', label = 'Gallery') => {
     const grid = el('div', { class: 'gal' });
-    const addCard = (src, caption = '') => {
+    const addCard = (src, caption = '', link = null) => {
       const cap = el('input', { class: 'input', type: 'text', value: caption, placeholder: 'Caption / artist (optional)', maxlength: 200 });
       const img = el('img', { src, alt: '', loading: 'lazy' });
+      const pill = el('span', { class: 'g-pill g-pill-dl gal-dl', title: 'Full size download: click the picture to change it' }, '↓ Full Size');
+      const setLink = (l) => { card.fullLink = l; pill.hidden = !l; };
       // crop: a new file (the old one stays for whatever else uses it); this card takes the new address
       const open = async (tab) => {   // the picture: its details; Crop: the window on crop
         const url = card.dataset.src;
-        if (tab === 'crop' && !url.startsWith('/media/')) return toast('Only images on this site can be cropped: copy it here first (Images page).', 'err');
+        if (tab === 'crop' && !url.startsWith('/media/')) return toast('Only images on this site can be cropped: copy it here first (Media page).', 'err');
         if (tab === 'crop' && /\.gif$/i.test(url)) return toast('Animated GIFs can’t be cropped.', 'err');
-        const box = await cropImage(url, { title: 'Gallery Picture', tab });
+        const box = await cropImage(url, { title: label === 'Pictures' ? 'Picture' : 'Gallery Picture', tab,
+          full: { state: { link: card.fullLink, s4: !!data.s4 }, onChange: (l) => { setLink(l); form.dispatchEvent(new Event('input')); } } });
         if (!box) return;
         cropBtn.disabled = true; cropBtn.textContent = '…';
         try { const r = await post('/admin/images.php', { action: 'crop', url, ...box }); card.dataset.src = r.url; img.src = r.url; form.dispatchEvent(new Event('input')); toast('Cropped ✓ Save to keep it.'); }
@@ -2332,12 +3251,13 @@ function initEditor(data) {
       img.classList.add('is-open');
       img.title = 'Details and crop';
       img.addEventListener('click', () => open('details'));
-      const card = el('div', { class: 'gal-card', 'data-src': src }, img, cap,
+      const card = el('div', { class: 'gal-card', 'data-src': src }, img, pill, cap,
         el('div', { class: 'row-btns' }, dragHandle(() => card), cropBtn, iconBtn('✕', 'Remove', () => { card.remove(); form.dispatchEvent(new Event('input')); }, 'del')));
+      setLink(link?.url ? link : null);
       grid.append(card);
     };
-    (items || []).forEach((g) => (typeof g === 'string' ? addCard(g) : addCard(g.src, g.caption || '')));
-    const up = el('button', { type: 'button', class: 'btn btn-ghost btn-sm', title: 'Pick pictures from the Images library or upload new ones', onclick: async () => {
+    (items || []).forEach((g) => (typeof g === 'string' ? addCard(g) : addCard(g.src, g.caption || '', g.link)));
+    const up = el('button', { type: 'button', class: 'btn btn-ghost btn-sm', title: 'Pick pictures from the Media library or upload new ones', onclick: async () => {
       const urls = await pickImages({ multiple: true, folder: slugNow(), title: 'Add to the ' + label, exclude: [...grid.children].map((c) => c.dataset.src), excludeLabel: 'Already Here' });
       urls.forEach((u) => addCard(u));
       if (urls.length) form.dispatchEvent(new Event('input'));
@@ -2345,7 +3265,10 @@ function initEditor(data) {
     const byUrl = el('button', { type: 'button', class: 'btn btn-ghost btn-sm', onclick: () => { const u = prompt('Image address (/media/… or https://…)'); if (u) { addCard(u.trim()); form.dispatchEvent(new Event('input')); } } }, 'Add by Address');
     return {
       node: el('div', { class: 'field' }, lbl(label, hint), grid, el('div', { class: 'row-btns' }, up, byUrl)),
-      get: () => [...grid.children].map((c) => { const cap = c.querySelector('input').value.trim(); return cap ? { src: c.dataset.src, caption: cap } : c.dataset.src; }),
+      get: () => [...grid.children].map((c) => {
+        const cap = c.querySelector('input').value.trim();
+        return cap || c.fullLink ? { src: c.dataset.src, ...(cap ? { caption: cap } : {}), ...(c.fullLink ? { link: c.fullLink } : {}) } : c.dataset.src;
+      }),
     };
   };
 
@@ -2353,18 +3276,23 @@ function initEditor(data) {
   const repeat = (o) => {
     const wrap = el('div', { class: 'repeat' });
     const getters = new Map();
+    // o.build(value) → { body, get, title, meta?, focus? }: meta() = what a closed block shows after its title, focus() = the field a new block starts in
     const addItem = (value, top = false, open = true) => {
-      const { body, get, title } = o.build(value || {});
-      const head = el('summary', { class: 'rep-head' }, dragHandle(() => item), el('span', { class: 'rep-title' }, title()),
+      const { body, get, title, meta, focus } = o.build(value || {});
+      const metaEl = meta ? el('span', { class: 'rep-meta' }) : null;
+      const head = el('summary', { class: 'rep-head' }, dragHandle(() => item), el('span', { class: 'rep-title' }, title()), metaEl,
         el('span', { class: 'row-btns' }, iconBtn('✕', 'Remove', (e) => { e.preventDefault(); if (confirm(o.confirmRemove || 'Remove this block?')) { item.remove(); form.dispatchEvent(new Event('input')); } }, 'del')));
-      const item = el('details', { class: 'rep-item', open }, head, body);
-      body.addEventListener('input', () => (head.querySelector('.rep-title').textContent = title()));
+      const item = el('details', { class: 'rep-item' + (o.cls ? ' ' + o.cls : ''), open }, head, body);
+      const sync = () => { head.querySelector('.rep-title').textContent = title(); metaEl?.replaceChildren(...meta().filter(Boolean)); };
+      body.addEventListener('input', sync);
+      if (metaEl) { item.addEventListener('toggle', sync); sync(); }
+      item.focusField = focus;
       getters.set(item, get);
       if (top) wrap.prepend(item); else wrap.append(item);
       return item;
     };
     (o.items || []).forEach((v, i) => addItem(v, false, o.openFirst === undefined || i < o.openFirst));
-    const add = el('button', { type: 'button', class: 'btn btn-ghost btn-sm add', onclick: () => { const it = addItem(o.blank ? o.blank() : {}, o.addTop); it.querySelector('input,textarea')?.focus(); form.dispatchEvent(new Event('input')); } }, '+ ' + o.addLabel);
+    const add = el('button', { type: 'button', class: 'btn btn-ghost btn-sm add', onclick: () => { const it = addItem(o.blank ? o.blank() : {}, o.addTop); (it.focusField?.() || it.querySelector('input,textarea'))?.focus(); form.dispatchEvent(new Event('input')); } }, '+ ' + o.addLabel);
     return { node: el('div', { class: 'field' }, o.label && lbl(o.label), o.addTop ? add : null, wrap, o.addTop ? null : add), get: () => [...wrap.children].map((it) => getters.get(it)()), count: () => wrap.children.length, add: () => add.click() };
   };
 
@@ -2401,107 +3329,6 @@ function initEditor(data) {
     url.addEventListener('input', () => { const same = url.value.trim() === first; row.classList.toggle('is-dead', same); ico.style.visibility = same ? '' : 'hidden'; });
   };
 
-  // "S4…" (only while a Bucket Address is set in Settings → MEGA S4): the bucket's folders and files from admin/s4-files.php,
-  // one folder at a time, with a filter. One file (a link row's S4… button): a click picks it. multiple (the list's "+ Add from S4…"):
-  // tick boxes that stay ticked across folders, "Select all" for the files shown, and the files already in the list greyed out (have);
-  // done gets the chosen files [{key, size}] and, with multiple, who the new links are for
-  const pickS4 = ({ start = '', multiple = false, have = new Set(), done }) => {
-    const sizeTxt = (b) => (b >= 1073741824 ? (b / 1073741824).toFixed(1) + ' GB' : b >= 1048576 ? (b / 1048576).toFixed(1) + ' MB' : Math.max(1, Math.ceil(b / 1024)) + ' KB');
-    const crumbs = el('div', { class: 's4-crumbs' });
-    const filter = el('input', { class: 'input', type: 'search', placeholder: 'Filter this folder', autocomplete: 'off', spellcheck: 'false', 'aria-label': 'Filter' });
-    const list = el('div', { class: 's4-list' + (multiple ? ' is-multi' : '') });
-    const note = el('p', { class: 'muted small s4-note' });
-    const close = () => { dlg.close(); dlg.remove(); };
-    const picked = new Map();   // key → file, in the order ticked (the new links come in that order)
-    const all = el('input', { type: 'checkbox', 'aria-label': 'Select all files shown' });
-    const allRow = el('label', { class: 's4-all', hidden: true }, all, el('span', {}, 'Select All Files Shown'));
-    const count = el('span', { class: 's4-count muted small' });
-    const clear = el('button', { type: 'button', class: 'linklike s4-clear', onclick: () => { picked.clear(); sync(); } }, 'Clear');
-    const access = el('select', { class: 'input', 'aria-label': 'New links are for' }, el('option', { value: 'patrons' }, 'Patrons Only'), el('option', { value: 'public' }, 'Public'));
-    const go = el('button', { type: 'button', class: 'btn btn-primary', disabled: true, onclick: () => { close(); done([...picked.values()], access.value); } });
-    let rows = [], seq = 0;   // seq: only the folder asked for last is drawn
-    const boxes = () => rows.filter((r) => r.querySelector('input:not(:disabled)') && !r.hidden).map((r) => r.querySelector('input'));
-    // the tick boxes, "Select all", the count and the button follow `picked`
-    const sync = () => {
-      if (!multiple) return;
-      rows.forEach((r) => { const b = r.querySelector('input'); if (b && !b.disabled) b.checked = picked.has(r.dataset.key); });
-      const shown = boxes();
-      allRow.hidden = !shown.length;
-      all.checked = shown.length > 0 && shown.every((b) => b.checked);
-      all.indeterminate = !all.checked && shown.some((b) => b.checked);
-      const n = picked.size;
-      count.textContent = n ? `${n} ${n === 1 ? 'file' : 'files'} selected` : 'Tick the files to add.';
-      clear.hidden = !n;
-      go.disabled = !n;
-      go.textContent = n ? `Add ${n} ${n === 1 ? 'Link' : 'Links'}` : 'Add Links';
-    };
-    const show = () => {
-      const words = foldWords(filter.value);
-      let n = 0;
-      rows.forEach((r) => { const ok = words.every((w) => r.dataset.name.includes(w)); r.hidden = !ok; if (ok) n++; });
-      note.textContent = rows.length && !n ? 'Nothing matches the filter.' : note.dataset.base || '';
-      sync();
-    };
-    all.addEventListener('change', () => { const on = all.checked; boxes().forEach((b) => { const r = b.closest('.s4-row'); if (on) picked.set(r.dataset.key, r.s4file); else picked.delete(r.dataset.key); }); sync(); });
-    const fileRow = (f, prefix) => {
-      const name = f.key.slice(prefix.length);
-      const facts = [el('span', { class: 'muted small' }, sizeTxt(f.size)), el('span', { class: 'muted small' }, f.date)];
-      if (!multiple) return el('button', { type: 'button', class: 's4-row', 'data-name': fold(name), onclick: () => { close(); done([f]); } },
-        el('span', { class: 's4-ico', 'aria-hidden': 'true' }, '📄'), el('span', { class: 's4-name' }, name), ...facts);
-      const had = have.has(f.key);
-      const box = el('input', { type: 'checkbox', disabled: had, checked: had });
-      box.addEventListener('change', () => { if (box.checked) picked.set(f.key, f); else picked.delete(f.key); sync(); });
-      const r = el('label', { class: 's4-row' + (had ? ' had' : ''), 'data-name': fold(name), 'data-key': f.key, title: had ? 'Already in the download links' : null },
-        box, el('span', { class: 's4-name' }, name, had ? el('span', { class: 's4-had' }, 'Already Added') : null), ...facts);
-      r.s4file = f;
-      return r;
-    };
-    const open = async (prefix) => {
-      const mine = ++seq;
-      list.replaceChildren(el('p', { class: 'muted small' }, 'Loading…'));
-      rows = [];
-      filter.value = '';
-      note.dataset.base = '';
-      note.textContent = '';
-      sync();
-      let d;
-      try {
-        const r = await fetch('/admin/s4-files.php?prefix=' + encodeURIComponent(prefix), { credentials: 'same-origin', cache: 'no-store' });
-        d = await r.json();
-        if (!d.ok) throw new Error(d.error || 'S4 didn’t answer.');
-      } catch (err) { if (mine === seq) list.replaceChildren(el('p', { class: 'res-err small' }, err.message)); return; }
-      if (mine !== seq || !dlg.isConnected) return;
-      const parts = prefix.split('/').filter(Boolean);
-      crumbs.replaceChildren(el('button', { type: 'button', class: 'linklike', onclick: () => open('') }, d.bucket),
-        ...parts.flatMap((p, i) => [el('span', { class: 'muted' }, ' / '), el('button', { type: 'button', class: 'linklike', onclick: () => open(parts.slice(0, i + 1).join('/') + '/') }, p)]));
-      rows = [
-        ...d.folders.map((f) => el('button', { type: 'button', class: 's4-row is-folder', 'data-name': fold(f.slice(prefix.length)), onclick: () => open(f) },
-          el('span', { class: 's4-ico', 'aria-hidden': 'true' }, '📁'), el('span', { class: 's4-name' }, f.slice(prefix.length, -1)), el('span'), el('span'))),
-        ...d.files.map((f) => fileRow(f, prefix)),
-      ];
-      list.replaceChildren(...(rows.length ? rows : [el('p', { class: 'muted small' }, 'This folder is empty.')]));
-      note.dataset.base = d.more ? 'Only the first files are shown: use a folder or the filter.' : '';
-      show();
-      filter.focus();
-    };
-    filter.addEventListener('input', show);
-    const title = multiple ? 'Add from S4' : 'Choose from S4';
-    const cancel = el('button', { type: 'button', class: 'btn btn-ghost', onclick: close }, 'Cancel');
-    const body = el('div', { class: 'lc-dlg-body' },
-      el('h2', null, title), crumbs, filter, multiple ? allRow : null, list, note,
-      multiple
-        ? el('div', { class: 'form-actions s4-foot' }, el('div', { class: 'act-left s4-picked' }, count, clear), el('label', { class: 's4-for' }, el('span', { class: 'muted small' }, 'For'), access), cancel, go)
-        : el('div', { class: 'form-actions' }, cancel));
-    const dlg = el('dialog', { class: 'lc-dlg s4-dlg', 'aria-label': title }, body);
-    dlg.addEventListener('cancel', (e) => { e.preventDefault(); close(); });
-    dlg.addEventListener('click', (e) => { if (e.target === dlg && !picked.size) close(); });   // a click beside it never loses ticked files
-    document.body.append(dlg);
-    dlg.showModal();
-    sync();
-    open(start);
-  };
-  // the folder of an "s4:" address ('' = the bucket's top), where the S4 window starts
-  const s4Folder = (v) => { const m = String(v || '').trim().match(/^s4:\/*(.*\/)?[^/]*$/i); return m && m[1] ? m[1] : ''; };
   // a new link's label from its file: the name without folder and extension, "_" as spaces ("Alice_Textures_4K.zip" → "Alice Textures 4K")
   const s4Label = (key) => { const f = key.split('/').pop(); return (f.replace(/\.[a-z0-9]{1,5}$/i, '').replace(/_+/g, ' ').trim() || f).slice(0, 60); };
 
@@ -2541,8 +3368,15 @@ function initEditor(data) {
         form.dispatchEvent(new Event('input'));
       } });
     } }, '+ Add from S4…') : null;
+    // a temporary link to give someone (Access → Temporary Links): every file of this item, as saved; only once the item is saved
+    const share = data.isNew ? null : el('button', { type: 'button', class: 'btn btn-ghost btn-sm sh-btn', title: 'A link for someone to download these files for a while, without Patreon', onclick: () => {
+      const pic = isOutfit ? [fields.images.get()[0]].flat().map((g) => (typeof g === 'string' ? g : g?.src || ''))[0] || '' : fields.thumb.get() || fields.cover.get();
+      const it = { k: data.kind, s: m.slug, t: fields.name.get() || m.name, u: isOutfit ? fields.type.get() || 'Outfit' : fields.franchise.get(), p: pic,
+        f: [...wrap.children].map((r) => { const [lb, u] = r.querySelectorAll('input.input'); return r.querySelector('.link-on').checked && u.value.trim() ? lb.value.trim() || 'Download' : ''; }).filter(Boolean) };
+      shareWindow({ item: it, unsaved: dirty });
+    } }, 'Temporary Link…');
     return {
-      node: el('div', { class: 'field' }, lbl('Download Links'), wrap, addS4 ? el('div', { class: 'row-btns links-add' }, add, addS4) : add),
+      node: el('div', { class: 'field' }, lbl('Download Links'), wrap, addS4 || share ? el('div', { class: 'row-btns links-add' }, add, addS4, share) : add),
       get: () => [...wrap.children].map((r) => { const [lb, u, a] = r.querySelectorAll('input.input, select'); return { label: lb.value.trim(), url: u.value.trim(), access: a.value, ...(r.querySelector('.link-on').checked ? {} : { off: true }) }; }).filter((l) => l.url || l.label),
     };
   };
@@ -2567,16 +3401,23 @@ function initEditor(data) {
     };
   };
 
-  // Compatible models: tick the models an accessory is optimized for
-  const modelPicker = (selected) => {
+  // Compatible models: tick the models an accessory is optimized for, or switch on All Models (every model, future ones too:
+  // the ticks are hidden but kept, so turning it off brings them back)
+  const modelPicker = (selected, all) => {
+    const every = toggle('All Models', !!all, 'Made for every model, also the ones added later: it shows in every model’s accessories.');
+    const sw = every.node.querySelector('input');
     const sel = new Set(selected || []);
     const q = el('input', { class: 'input', type: 'search', placeholder: 'Filter models…' });
-    const grid = el('div', { class: 'mpick' }, data.models.map((mm) => el('label', { class: 'mpick-item', 'data-name': mm.name.toLowerCase() },
+    // every card one height: tick, picture (or the name's first letter), the name on one line (cut with …, whole on hover) and Gen · franchise under it
+    const grid = el('div', { class: 'mpick' }, data.models.map((mm) => el('label', { class: 'mpick-item', 'data-name': fold(mm.name + ' ' + (mm.sub || '')), title: [mm.name, mm.sub].filter(Boolean).join(' · ') },
       el('input', { type: 'checkbox', value: mm.slug, checked: sel.has(mm.slug) }),
-      mm.thumb ? el('img', { src: mm.thumb, alt: '', loading: 'lazy' }) : el('span', { class: 'no-img' }),
-      el('span', {}, mm.name))));
-    q.addEventListener('input', () => { const v = q.value.trim().toLowerCase(); grid.querySelectorAll('.mpick-item').forEach((it) => (it.hidden = v && !it.dataset.name.includes(v))); });
-    return { node: el('div', { class: 'field' }, q, grid), get: () => [...grid.querySelectorAll('input:checked')].map((c) => c.value) };
+      mm.thumb ? el('img', { src: mm.thumb, alt: '', loading: 'lazy' }) : el('span', { class: 'mpick-ph', 'aria-hidden': 'true' }, mm.name.slice(0, 1)),
+      el('span', { class: 'mpick-txt' }, el('span', { class: 'mpick-name' }, mm.name), mm.sub ? el('span', { class: 'mpick-sub' }, mm.sub) : null))));
+    q.addEventListener('input', () => { const w = foldWords(q.value); grid.querySelectorAll('.mpick-item').forEach((it) => (it.hidden = w.length > 0 && !w.every((x) => it.dataset.name.includes(x)))); });
+    const show = () => { q.hidden = grid.hidden = sw.checked; };
+    sw.addEventListener('change', show);
+    show();
+    return { node: el('div', { class: 'field' }, every.node, q, grid), get: () => [...grid.querySelectorAll('input:checked')].map((c) => c.value), all: () => sw.checked };
   };
 
   // Access: who can download the patron links. On top of a paid tier (never instead of it): a minimum tier, months as a patron,
@@ -2713,8 +3554,9 @@ function initEditor(data) {
   // models add their status row (status + featured): the section is then "Visibility & Status"
   const visibilitySection = (statusRow) => {
     fields.visibility = visBar(m.visibility || 'public', data.visibility);
-    fields.password = text('Password', '', { max: 200, placeholder: m.hasPassword ? 'A password is set: leave empty to keep it' : 'At least 4 characters', hint: 'A new password locks out everyone who used the old one.' });
+    fields.password = text('Password', '', { max: 200, placeholder: 'At least 4 characters', hint: 'A new password locks out everyone who used the old one.' });
     fields.password.input.autocomplete = 'off';
+    fields.password.lock = keyField(fields.password.input, 'Password', !!m.hasPassword);   // never sent to the page: locked while one is set
     fields.unlisted = toggle('Hide from Catalog', m.unlisted, 'Reachable only by its address.');
     const hints = {
       public: 'Everyone can see it.',
@@ -2740,6 +3582,7 @@ function initEditor(data) {
       items: m.changelog || [],
       addLabel: 'Add New Version (Goes on Top)',
       addTop: true,
+      cls: 'ver-item',
       openFirst: 0,   // all versions start collapsed; a newly added one opens
       confirmRemove: 'Remove this version from the changelog?',
       blank: () => {   // the next version of the top one (3 → 4, 3.1 → 3.2, same stage), dated today
@@ -2751,11 +3594,25 @@ function initEditor(data) {
         const v = text('Version', en.version, { max: 60, placeholder: 'e.g. 4 or 3.1' });
         const d = text('Date', en.date, { max: 40, placeholder: 'dd/mm/yyyy' });
         const h = text('Label (Optional)', en.highlight, { max: 120, list: 'highlights', hint: 'Mentions of textures, a first release or the last version for a Blender release become a badge.' });
-        const notes = list('Notes (Optional)', en.notes, { max: 5000, addLabel: 'Add Paragraph', img: true });
-        const ch = list('Changes', en.changes, { max: 3000, addLabel: 'Add Change', placeholder: 'Fix: …   /   New: …   /   Enhancement: …',
+        const notes = list('Notes', en.notes, { max: 5000, addLabel: 'Add Paragraph', img: true });
+        // a version without changes yet (a new one) starts with an empty line, ready to type
+        const ch = list('Changes', en.changes?.length ? en.changes : [''], { max: 3000, addLabel: 'Add Change', placeholder: 'Fix: …   /   New: …   /   Enhancement: …',
           hint: 'New:, Fix:, Bug:, Enhancement:, Improvement:, Optimization:, Removal: or UI: at the start get a coloured tag.' + (bugRefs ? ' Type # to pick a bug report ("Fix #6: …"): on the site it links to the report, and saving marks the report fixed in this version.' : ''),
           mention: bugRefs ? (ta) => bugMention(ta, bugRefs) : null });
-        const img = image('Image (Optional)', en.image);
+        const img = image('Image', en.image);
+        // Notes and Image show only once used: until then "+ Add Notes" / "+ Add Image" next to "+ Add Change". Removing the last
+        // paragraph or the picture hides them again (both send an input event on the form)
+        const addNotes = el('button', { type: 'button', class: 'btn btn-ghost btn-sm', onclick: () => { notes.node.hidden = false; addNotes.hidden = true; notes.add(); } }, '+ Add Notes');
+        const addImg = el('button', { type: 'button', class: 'btn btn-ghost btn-sm', title: 'Pick a picture from the Media library or upload a new one',
+          onclick: () => img.node.querySelector('.img-ctl .row-btns > button').click() }, '+ Add Image');   // the field's Choose…: it shows once a picture is picked
+        const optSync = () => {
+          const hasNotes = notes.count() > 0, hasImg = !!img.get();
+          notes.node.hidden = !hasNotes; addNotes.hidden = hasNotes;
+          img.node.hidden = !hasImg; addImg.hidden = hasImg;
+        };
+        form.addEventListener('input', optSync);
+        optSync();
+        const adds = el('div', { class: 'row-btns ver-adds' }, ch.node.querySelector(':scope > .add'), addNotes, addImg);
         // release stage: Standard / α Alpha / β Beta (one at a time), a coloured badge on the site for alpha and beta
         let stage = ['alpha', 'beta'].includes(en.stage) ? en.stage : 'standard';
         const STAGE = { standard: ['Standard', '<path d="m5 12.5 4.5 4.5L19 7.5"/>'], alpha: ['Alpha', '<path d="M18.5 6.5c-1.6 5-2.7 8.4-1.4 10.8.5.9 1.4.9 2.4.2"/><path d="M16.6 12.2C15.4 8.4 13.4 6.5 11 6.5c-3 0-5 2.6-5 5.8s1.9 5.7 4.8 5.7c2.6 0 4.6-2.2 5.8-5.8z"/>'], beta: ['Beta', '<path d="M7.5 21.5V8c0-2.7 1.9-4.5 4.5-4.5 2.3 0 4 1.5 4 3.6 0 2-1.5 3.4-3.6 3.6 2.8.2 4.8 1.9 4.8 4.4 0 2.6-2.1 4.4-4.8 4.4-2 0-3.6-.9-4.9-2.3"/>'] };
@@ -2765,7 +3622,7 @@ function initEditor(data) {
           b.addEventListener('click', () => { stage = k; stageBtns.forEach((x) => x.setAttribute('aria-pressed', String(x === b))); b.dispatchEvent(new Event('input', { bubbles: true })); });   // bubbles: the title and the unsaved-changes flag update
           return b;
         });
-        const stageNode = el('div', { class: 'field' }, el('span', { class: 'lbl' }, 'Release'), el('div', { class: 'stage-pick', role: 'group', 'aria-label': 'Release' }, stageBtns));
+        const stageNode = el('div', { class: 'field ver-stage' }, el('span', { class: 'lbl' }, 'Release'), el('div', { class: 'stage-pick', role: 'group', 'aria-label': 'Release' }, stageBtns));
         // "Beta 2" typed with Beta (or Standard) picked: keep "2" and pick Beta, so the site never says "Beta Beta 2"
         const stageWord = () => {
           const mt = /^\s*(alpha|beta|α|β)[\s.\-:]*(?=\S)/i.exec(v.get());
@@ -2775,14 +3632,82 @@ function initEditor(data) {
           stageBtns[Object.keys(STAGE).indexOf(k)].click();
         };
         v.input.addEventListener('change', stageWord);
+        v.node.classList.add('ver-v'); d.node.classList.add('ver-d'); h.node.classList.add('ver-h');
         return {
-          body: el('div', { class: 'rep-body' }, el('div', { class: 'grid-ver' }, v.node, d.node, h.node, stageNode), ch.node, notes.node, img.node),
+          // one row: Version · Release · Date · Label (narrower boxes wrap it, admin.css), then the changes and the buttons under them
+          body: el('div', { class: 'rep-body ver-body' }, el('div', { class: 'grid-ver' }, v.node, stageNode, d.node, h.node), ch.node, adds, notes.node, img.node),
           get: () => { stageWord(); return { version: v.get(), date: d.get(), highlight: h.get(), stage, notes: notes.get(), changes: ch.get(), image: img.get() }; },   // Ctrl+S while typing "Beta 2": no change event yet
           title: () => [(stage !== 'standard' && !v.get().toLowerCase().startsWith(stage) ? STAGE[stage][0] + ' ' : '') + (v.get() || 'New Version'), d.get()].filter(Boolean).join(' · '),   // "Beta 2 · 16/08/2026"
+          // a closed version: "6 changes · notes · image" and its label, so it can be found without opening it
+          meta: () => {
+            const n = ch.get().length;
+            const bits = [n ? `${n} ${n === 1 ? 'change' : 'changes'}` : 'No changes', notes.get().length ? 'notes' : '', img.get() ? 'image' : ''].filter(Boolean);
+            return [el('span', { class: 'rep-count' }, bits.join(' · ')), h.get() ? el('span', { class: 'rep-tag', title: h.get() }, h.get()) : null];
+          },
+          focus: () => (v.get() ? ch.node.querySelector('textarea') : v.input),   // the next number is already there: straight to the first change
         };
       },
     });
     form.append(section('Changelog', 'The top entry is the latest version.', fields.changelogNote.node, fields.changelog.node));
+    discordPill();
+  };
+
+  // Discord announcements on: a pill in the header of the version it is about (the version out, or the top one dated later) says
+  // what saving does with it (the same rules as m3d_discord_after_save() and the release dates), the whole sentence on hover / tap;
+  // hidden when there is nothing to say. data.discord = admin_discord_state()
+  const discordPill = () => {
+    if (!data.discord) return;
+    const pill = el('button', { type: 'button', class: 'tip dc-pill', hidden: true });   // .tip: the sentence in the floating .tip-pop, and a tap doesn't open / close the version
+    pill.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19.3 5.3A17 17 0 0 0 15 4l-.5 1.1a16 16 0 0 0-5 0L9 4a17 17 0 0 0-4.3 1.3C2 9.4 1.3 13.4 1.6 17.3A17 17 0 0 0 6.9 20l1.1-1.8a11 11 0 0 1-1.7-.8l.4-.3a12 12 0 0 0 10.6 0l.4.3-1.7.8 1.1 1.8a17 17 0 0 0 5.3-2.7c.4-4.5-.7-8.5-3.1-12zM8.7 14.9c-1 0-1.9-.9-1.9-2.1s.8-2.1 1.9-2.1 1.9 1 1.9 2.1-.8 2.1-1.9 2.1zm6.6 0c-1 0-1.9-.9-1.9-2.1s.8-2.1 1.9-2.1 1.9 1 1.9 2.1-.8 2.1-1.9 2.1z"/></svg><span></span>';
+    const ymd = (d) => {   // the changelog's day formats (m3d_changelog_ts()): 13/10/2026, 13.10.26, 2026-10-13
+      let mt = /^(\d{1,2})[/.](\d{1,2})[/.](\d{2}|\d{4})$/.exec(String(d || '').trim());
+      if (mt) return `${mt[3].length === 2 ? '20' + mt[3] : mt[3]}-${mt[2].padStart(2, '0')}-${mt[1].padStart(2, '0')}`;
+      mt = /^\d{4}-\d{2}-\d{2}$/.exec(String(d || '').trim());
+      return mt ? mt[0] : '';
+    };
+    const label = (en) => {   // m3d_version_label(): "Beta 2", never "Beta Beta 2"
+      const v = String(en.version || '').trim(), st = { alpha: 'Alpha', beta: 'Beta' }[en.stage];
+      return !v || !st || v.toLowerCase().startsWith(st.toLowerCase()) ? v : `${st} ${v}`;
+    };
+    const ver = (l) => (/^\d/.test(l) ? 'Version ' + l : l);   // "Version 5", "Beta 2", "V5"
+    let at = null;   // the version the pill talks about
+    const say = (short, long = '', tone = 'off') => {
+      const head = short && at ? fields.changelog.node.querySelectorAll(':scope .repeat > .rep-item')[at.i]?.querySelector(':scope > .rep-head') : null;
+      if (!head) { pill.hidden = true; return; }
+      if (pill.parentNode !== head) head.querySelector(':scope > .row-btns').before(pill);
+      pill.hidden = false;
+      pill.className = 'tip dc-pill is-' + tone;
+      pill.lastChild.textContent = short;
+      pill.dataset.tip = long;
+      pill.setAttribute('aria-label', 'Discord: ' + long);
+    };
+    const sync = () => {
+      const dc = data.discord;
+      if (!dc) return say('');
+      const today = dc.now.slice(0, 10);
+      const log = fields.changelog.get().map((en, i) => ({ ...en, i })).filter((en) => String(en.version || '').trim());
+      const out = log.filter((en) => { const y = ymd(en.date); return !y || y <= today; });   // undated versions are out
+      const soon = log[0] && !out.includes(log[0]) ? log[0] : null;   // the top version, dated later: posted on its day
+      at = soon || out[0] || null;
+      if (!at) return say('');
+      const vis = fields.visibility.get();
+      if (vis === 'draft') return say('Not Posted · Draft', 'Not posted on Discord while it’s a draft: making it public posts its version.');
+      if (vis === 'password') return say('Not Posted · Password', 'Not posted on Discord: password-protected items never are.');
+      if (fields.status?.get() === 'in-development') return say('Not Posted · In Development', 'Not posted on Discord while it’s In Development.');
+      const pf = fields.releasePatrons?.get() || '';
+      if (pf && pf > dc.now) return say('Posts on Patrons Date', 'Posted on Discord on its Patrons From date.', 'ok');
+      if (soon) return say('Posts on ' + soon.date, `${ver(label(soon))} is posted on Discord on ${soon.date}.`, 'ok');
+      const cur = label(out[0]);
+      if (dc.retry.includes(cur)) return say('Post Failed · Retries on Save', `The Discord post of ${ver(cur)} failed: saving tries again.`, 'warn');
+      if (dc.sent.includes(cur)) return say('');
+      // a release: the item wasn't visible, had no version, left development, or the version that was out is now below this one
+      const news = !dc.open || !dc.stored || dc.dev || out.slice(1).map(label).includes(dc.stored);
+      say(news ? 'Posts on Save' : '', `${ver(cur)} is posted on Discord when you save.`, 'ok');
+    };
+    form.addEventListener('input', sync);
+    form.addEventListener('change', sync);
+    form.addEventListener('dc-sync', sync);
+    queueMicrotask(sync);   // once every field exists
   };
 
   // ── Build the form ──
@@ -2811,7 +3736,8 @@ function initEditor(data) {
     fields.model3d = model3d(m.model3d, data.model3d, m.model3dLight);
     fields.model3dLight = { get: fields.model3d.light };
     form.append(section('Images', null, fields.images.node, fields.model3d.node));
-    fields.models = modelPicker(m.models);
+    fields.models = modelPicker(m.models, m.allModels);
+    fields.allModels = { get: fields.models.all };
     form.append(section('Optimized For', null, fields.models.node));
     fields.description = area('Description (Optional)', m.description, { rows: 2, max: 5000, img: true });
     form.append(section('Description', null, fields.description.node));
@@ -2933,7 +3859,7 @@ function initEditor(data) {
   form.addEventListener('input', () => { dirty = true; edits++; });
   form.addEventListener('change', () => { dirty = true; edits++; });
   form.addEventListener('submit', (e) => e.preventDefault());
-  window.addEventListener('beforeunload', (e) => { if (dirty) { e.preventDefault(); e.returnValue = ''; } });
+  guardLeave(() => dirty);
 
   const listUrl = isOutfit ? '/admin/outfits.php' : '/admin/models.php';
   const saveBtn = document.querySelector('[data-save]');
@@ -2945,15 +3871,22 @@ function initEditor(data) {
       const r = await post('/admin/save.php', { kind: data.kind, action: 'save', originalSlug: data.isNew ? '' : m.slug, rev: data.isNew ? undefined : data.rev, item: collect() });
       data.rev = r.rev;   // the next save checks against what this one stored
       if (edits === at) dirty = false;
-      if (fields.password.get()) { fields.password.input.value = ''; fields.password.input.placeholder = 'A password is set: leave empty to keep it'; }
-      if (r.created) { location.href = `/admin/edit.php?kind=${data.kind}&slug=${encodeURIComponent(r.slug)}&saved=1`; return; }
-      toast('Saved ✓ The site is updated.');
+      if (fields.password.get()) fields.password.lock();   // saved: locked like the stored one
+      if (r.created) { location.href = `/admin/edit.php?kind=${data.kind}&slug=${encodeURIComponent(r.slug)}&saved=1${r.discord ? '&dc=' + (r.discord.ok ? 1 : 0) : ''}`; return; }
+      if (r.discordState !== undefined) { data.discord = r.discordState; form.dispatchEvent(new Event('dc-sync')); }
+      if (r.discord?.ok) toast(`Saved ✓ Posted ${r.discord.what} on Discord.`);
+      else if (r.discord) toast(`Saved, but the Discord post failed: ${(r.discord.error || 'no answer').replace(/\.+$/, '')}. Saving again tries again.`, 'err');
+      else toast('Saved ✓ The site is updated.');
     } catch (e) { toast(e.message, 'err'); }
     saveBtn.disabled = false; saveBtn.textContent = 'Save';
   };
   saveBtn.addEventListener('click', save);
   document.addEventListener('keydown', (e) => { if ((e.ctrlKey || e.metaKey) && e.key === 's') { e.preventDefault(); save(); } });
-  if (new URLSearchParams(location.search).has('saved')) toast(`${isOutfit ? 'Accessory' : 'Model'} created ✓`);
+  if (new URLSearchParams(location.search).has('saved')) {
+    const dc = new URLSearchParams(location.search).get('dc');   // the first save posted on Discord (1) or tried and failed (0)
+    toast(`${isOutfit ? 'Accessory' : 'Model'} created ✓${dc === '1' ? ' Posted on Discord.' : ''}`);
+    if (dc === '0') toast('The Discord post failed: saving again tries again. Settings → Discord shows why.', 'err');
+  }
   // Quick Add → Add Changelog Version (the header's "+", bell.js): ?add=version adds the next version on top, opens it and scrolls
   // to it (below the header that stays on top). The address loses ?add, so a reload doesn't add another
   const here = new URL(location.href);
@@ -2974,7 +3907,7 @@ function initEditor(data) {
 
   // Duplicate (edit.php?copy=…): a new item filled from another one, as a draft; its address follows the name like any new item's
   if (data.copyOf) {
-    fields.slug.input.value = slugify(fields.name.get());
+    fields.slug.input.value = data.copySlug || slugify(fields.name.get());   // one not taken yet (a second copy: -copy-2)
     dirty = true;
     toast(`A copy of ${data.copyOf}, as a draft. Nothing is saved until you press Save.`, 'info');
   }
@@ -3083,7 +4016,7 @@ async function historyWindow(kind, slug, name, leaveOk) {
     }
   });
   formEl.addEventListener('submit', () => (dirty = false));
-  window.addEventListener('beforeunload', (e) => { if (dirty) { e.preventDefault(); e.returnValue = ''; } });
+  guardLeave(() => dirty);
 })();
 
 // ── Users (exceptions): picking a patron from the list ("Anna · 12345678") fills in the name ──
@@ -3095,6 +4028,21 @@ async function historyWindow(kind, slug, name, leaveOk) {
     const m = id.value.trim().match(/^(.+?) · [\w-]+$/);
     if (m && !name.value.trim()) name.value = m[1];
   });
+})();
+
+// ── Access → Access Exceptions: "+ Add User" opens the Add User box in place (the link opens it with a reload without JS); clearing the search shows everyone ──
+(() => {
+  const box = document.querySelector('[data-ex-add]');
+  const open = document.querySelector('[data-ex-add-open]');
+  if (!box || !open) return;
+  open.addEventListener('click', (e) => {
+    e.preventDefault();
+    box.hidden = !box.hidden;
+    if (!box.hidden) box.querySelector('[data-ex-id]').focus();
+  });
+  box.querySelector('[data-ex-add-close]')?.addEventListener('click', () => (box.hidden = true));
+  const q = document.querySelector('.exl-bar input[type=search]');
+  q?.addEventListener('search', () => { if (q.value === '' && q.defaultValue !== '') q.form.submit(); });
 })();
 
 // ── Users (exceptions): a menu set to Custom shows its line in the Custom box under it; Add Rule / delete for their own unlock rules ──
@@ -3145,6 +4093,9 @@ document.querySelectorAll('[data-rows-form]').forEach((formEl) => {
     if (add) {
       const rows = formEl.querySelector('[data-rows]');
       rows.append(formEl.querySelector('[data-row-template]').content.cloneNode(true));
+      // rows whose switch posts the row's code (Header Menu): a new code for each added row
+      const code = 'n' + Date.now().toString(36) + rows.children.length;
+      rows.lastElementChild.querySelectorAll('[data-row-token], [data-row-token-on]').forEach((i) => (i.value = code));
       wire(rows.lastElementChild);
       (rows.lastElementChild.querySelector('input.input') || rows.lastElementChild.querySelector('input')).focus();
       dirty = true;
@@ -3152,155 +4103,8 @@ document.querySelectorAll('[data-rows-form]').forEach((formEl) => {
   });
   formEl.addEventListener('input', () => (dirty = true));
   formEl.addEventListener('submit', () => (dirty = false));
-  window.addEventListener('beforeunload', (e) => { if (dirty) { e.preventDefault(); e.returnValue = ''; } });
+  guardLeave(() => dirty);
 });
-
-// ── Import from SmutBase (admin/import.php): find projects (profile address, or pages uploaded / pasted), tick, import one by one ──
-(() => {
-  const root = document.querySelector('[data-import]');
-  if (!root) return;
-  const list = document.querySelector('[data-import-list]');
-  const rows = list.querySelector('[data-import-rows]');
-  const go = list.querySelector('[data-import-go]');
-  const count = list.querySelector('[data-import-count]');
-  const all = list.querySelector('[data-import-all]');
-  const added = root.querySelector('[data-import-added]');
-  let pages = [];   // uploaded / pasted pages (project pages are imported from them, not fetched)
-  let busy = false;
-  const byId = new Map();   // project id → its table row
-  const checks = () => [...rows.querySelectorAll('input[type=checkbox]:not(:disabled)')];
-  const update = () => {
-    const n = checks().filter((c) => c.checked).length;
-    go.disabled = busy || !n;
-    go.textContent = n ? `Import Selected (${n})` : 'Import Selected';
-  };
-  const editLink = (m) => el('a', { href: `/admin/edit.php?slug=${encodeURIComponent(m.slug)}`, target: '_blank' }, m.name);
-  const status = (p) => p.imported
-    ? p.imported.broken
-      ? el('span', {}, el('span', { class: 'badge tone-red', title: 'Made from SmutBase’s bot check instead of the project page. Importing again replaces it.' }, 'Broken Draft'), ' ', editLink(p.imported))
-      : p.imported.draft
-        ? el('span', {}, el('span', { class: 'badge tone-green', title: 'Still a draft: tick it to import it again, which replaces this draft' }, 'Imported · Draft'), ' ', editLink(p.imported))
-        : el('span', {}, el('span', { class: 'badge tone-green' }, 'Imported'), ' ', editLink(p.imported))
-    : p.similar
-      ? el('span', {}, el('span', { class: 'badge tone-mustard', title: 'A model with the same name is already in the catalog: probably this one, added by hand' }, 'Same Name'), ' ', editLink(p.similar))
-      : el('span', { class: 'badge tone-grey' }, 'New');
-  const row = (p) => {
-    const cb = el('input', { type: 'checkbox', 'aria-label': 'Import ' + p.title });
-    cb.checked = p.imported ? !!p.imported.broken : !p.similar;
-    cb.disabled = !!p.imported && !p.imported.draft;
-    cb.addEventListener('change', update);
-    const tr = el('tr', {},
-      el('td', { class: 'c-check' }, cb),
-      el('td', {}, el('a', { href: p.url, target: '_blank', rel: 'noopener noreferrer' }, p.title)),
-      el('td', { class: 'muted' }, p.franchise || '—'),
-      el('td', {}, p.name, p.major > 1 ? el('span', { class: 'muted' }, ' v' + p.major) : null),
-      el('td', { class: 'c-imp' }, status(p)));
-    tr._project = p;
-    return tr;
-  };
-  const summary = () => {
-    const ps = [...byId.values()].map((tr) => tr._project);
-    count.textContent = `${ps.length} projects · ${ps.filter((p) => p.imported).length} already imported`;
-  };
-  // fresh = a new search (the address); otherwise the projects join the list (pasted pages), keeping what is there
-  const show = (projects, fresh) => {
-    if (fresh) { byId.clear(); rows.replaceChildren(); }
-    for (const p of projects) {
-      const tr = byId.get(p.id);
-      if (tr) { if (p.file !== undefined) tr._project.file = p.file; continue; }
-      byId.set(p.id, rows.appendChild(row(p)));
-    }
-    const first = list.hidden;
-    list.hidden = false;
-    summary(); update();
-    if (first || fresh) list.scrollIntoView({ behavior: 'smooth', block: 'start' });
-  };
-  const find = async (body, btn, fresh) => {
-    if (btn) btn.disabled = true;
-    try { show((await post('/admin/import.php', { action: 'list', ...body })).projects, fresh); return true; }
-    catch (e) { toast(e.message + (e.data?.needPage ? ' Copy the pages from your browser and paste them below instead.' : ''), 'err'); return false; }
-    finally { if (btn) btn.disabled = false; }
-  };
-  root.querySelector('[data-import-find]').addEventListener('submit', (e) => {
-    e.preventDefault();
-    pages = []; added.textContent = '';
-    find({ url: e.target.url.value }, e.target.querySelector('button'), true);
-  });
-  const addPages = async (texts) => {
-    const before = pages.length;
-    pages = pages.concat(texts.filter((t) => /<[a-z]/i.test(t)));
-    if (pages.length === before) { toast('That isn’t a web page. Copy the whole page (Ctrl+A, then Ctrl+C) and paste it again.', 'err'); return; }
-    if (await find({ html: pages })) added.textContent = `${pages.length} page${pages.length === 1 ? '' : 's'} added`;
-    else pages = pages.slice(0, before);
-  };
-  root.querySelector('[data-import-files]').addEventListener('change', async (e) => {
-    const texts = await Promise.all([...e.target.files].map((f) => f.text()));
-    e.target.value = '';
-    if (texts.length) addPages(texts);
-  });
-  // a pasted page: the copied page itself (HTML on the clipboard) or its source (view-source, as text)
-  const pasted = (e) => {
-    e.preventDefault();
-    const html = e.clipboardData.getData('text/html');
-    const text = e.clipboardData.getData('text/plain');
-    return /^\s*</.test(text) ? text : (html || text);
-  };
-  root.querySelector('[data-import-paste]').addEventListener('paste', (e) => { const t = pasted(e); e.target.value = ''; if (t) addPages([t]); });
-  all.addEventListener('change', () => { checks().forEach((c) => { if (!c.closest('tr')._project.similar || !all.checked) c.checked = all.checked; }); update(); });
-  // the "What to import" ticks are remembered in this browser
-  const parts = [...list.querySelectorAll('[data-import-parts] input')];
-  try { const off = JSON.parse(localStorage.getItem('m3d_import_skip') || '[]'); parts.forEach((c) => (c.checked = !off.includes(c.value))); } catch { /* storage blocked */ }
-  parts.forEach((c) => c.addEventListener('change', () => {
-    try { localStorage.setItem('m3d_import_skip', JSON.stringify(parts.filter((x) => !x.checked).map((x) => x.value))); } catch { /* storage blocked */ }
-  }));
-
-  let opts = {};
-  const importOne = async (tr) => {
-    const p = tr._project, cell = tr.querySelector('.c-imp'), cb = tr.querySelector('input');
-    cell.replaceChildren(el('span', { class: 'muted' }, 'Importing…'));
-    try {
-      const r = await post('/admin/import.php', { action: 'import', url: p.url, thumb: p.thumb || '', html: p.html || (p.file !== undefined ? pages[p.file] : ''),
-        replace: p.imported?.draft ? p.imported.slug : '', ...opts });
-      const bits = [`${r.pictures} picture${r.pictures === 1 ? '' : 's'}`, `${r.versions} version${r.versions === 1 ? '' : 's'}`];
-      cell.replaceChildren(el('span', { class: 'badge tone-green' }, r.replaced ? 'Draft Replaced' : 'Draft Created'), ' ', editLink(r),
-        el('span', { class: 'muted small import-info' }, ' · ' + bits.join(' · ') + (r.videos ? ` · ${r.videos} video${r.videos === 1 ? '' : 's'} not imported` : '')),
-        ...(r.warnings || []).map((w) => el('div', { class: 'muted small' }, '⚠ ' + w)));
-      cb.checked = false; cb.disabled = true; p.imported = { slug: r.slug, name: r.name }; delete p.html;
-      return true;
-    } catch (e) {
-      delete p.html;
-      if (!e.data?.needPage) { cell.replaceChildren(el('span', { class: 'badge tone-red' }, 'Not Imported'), el('div', { class: 'muted small' }, e.message)); return false; }
-      // SmutBase didn't give the server this page: paste it here and the import runs again
-      const box = el('textarea', { class: 'input import-paste-row', rows: 2, placeholder: 'Paste this project’s page here', 'aria-label': 'Paste the page of ' + p.title });
-      box.addEventListener('paste', async (ev) => {
-        const t = pasted(ev);
-        if (!t) return;
-        p.html = t; box.disabled = true;
-        if (!(await importOne(tr)) && !p.imported) { cb.checked = true; }
-        summary(); update();
-      });
-      cell.replaceChildren(el('span', { class: 'badge tone-red' }, 'Page Needed'),
-        el('div', { class: 'muted small' }, e.message + ' ', el('a', { href: p.url, target: '_blank', rel: 'noopener noreferrer' }, 'Open the project'), ', select the whole page (Ctrl+A, Mac ⌘A), copy it and paste it here:'),
-        box);
-      return false;
-    }
-  };
-  go.addEventListener('click', async () => {
-    const todo = checks().filter((c) => c.checked).map((c) => c.closest('tr'));
-    if (!todo.length) return;
-    busy = true; update();
-    opts = { status: list.querySelector('[data-import-status]').value, access: list.querySelector('[data-import-access]').value,
-      skip: [...list.querySelectorAll('[data-import-parts] input:not(:checked)')].map((c) => c.value) };
-    let ok = 0;
-    for (const [i, tr] of todo.entries()) {
-      count.textContent = `Importing ${i + 1} of ${todo.length}…`;
-      if (await importOne(tr)) ok++;
-    }
-    busy = false; update();
-    const need = todo.filter((tr) => tr.querySelector('.import-paste-row')).length;
-    count.textContent = `${ok} of ${todo.length} imported as drafts.` + (need ? ` ${need} need their page pasted (see the list).` : '') + (ok ? ' Open each one to check it and make it public.' : '');
-  });
-})();
 
 // ── Models / Accessories lists: tick rows, then delete them or set their status / visibility together (admin_batch_bar(), save.php action batch) ──
 document.querySelectorAll('[data-batch]').forEach((box) => {
@@ -3400,18 +4204,22 @@ document.querySelectorAll('[data-to-top]').forEach((btn) => {
   });
 });
 
-// ── Settings tabs: an old address like settings.php#smutbase goes to the tab holding that section; a folded box named in the address opens ──
+// ── Settings and Access tabs: an old address like settings.php#mustardui goes to the tab holding that section; a folded box named in the address opens ──
 (() => {
   const nav = document.querySelector('[data-set-tabs]');
   if (!nav) return;
+  // phones: the tab row scrolls sideways, so bring the current tab (Backups, Update, Privacy…) into view
+  const cur = nav.querySelector('[aria-current="page"]');
+  if (cur && nav.scrollWidth > nav.clientWidth) nav.scrollLeft += cur.getBoundingClientRect().left - nav.getBoundingClientRect().left - (nav.clientWidth - cur.offsetWidth) / 2;
   const go = () => {
     const id = decodeURIComponent(location.hash.slice(1));
     if (!id) return;
     const box = document.getElementById(id);
     if (box) { if (box.matches('details')) { box.open = true; box.scrollIntoView(); } return; }
     const tab = JSON.parse(nav.dataset.setTabs)[id];
-    const here = new URLSearchParams(location.search).get('tab') || 'site';
-    if (tab && tab !== here && location.pathname.endsWith('/settings.php')) location.replace(`${location.pathname}${tab === 'site' ? '' : '?tab=' + tab}#${id}`);
+    const first = nav.dataset.setDefault || 'site';
+    const here = new URLSearchParams(location.search).get('tab') || first;
+    if (tab && tab !== here && location.pathname.endsWith(nav.dataset.setPage || '/settings.php')) location.replace(`${location.pathname}${tab === first ? '' : '?tab=' + tab}#${id}`);
   };
   go();
   window.addEventListener('hashchange', go);
@@ -3578,7 +4386,8 @@ watchAdded('textarea[data-img-drop]', (ta) => imageDrop(ta, ta.dataset.imgDrop |
 
 // ── Settings → Patreon: "Use this site's address" fills the redirect address ──
 document.querySelector('[data-pt-use]')?.addEventListener('click', (e) => {
-  const input = document.querySelector('[data-pt-redirect]');
+  const input = document.querySelector('[data-pt-redirect]'), sf = input.closest('[data-sf]');
+  if (sf) keyFieldSet(sf, true, false);   // a saved address is locked: open it
   input.value = e.currentTarget.dataset.ptUse;
   input.focus();
 });
@@ -3608,8 +4417,8 @@ document.querySelector('[data-pt-use]')?.addEventListener('click', (e) => {
   const hook = form.querySelector('[data-dc-hook]'), state = form.querySelector('[data-dc-hook-state]');
   const re = /^https:\/\/(?:(?:ptb|canary)\.)?discord(?:app)?\.com\/api\/webhooks\/\d{5,30}\/[A-Za-z0-9_-]{20,200}$/;   // DISCORD_WEBHOOK_RE in discord.php
   const check = () => {
-    const v = hook.value.trim();
-    state.className = 'dc-hook-state small ' + (v === '' ? '' : re.test(v) ? 'res-ok' : 'res-err');
+    const v = hook.value.trim();   // the saved address is never in the page: an empty field keeps it (locked, key_field())
+    state.className = 'dc-hook-state small ' + (re.test(v) ? 'res-ok' : 'res-err');
     state.textContent = v === '' ? '' : re.test(v) ? '✓ A Discord webhook address' : 'This isn’t a Discord webhook address: use “Copy Webhook URL” in the channel’s settings.';
   };
   hook.addEventListener('input', check);
@@ -3723,6 +4532,125 @@ document.querySelector('[data-pt-use]')?.addEventListener('click', (e) => {
     pick.querySelector('[data-sp-opts] a[aria-current]')?.scrollIntoView({ block: 'nearest' });
   });
   document.addEventListener('click', (e) => { if (pick.open && !pick.contains(e.target)) pick.open = false; });
+})();
+
+// ── Temporary links (app/shares.php): a link for someone to download one model's or accessory's files for a while, without
+// Patreon. One window for the editor's Downloads box ("Temporary Link…": item = that item) and Access → Temporary Links
+// ("+ New Temporary Link": items = the ones with a download link on, picked first). Expiry and downloads allowed (each file)
+// are chips, the note is only for the creator; Create Link posts to admin/shares.php and the window then shows the address
+// with Copy. onDone: after a link was made and the window closed (the list reloads to show it).
+const SHARE_TIMES = [['1h', '1 Hour'], ['6h', '6 Hours'], ['1d', '1 Day'], ['3d', '3 Days'], ['7d', '7 Days'], ['30d', '30 Days']];
+const SHARE_MAXES = [[1, '1'], [3, '3'], [5, '5'], [10, '10'], [0, 'No Limit']];
+async function copyText(text, btn) {
+  try { await navigator.clipboard.writeText(text); } catch { prompt('Copy this address:', text); return; }
+  if (!btn) return toast('Copied ✓');
+  // the button keeps its width (table rows and the window don't move): "Copied ✓" when it fits, else "✓"
+  clearTimeout(btn.copyTimer);
+  btn.copyWas ??= btn.textContent;
+  const w = btn.getBoundingClientRect().width;
+  btn.textContent = 'Copied ✓';
+  if (btn.getBoundingClientRect().width > w) btn.textContent = '✓';
+  btn.style.width = `${w}px`;
+  btn.copyTimer = setTimeout(() => { btn.textContent = btn.copyWas; btn.copyWas = null; btn.style.width = ''; }, 1500);
+}
+function shareWindow({ item = null, items = null, unsaved = false, onDone = null }) {
+  const body = el('div', { class: 'lc-dlg-body' });
+  const dlg = el('dialog', { class: 'lc-dlg sh-dlg', 'aria-label': 'Temporary Link' }, body);
+  let made = false;
+  const close = () => { dlg.close(); dlg.remove(); if (made && onDone) onDone(); };
+  dlg.addEventListener('cancel', (e) => { e.preventDefault(); close(); });
+  dlg.addEventListener('click', (e) => { if (e.target === dlg) close(); });
+  const cancel = () => el('button', { type: 'button', class: 'btn btn-ghost', onclick: close }, 'Cancel');
+  const itemBox = (it) => el('div', { class: 'sh-item' },
+    it.p ? el('img', { src: it.p, alt: '' }) : el('span', { class: 'no-img' }),
+    el('div', {}, el('b', {}, it.t), el('div', { class: 'muted small' }, [it.u, it.f.length ? it.f.join(' · ') : 'No download links on'].filter(Boolean).join(' · '))));
+  const chips = (list, value, label) => {
+    let cur = value;
+    const row = el('div', { class: 'sh-chips', role: 'group', 'aria-label': label }, list.map(([v, t]) => {
+      const b = el('button', { type: 'button', class: 'chip', 'aria-pressed': String(v === cur) }, t);
+      b.addEventListener('click', () => { cur = v; row.querySelectorAll('.chip').forEach((c) => c.setAttribute('aria-pressed', String(c === b))); });
+      return b;
+    }));
+    return { row, get: () => cur };
+  };
+
+  // 1. which model or accessory (the list page only)
+  const pick = () => {
+    const q = el('input', { class: 'input', type: 'search', placeholder: 'Search models and accessories…', autocomplete: 'off', spellcheck: 'false', 'aria-label': 'Search' });
+    const list = el('div', { class: 'sh-pick' });
+    const fill = () => {
+      const words = foldWords(q.value);
+      const hits = items.filter((it) => words.every((w) => fold(`${it.t} ${it.u} ${it.k === 'outfits' ? 'accessory' : 'model'}`).includes(w)));
+      list.replaceChildren(...hits.map((it) => el('button', { type: 'button', class: 'sh-pick-row', onclick: () => form(it) },
+        it.p ? el('img', { src: it.p, alt: '', loading: 'lazy' }) : el('span', { class: 'no-img' }),
+        el('span', {}, el('b', {}, it.t), el('span', { class: 'muted small' }, [it.k === 'outfits' ? 'Accessory' : 'Model', it.u, `${it.f.length} ${it.f.length === 1 ? 'file' : 'files'}`].filter(Boolean).join(' · '))))));
+      if (!hits.length) list.append(el('p', { class: 'muted' }, 'Nothing found.'));
+    };
+    q.addEventListener('input', fill);
+    fill();
+    body.replaceChildren(el('h2', {}, 'New Temporary Link'), q, list, el('div', { class: 'form-actions' }, cancel()));
+    if (matchMedia('(hover: hover)').matches) q.focus();
+  };
+
+  // 2. how long, how many downloads, a note
+  const form = (it) => {
+    const time = chips(SHARE_TIMES, '1d', 'Expires After');
+    const max = chips(SHARE_MAXES, 3, 'Downloads Allowed');
+    const note = el('input', { class: 'input', type: 'text', maxlength: 120, placeholder: 'Who it’s for (only you see it)', autocomplete: 'off' });
+    const go = el('button', { type: 'submit', class: 'btn btn-primary' }, 'Create Link');
+    const f = el('form', { class: 'sh-form' },
+      el('h2', {}, 'Temporary Link'), itemBox(it),
+      unsaved ? el('p', { class: 'sh-warn' }, 'This editor has unsaved changes: the link offers the download links as they were last saved.') : null,
+      el('span', { class: 'lbl' }, 'Expires After'), time.row,
+      el('span', { class: 'lbl' }, 'Downloads Allowed', tip('How many times each file can be downloaded with this link.')), max.row,
+      el('span', { class: 'lbl' }, 'Note'), note,
+      el('div', { class: 'form-actions' }, items ? el('button', { type: 'button', class: 'btn btn-ghost act-left', onclick: pick }, '← Back') : null, cancel(), go));
+    f.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      go.disabled = true;
+      try {
+        const d = await post('/admin/shares.php', { add: { kind: it.k, slug: it.s, time: time.get(), max: max.get(), note: note.value.trim() } });
+        made = true;
+        done(d, max.get());
+      } catch (err) { go.disabled = false; toast(err.message, 'err'); }
+    });
+    body.replaceChildren(f);
+  };
+
+  // 3. the address to send
+  const done = (d, max) => {
+    const url = el('input', { class: 'input', readonly: true, value: d.url, 'aria-label': 'Temporary link' });
+    url.addEventListener('focus', () => url.select());
+    const copy = el('button', { type: 'button', class: 'btn btn-primary' }, 'Copy');
+    copy.addEventListener('click', () => copyText(d.url, copy));
+    body.replaceChildren(
+      el('h2', {}, el('span', { class: 'sh-ok' }, '✓'), ' Link Ready'),
+      el('div', { class: 'sh-copy' }, url, copy),
+      el('p', { class: 'sh-meta' }, 'Until ', el('b', {}, d.until), ` · ${max ? `${max} ${max === 1 ? 'download' : 'downloads'} per file` : 'No download limit'}`),
+      el('div', { class: 'form-actions' }, items ? null : el('a', { class: 'btn btn-ghost', href: '/admin/users.php?tab=links' }, 'See All Temporary Links'), el('button', { type: 'button', class: 'btn btn-primary', onclick: close }, 'Done')));
+    copy.focus();
+  };
+
+  document.body.append(dlg);
+  items ? pick() : form(item);
+  dlg.showModal();
+}
+
+// Access → Temporary Links (admin/_shares.php): "+ New Temporary Link", Copy on each row, the chips Active / All
+(() => {
+  const nw = document.querySelector('[data-share-new]');
+  nw?.addEventListener('click', () => shareWindow({ items: JSON.parse(nw.dataset.shareNew || '[]'), onDone: () => location.reload() }));
+  document.querySelectorAll('[data-share-copy]').forEach((b) => b.addEventListener('click', () => copyText(b.dataset.shareCopy, b)));
+  const table = document.querySelector('[data-share-table]');
+  if (!table) return;
+  const chips = document.querySelectorAll('[data-share-chip]');
+  chips.forEach((c) => c.addEventListener('click', () => {
+    chips.forEach((x) => x.setAttribute('aria-pressed', String(x === c)));
+    const only = c.dataset.shareChip;
+    let n = 0;
+    table.querySelectorAll('tr[data-st]').forEach((r) => { r.hidden = !!only && r.dataset.st !== only; if (!r.hidden) n++; });
+    table.querySelector('[data-share-empty]').hidden = n > 0;
+  }));
 })();
 
 // ── Assets → Link check (admin/links.php): nothing runs by itself. "Check all links" asks the server about one link at a time
@@ -3986,7 +4914,7 @@ document.querySelectorAll('[data-log-rows]').forEach((form) => {
 })();
 
 // ── Admin → Gallery (admin/gallery.php): the pictures (tick to change several, click to edit one), "+ Add pictures"
-// (from the Images library or uploaded). Everything saves through save.php kind "gallery",
+// (from the Media library or uploaded). Everything saves through save.php kind "gallery",
 // which answers with the whole gallery again (admin_gallery_payload()), so the page simply redraws. ──
 (() => {
   const root = document.querySelector('[data-gadmin]');
@@ -4019,7 +4947,7 @@ document.querySelectorAll('[data-log-rows]').forEach((form) => {
   const filt = { q: '', who: '', only: '' };
   let linkBox = null;   // the batch "Set full size link…" box while it is open: its fields (kept between redraws)
   let charsBox = null;   // the batch "Characters…" box while it is open: {add: names / model slugs to add, drop: Set of characters to remove}
-  addEventListener('beforeunload', (e) => { if (dirty) { e.preventDefault(); e.returnValue = ''; } });
+  guardLeave(() => dirty);
   const leaveOk = () => !dirty || confirm('You have unsaved changes. Leave them?');
 
   const setUrl = () => {
@@ -4101,7 +5029,7 @@ document.querySelectorAll('[data-log-rows]').forEach((form) => {
   function stillsTab() {
     if (!G.stills.length) {
       return el('div', { class: 'g-empty-adm' }, el('p', { class: 'lead' }, 'No pictures yet.'),
-        el('p', { class: 'muted' }, 'Add pictures from the Images library or upload new ones. The gallery appears in the site menu once one picture is not a draft.'),
+        el('p', { class: 'muted' }, 'Add pictures from the Media library or upload new ones. The gallery appears in the site menu once one picture is not a draft.'),
         el('button', { type: 'button', class: 'btn btn-primary', onclick: openAdd }, '+ Add Pictures'));
     }
     const shown = shownStills();   // the gallery's own order (the page shows them like this): drag the cards to change it
@@ -4175,7 +5103,7 @@ document.querySelectorAll('[data-log-rows]').forEach((form) => {
     const charsBtn = el('button', { type: 'button', class: 'btn btn-ghost btn-sm', 'aria-expanded': String(!!charsBox), onclick: () => { charsBox = charsBox ? null : { add: [], drop: new Set() }; linkBox = null; render(); } }, 'Characters…');
     return el('div', { class: 'batch-bar g-batch' }, el('b', {}, `${ids.length} selected`), vis, charsBtn, linkBtn,
       el('button', { type: 'button', class: 'btn btn-danger btn-sm', onclick: async () => {
-        if (!confirm(`Remove ${ids.length === 1 ? 'this picture' : `these ${ids.length} pictures`} from the gallery? The pictures stay in the Images library.`)) return;
+        if (!confirm(`Remove ${ids.length === 1 ? 'this picture' : `these ${ids.length} pictures`} from the gallery? The pictures stay in the Media library.`)) return;
         try { await save({ action: 'delete', ids }, 'Removed from the gallery ✓'); ids.forEach((id) => ticked.delete(id)); render(); }
         catch (e) { toast(e.message, 'err'); }
       } }, 'Remove from Gallery'),
@@ -4289,6 +5217,7 @@ document.querySelectorAll('[data-log-rows]').forEach((form) => {
       hits.forEach((h, i) => sugg.append(el('button', { type: 'button', class: 'g-sugg-row' + (i === 0 ? ' act' : ''), onmousedown: (e) => e.preventDefault(), onclick: () => add(h.v) }, h.node)));
       act = 0;
       sugg.hidden = false;
+      suggFlip(sugg);
     };
     input.addEventListener('input', suggest);
     input.addEventListener('keydown', (e) => {
@@ -4360,7 +5289,7 @@ document.querySelectorAll('[data-log-rows]').forEach((form) => {
         s.dls ? el('p', { class: 'muted small' }, `Downloaded ${s.dls} ${s.dls === 1 ? 'time' : 'times'}.`) : null),
       el('div', { class: 'form-actions' },
         el('button', { type: 'button', class: 'btn btn-ghost btn-sm del-btn act-left', onclick: async () => {
-          if (!confirm('Remove this picture from the gallery? It stays in the Images library.')) return;
+          if (!confirm('Remove this picture from the gallery? It stays in the Media library.')) return;
           try { await save({ action: 'delete', ids: [s.id] }, 'Removed from the gallery ✓'); } catch (e) { toast(e.message, 'err'); }
         } }, 'Remove from Gallery'),
         el('button', { class: 'btn btn-primary btn-sm' }, 'Save')));
@@ -4377,11 +5306,12 @@ document.querySelectorAll('[data-log-rows]').forEach((form) => {
     return el('div', {}, el('h2', { class: 'g-panel-title' }, 'Edit Picture'), f);
   }
 
-  // ── "+ Add pictures": the picture picker (Images library or upload); pictures already in the gallery are greyed out ──
-  async function openAdd() {
+  // ── "+ Add pictures": the picture picker (Images library or upload); pictures already in the gallery are greyed out.
+  // files: pictures dropped on the page (below): the picker opens on Upload New with them ──
+  async function openAdd(files = []) {
     if (!leaveOk()) return;
     const srcs = await pickImages({ multiple: true, folder: 'gallery', title: 'Add Pictures', exclude: G.stills.map((s) => s.src), excludeLabel: 'Already in the Gallery',
-      note: 'Pictures from a model’s folder come in tagged with that model; you can change it afterwards.' });
+      note: 'Pictures from a model’s folder come in tagged with that model; you can change it afterwards.', files });
     if (!srcs.length) return;
     dirty = false;   // the panel's edits were given up (leaveOk) or there were none
     try {
@@ -4394,7 +5324,42 @@ document.querySelectorAll('[data-log-rows]').forEach((form) => {
       render();
     } catch (e) { toast(e.message, 'err'); }
   }
-  document.querySelector('[data-g-add]').addEventListener('click', openAdd);
+  document.querySelector('[data-g-add]').addEventListener('click', () => openAdd());
+
+  // ── Picture files dragged from the computer anywhere on the page: an overlay while over it, dropping opens "+ Add pictures"
+  // on Upload New with them. Only files: the cards' ⠿ reordering uses pointer events, not drag and drop. While a window is open
+  // (the picker has its own drop area) nothing happens, but a file dropped next to it never opens in the tab ──
+  let inPage = false;   // a picture or link dragged from this page itself (some browsers offer it as a file too)
+  document.addEventListener('dragstart', () => { inPage = true; });
+  document.addEventListener('dragend', () => { inPage = false; });
+  const hasFiles = (e) => !inPage && [...(e.dataTransfer?.types || [])].includes('Files');
+  const veil = el('div', { class: 'g-page-drop', hidden: true, 'aria-hidden': 'true' }, el('div', {}, el('b', {}, 'Drop Pictures to Upload'), el('span', {}, 'JPG, PNG, WebP, GIF · they open in Add Pictures')));
+  document.body.append(veil);
+  let veilOff = 0;
+  const hideVeil = () => { clearTimeout(veilOff); veil.hidden = true; };
+  document.addEventListener('dragover', (e) => {
+    if (!hasFiles(e)) return;
+    if (document.querySelector('dialog[open]')) {   // the picker's drop area took it already (defaultPrevented); anywhere else: no drop
+      if (!e.defaultPrevented) { e.preventDefault(); e.dataTransfer.dropEffect = 'none'; }
+      return;
+    }
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'copy';
+    veil.hidden = false;
+    clearTimeout(veilOff);   // dragover repeats while the pointer is over the page, even standing still: once it stops, the pointer left (or Esc)
+    veilOff = setTimeout(hideVeil, 200);
+  });
+  document.addEventListener('drop', (e) => {
+    if (!hasFiles(e)) return;
+    e.preventDefault();
+    hideVeil();
+    if (document.querySelector('dialog[open]')) return;
+    const all = [...e.dataTransfer.files];
+    const pics = all.filter((f) => DROP_IMG_TYPES.includes(f.type));
+    const other = all.filter((f) => !pics.includes(f)).map((f) => f.name);
+    if (other.length) toast((pics.length ? (other.length > 3 ? `${other.length} files` : other.join(', ')) + ' left out: only' : 'Only') + ' pictures (JPG, PNG, WebP, GIF) can be added to the gallery.', 'err');
+    if (pics.length) openAdd(pics);
+  });
 
   render();
 })();
@@ -4828,7 +5793,7 @@ document.querySelectorAll('[data-log-rows]').forEach((form) => {
   // leaving the page with changes not saved asks first (Save Layout and Cancel don't)
   const now = () => JSON.stringify(shown().map((w) => [w.dataset.w, +w.dataset.span, +w.dataset.col || 0, +w.dataset.h || 0]));
   let start = null;
-  addEventListener('beforeunload', (e) => { if (start !== null && now() !== start) { e.preventDefault(); e.returnValue = ''; } });
+  guardLeave(() => start !== null && now() !== start);
   // while editing every widget keeps the column it is shown in (on wide screens), so moving one never moves the others sideways
   const pin = () => { if (!narrow()) shown().forEach((w) => { if (w.at) w.dataset.col = w.at.c; }); };
   edit.addEventListener('click', () => {

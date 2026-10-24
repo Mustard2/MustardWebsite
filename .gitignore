@@ -16,6 +16,7 @@ private/data/.*
 !private/data/outfits.json
 __pycache__/
 
-# MEGA S4 and update-channel keys (Admin → Settings)
+# MEGA S4 and update-channel keys, Discord webhooks (Admin → Settings)
 private/s4.php
 private/github.php
+private/webhooks.php

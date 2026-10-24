@@ -11,7 +11,7 @@ $return = m3d_safe_return($_GET['return'] ?? null, '/');
 if (str_starts_with($return, '/welcome')) $return = '/';
 if (!$p) m3d_redirect('/auth/login.php?return=' . rawurlencode('/welcome/' . ($return !== '/' ? '?return=' . rawurlencode($return) : '')));
 $owner = ($p['reason'] ?? '') === 'owner';
-if (empty($p['access']) && !$owner) m3d_redirect('/account/');   // no paid tier: My account says why
+if ((empty($p['access']) || m3d_banned($p, 'download')) && !$owner) m3d_redirect('/account/');   // no paid tier, or downloads banned: My account says why
 header('X-Robots-Tag: noindex');
 
 $new = ' target="_blank" rel="noopener"';   // every link but the main button: the tour stays open

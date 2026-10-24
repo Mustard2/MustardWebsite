@@ -16,6 +16,12 @@ $GLOBALS['M3D'] = $M3D;   // also reachable from functions
 // PHP warnings never go into pages (they show server paths): the host's error log and Site problems get them instead
 if (PHP_SAPI !== 'cli-server') ini_set('display_errors', '0');
 
+// no other website may show this site's pages in a frame (clickjacking: the creator's buttons are on public pages too); the admin
+// sends DENY / 'none' instead (admin/_admin.php: a later header() replaces these). Browsers always use https once they saw it here.
+header('X-Frame-Options: SAMEORIGIN');
+header("Content-Security-Policy: frame-ancestors 'self'");
+if (m3d_is_https()) header('Strict-Transport-Security: max-age=31536000');   // this host only: no includeSubDomains, no preload
+
 // a PHP crash (fatal error, uncaught exception) goes into Settings → Maintenance → Site problems too, not only the host's error log
 register_shutdown_function(function () {
     $e = error_get_last();
@@ -96,6 +102,86 @@ function m3d_patreon_save(array $keys): bool
     return true;
 }
 
+/**
+ * Discord webhook addresses (anyone holding one can post in that channel): private/webhooks.php, like patreon.php a PHP file outside
+ * data/, so never readable over the web and never in backups or the data-file history. Keys = the settings.json sections they belong
+ * to: discord (Settings → Features → Discord Announcements), notify (Settings → Notifications), bugs / comments (the old Bug Reports /
+ * Comments boxes' webhooks, read by m3d_notify_settings() only until Notifications is saved). settings.json held them before:
+ * m3d_settings() moves them here (m3d_webhooks_move()), and restores strip them (m3d_webhooks_strip()).
+ */
+const M3D_WEBHOOK_KEYS = ['discord', 'notify', 'bugs', 'comments'];
+
+/** [section => address] of private/webhooks.php (read once per request; m3d_webhooks_save() refreshes it). */
+function m3d_webhooks(bool $fresh = false): array
+{
+    static $cache = null;
+    if ($cache !== null && !$fresh) return $cache;
+    $f = M3D_PRIVATE . '/webhooks.php';
+    $d = is_file($f) ? (include $f) : [];
+    return $cache = is_array($d) ? array_filter(array_intersect_key($d, array_flip(M3D_WEBHOOK_KEYS)), fn($v) => is_string($v) && $v !== '') : [];
+}
+
+/** One section's webhook address, '' when none (still in settings.json while it couldn't be moved). */
+function m3d_webhook(string $key): string
+{
+    return m3d_webhooks()[$key] ?? (string) (m3d_settings()[$key]['webhook'] ?? '');
+}
+
+/** Changes some webhooks ('' or null removes one) in private/webhooks.php; none left = the file is deleted. */
+function m3d_webhooks_save(array $changes): bool
+{
+    $f = M3D_PRIVATE . '/webhooks.php';
+    $all = array_filter(array_intersect_key(array_merge(m3d_webhooks(true), $changes), array_flip(M3D_WEBHOOK_KEYS)), fn($v) => is_string($v) && $v !== '');
+    if (!$all) { $ok = !is_file($f) || @unlink($f); m3d_webhooks(true); return $ok; }
+    $php = "<?php\n// Discord webhook addresses of Admin → Settings (Discord Announcements, Notifications). Never in backups.\nreturn " . var_export($all, true) . ";\n";
+    $tmp = $f . '.tmp-' . bin2hex(random_bytes(4));
+    if (@file_put_contents($tmp, $php, LOCK_EX) === false) return false;
+    @chmod($tmp, 0600);
+    if (!@rename($tmp, $f)) { @unlink($tmp); return false; }
+    if (function_exists('opcache_invalidate')) @opcache_invalidate($f, true);
+    m3d_webhooks(true);
+    return true;
+}
+
+/** [section => address] of the webhooks a settings array holds ('' too: the key is there). */
+function m3d_webhooks_in(array $s): array
+{
+    $out = [];
+    foreach (M3D_WEBHOOK_KEYS as $k) if (is_array($s[$k] ?? null) && array_key_exists('webhook', $s[$k])) $out[$k] = (string) $s[$k]['webhook'];
+    return $out;
+}
+
+/** Settings without webhook addresses: what settings.json may hold (a restored backup or an old saved copy never brings them back). */
+function m3d_webhooks_strip(array $s): array
+{
+    foreach (M3D_WEBHOOK_KEYS as $k) if (is_array($s[$k] ?? null)) unset($s[$k]['webhook']);
+    return $s;
+}
+
+/**
+ * A settings.json from before private/webhooks.php: its webhooks move there (a section that already has one there keeps it), then
+ * leave settings.json and its saved copies in the change history. Returns the settings without them, or as they were when the move
+ * failed (m3d_webhook() then still reads them from settings.json) or another request is doing it.
+ */
+function m3d_webhooks_move(array $set): array
+{
+    $moved = false;
+    m3d_with_lock('.webhooks-lock', function () use (&$moved) {
+        $now = m3d_read_json('settings');   // read again under the lock: a save made meanwhile stays
+        if ($now === null || !($found = m3d_webhooks_in($now))) { $moved = $now !== null; return; }
+        $add = array_diff_key(array_filter($found, fn($v) => $v !== ''), m3d_webhooks(true));
+        if ($add && !m3d_webhooks_save($add)) { m3d_problem('webhooks', 'Could not write ' . basename(M3D_PRIVATE) . '/webhooks.php: the Discord webhooks stay in settings.json.'); return; }
+        if (!m3d_write_json('settings', m3d_webhooks_strip($now))) return;
+        $moved = true;
+        // the change history: the copy that save just made and the older ones (full backups made before keep theirs)
+        foreach (glob(M3D_PRIVATE . '/backups/settings-*.json') ?: [] as $f) {
+            $d = json_decode((string) @file_get_contents($f), true);
+            if (is_array($d) && m3d_webhooks_in($d)) m3d_atomic_write($f, (string) json_encode(m3d_webhooks_strip($d), JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+        }
+    });
+    return $moved ? m3d_webhooks_strip($set) : $set;
+}
+
 const M3D_PATREON = 'https://www.patreon.com';
 const M3D_STATUSES = [
     'released'         => ['Public', 'green'],   // free for everyone (the key stays 'released')
@@ -136,6 +222,8 @@ function m3d_start_session(): void
     $life = m3d_session_lifetime();
     ini_set('session.gc_maxlifetime', (string) $life);
     ini_set('session.use_strict_mode', '1');
+    ini_set('session.use_only_cookies', '1');   // the login only ever comes from the cookie, never from an address (?m3d_session=…)
+    ini_set('session.use_trans_sid', '0');
     session_name('m3d_session');
     session_set_cookie_params([
         'lifetime' => $life,
@@ -240,7 +328,27 @@ function m3d_safe_return(mixed $path, string $fallback = '/'): string   // mixed
     if (!is_string($path) || $path === '' || $path[0] !== '/' || str_starts_with($path, '//') || str_contains($path, '\\')) {
         return $fallback;
     }
-    return preg_match('#^/[A-Za-z0-9/_\-.%?=&\#+,~:@!;\[\]()*$|]*$#', $path) ? $path : $fallback;   // + , [ ] ( ) …: ordinary in queries (/search/?q=a+b)
+    if (!preg_match('#^/[A-Za-z0-9/_\-.%?=&\#+,~:@!;\[\]()*$|]*$#D', $path)) return $fallback;   // + , [ ] ( ) …: ordinary in queries (/search/?q=a+b)
+    // no "." or ".." segment in the path (also written %2e: browsers read it as a dot), so the address can't climb out of where it points
+    $segs = explode('/', rawurldecode((string) strtok($path, '?#')));
+    return array_intersect($segs, ['.', '..']) ? $fallback : $path;
+}
+
+/**
+ * Did this request come from another website (its link or form)? Then a plain link (log out, mark read) does nothing by itself.
+ * Sec-Fetch-Site when the browser sends it: only same-origin and none (typed, bookmark) are this site ("same-site" is another
+ * host of the same domain, like the test copy). Older browsers: the Origin, else Referer, host against this one; neither = not cross.
+ */
+function m3d_cross_site(): bool
+{
+    $fetch = strtolower(trim((string) ($_SERVER['HTTP_SEC_FETCH_SITE'] ?? '')));
+    if ($fetch !== '') return !in_array($fetch, ['same-origin', 'none'], true);
+    $from = trim((string) ($_SERVER['HTTP_ORIGIN'] ?? '')) ?: trim((string) ($_SERVER['HTTP_REFERER'] ?? ''));
+    if ($from === '') return false;
+    $u = parse_url($from);
+    if (!is_array($u) || empty($u['host'])) return true;   // "null" (a sandboxed page, a data: address) or garbage
+    $host = strtolower($u['host'] . (isset($u['port']) ? ':' . $u['port'] : ''));
+    return $host !== strtolower((string) ($_SERVER['HTTP_HOST'] ?? ''));
 }
 
 function m3d_http(string $method, string $url, array $headers = [], ?array $form = null, int $timeout = 15): array
@@ -259,9 +367,116 @@ function m3d_http(string $method, string $url, array $headers = [], ?array $form
     $body = curl_exec($ch);
     $status = (int) curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
     $err = curl_error($ch);
-    curl_close($ch);
+    unset($ch);
     $json = is_string($body) ? json_decode($body, true) : null;
     return ['status' => $status, 'json' => is_array($json) ? $json : null, 'error' => $err];
+}
+
+// ── Fetching addresses typed in the admin ────────────────────────────────────
+/** curl_errno() of m3d_fetch() for an address it refused to fetch (not one of curl's own numbers). */
+const M3D_FETCH_REFUSED = -1;
+
+/**
+ * Fetches an address an admin typed or pasted (Link Check, Images → copy outside images), never one of this
+ * server or of a private network: http / https only, the host's addresses checked (m3d_fetch_ips()) and pinned (CURLOPT_RESOLVE),
+ * so curl can't look the name up again and get another one, and redirects followed here, at most $hops, each new address
+ * checked again. $opts = the caller's curl options (RETURNTRANSFER / FILE / WRITEFUNCTION, timeouts, size cap…); FOLLOWLOCATION
+ * is always off. A CURLOPT_FILE is emptied before each redirect, so only the last answer's body is in it.
+ * Returns ['body' => curl_exec()'s result, 'code', 'errno', 'err', 'url' => the last address]; a refused address: errno
+ * M3D_FETCH_REFUSED and err = why ("Address not allowed (private network)"); a name that doesn't exist: CURLE_COULDNT_RESOLVE_HOST.
+ */
+function m3d_fetch(string $url, array $opts = [], int $hops = 3): array
+{
+    $protocols = defined('CURLOPT_PROTOCOLS_STR') ? [CURLOPT_PROTOCOLS_STR => 'http,https', CURLOPT_REDIR_PROTOCOLS_STR => 'http,https']
+        : [CURLOPT_PROTOCOLS => CURLPROTO_HTTP | CURLPROTO_HTTPS, CURLOPT_REDIR_PROTOCOLS => CURLPROTO_HTTP | CURLPROTO_HTTPS];
+    for ($hop = 0; ; $hop++) {
+        $target = m3d_fetch_target($url);
+        if (is_string($target)) return ['body' => false, 'code' => 0, 'errno' => $target === '' ? CURLE_COULDNT_RESOLVE_HOST : M3D_FETCH_REFUSED,
+            'err' => $target === '' ? 'Could not resolve host: ' . parse_url($url, PHP_URL_HOST) : $target, 'url' => $url];
+        if ($hop > 0 && isset($opts[CURLOPT_FILE])) { ftruncate($opts[CURLOPT_FILE], 0); rewind($opts[CURLOPT_FILE]); }
+        $ch = curl_init($url);
+        curl_setopt_array($ch, $opts);
+        curl_setopt_array($ch, [CURLOPT_FOLLOWLOCATION => false] + $target + $protocols);
+        $body = curl_exec($ch);
+        $out = ['body' => $body, 'code' => (int) curl_getinfo($ch, CURLINFO_RESPONSE_CODE), 'errno' => curl_errno($ch), 'err' => curl_error($ch), 'url' => $url];
+        $next = (string) curl_getinfo($ch, CURLINFO_REDIRECT_URL);   // curl turns a relative Location into a full address
+        unset($ch);
+        if ($out['errno'] !== 0 || $next === '' || !in_array($out['code'], [301, 302, 303, 307, 308], true)) return $out;
+        if ($hop >= $hops) return ['body' => false, 'errno' => CURLE_TOO_MANY_REDIRECTS, 'err' => 'Too many redirects'] + $out;
+        $url = $next;
+    }
+}
+
+/** The curl options that pin the address's host to its checked addresses (CURLOPT_RESOLVE), or why it is refused ('' = the name
+ *  doesn't exist). A name only the server's proxy can look up (a server whose outside traffic goes through one) is sent to that
+ *  proxy, always (CURLOPT_NOPROXY: no_proxy can't send it around it, to a name curl would then look up itself). */
+function m3d_fetch_target(string $url): array|string
+{
+    $p = parse_url($url) ?: [];
+    $scheme = strtolower((string) ($p['scheme'] ?? ''));
+    if (!in_array($scheme, ['http', 'https'], true)) return 'Address not allowed (only http and https addresses)';
+    $host = rtrim(strtolower(trim((string) ($p['host'] ?? ''), '[]')), '.');   // "localhost." is localhost
+    if (function_exists('idn_to_ascii') && preg_match('/[^\x20-\x7e]/', $host)) $host = (string) (idn_to_ascii($host) ?: $host);   // the name curl looks up
+    if ($host === '') return 'Address not allowed (no website in it)';
+    $ips = m3d_fetch_ips($host);
+    if ($ips === null) return 'Address not allowed (unusual number form)';
+    if ($ips === []) return m3d_fetch_proxied($scheme, $host) ? [CURLOPT_NOPROXY => ''] : '';
+    foreach ($ips as $ip) if (!m3d_ip_public($ip)) return 'Address not allowed (private network)';
+    if (filter_var($host, FILTER_VALIDATE_IP)) return [];   // nothing to look up
+    $port = (int) ($p['port'] ?? ($scheme === 'https' ? 443 : 80));
+    $list = implode(',', array_map(fn($ip) => str_contains($ip, ':') ? "[$ip]" : $ip, $ips));
+    return [CURLOPT_RESOLVE => ["$host:$port:$list", "$host.:$port:$list"]];   // with and without the final dot: curl may use either
+}
+
+/** The addresses of a host name or IP literal (IPv4 ones first, else IPv6), [] when it doesn't resolve, null for numbers written in an
+ *  unusual way (0x7f000001, 2130706433, 127.1: refused, so no two programs can read them differently). */
+function m3d_fetch_ips(string $host): ?array
+{
+    if (filter_var($host, FILTER_VALIDATE_IP)) return [$host];
+    if (preg_match('/^(0x[0-9a-f]*|\d+)(\.(0x[0-9a-f]*|\d+)){0,3}$/i', $host) || preg_match('/[:%]/', $host)) return null;   // + IPv6 with a zone (fe80::1%eth0)
+    $ips = @gethostbynamel($host) ?: [];
+    if (!$ips) foreach ((array) @dns_get_record($host, DNS_AAAA) as $r) if (!empty($r['ipv6'])) $ips[] = (string) $r['ipv6'];
+    return $ips;
+}
+
+/** True when curl sends this address through a proxy set in the server's environment (https_proxy, all_proxy…, minus no_proxy). */
+function m3d_fetch_proxied(string $scheme, string $host): bool
+{
+    $env = fn(string $k) => (string) (getenv($k) ?: getenv(strtoupper($k)) ?: '');
+    $proxy = $scheme === 'http' ? (string) (getenv('http_proxy') ?: '') : $env('https_proxy');
+    if ($proxy === '' && $env('all_proxy') === '') return false;
+    foreach (explode(',', $env('no_proxy')) as $n) {
+        $n = strtolower(trim(trim($n), '.'));
+        if ($n === '*' || ($n !== '' && ($host === $n || str_ends_with($host, '.' . $n)))) return false;
+    }
+    return true;
+}
+
+/** An address on the public internet: not this server (loopback), a private / shared network, link-local, multicast or reserved. */
+function m3d_ip_public(string $ip): bool
+{
+    $bin = @inet_pton($ip);
+    if ($bin === false) return false;
+    if (strlen($bin) === 16) {
+        // IPv6 holding an IPv4 address (::ffff:a.b.c.d, ::a.b.c.d, 64:ff9b::a.b.c.d): that address decides
+        foreach (["\0\0\0\0\0\0\0\0\0\0\xff\xff", str_repeat("\0", 12), "\0\x64\xff\x9b" . str_repeat("\0", 8)] as $pre) {
+            if (str_starts_with($bin, $pre) && ($pre !== str_repeat("\0", 12) || substr($bin, 12, 2) !== "\0\0")) return m3d_ip_public((string) inet_ntop(substr($bin, 12)));
+        }
+        $deny = ['::/128', '::1/128', 'fc00::/7', 'fe80::/10', 'fec0::/10', 'ff00::/8', '2001:db8::/32', '100::/64'];
+    } else {
+        $deny = ['0.0.0.0/8', '10.0.0.0/8', '100.64.0.0/10', '127.0.0.0/8', '169.254.0.0/16', '172.16.0.0/12', '192.0.0.0/24', '192.0.2.0/24',
+            '192.168.0.0/16', '198.18.0.0/15', '198.51.100.0/24', '203.0.113.0/24', '224.0.0.0/4', '240.0.0.0/4'];
+    }
+    foreach ($deny as $cidr) {
+        [$net, $bits] = explode('/', $cidr);
+        $n = (string) inet_pton($net);
+        if (strlen($n) !== strlen($bin)) continue;
+        $whole = intdiv((int) $bits, 8);
+        $rest = (int) $bits % 8;
+        if (substr($bin, 0, $whole) === substr($n, 0, $whole)
+            && ($rest === 0 || ((ord($bin[$whole]) ^ ord($n[$whole])) & (0xff << (8 - $rest)) & 0xff) === 0)) return false;
+    }
+    return (bool) filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE);
 }
 
 // ── Patreon ──────────────────────────────────────────────────────────────────
@@ -373,6 +588,16 @@ function m3d_pledge_restart(array $events): ?string
     return $restart;
 }
 
+/** A Patreon display name as the site keeps it: no control or text-direction characters (a name can't flip the text around it),
+ *  spaces collapsed, at most 80 characters; nothing left = "Patron". */
+function m3d_clean_name(string $name): string
+{
+    $name = (string) preg_replace('/[\x{200E}\x{200F}\x{202A}-\x{202E}\x{2066}-\x{2069}\x{061C}]/u', '', mb_scrub($name, 'UTF-8'));
+    $name = trim((string) preg_replace('/[\p{Cc}\s]+/u', ' ', $name));
+    $name = rtrim(mb_substr($name, 0, 80));
+    return $name !== '' ? $name : 'Patron';
+}
+
 /**
  * Decides whether a Patreon identity response may download.
  * Rule: active patron of OUR campaign holding at least one PAID tier.
@@ -389,7 +614,7 @@ function m3d_evaluate_identity(array $identity, array $cfg, ?array $events = nul
 {
     $user = $identity['data'] ?? [];
     $id = (string) ($user['id'] ?? '');
-    $name = trim((string) ($user['attributes']['full_name'] ?? '')) ?: 'Patron';
+    $name = m3d_clean_name((string) ($user['attributes']['full_name'] ?? ''));
     $out = ['access' => false, 'reason' => 'not-patron', 'id' => $id, 'name' => $name, 'tiers' => [], 'member' => false,
         'status' => null, 'since' => null, 'total_cents' => 0, 'entitled_cents' => 0, 'cadence' => null,
         'last_charge_date' => null, 'last_charge_status' => null, 'currency' => null, 'tier_list' => []];
@@ -785,6 +1010,12 @@ function m3d_after_response(callable $job): void
     });
 }
 
+/** Whether m3d_after_response() really sends the page first (PHP-FPM, LiteSpeed); elsewhere its job holds the page. */
+function m3d_can_finish_early(): bool
+{
+    return function_exists('fastcgi_finish_request') || function_exists('litespeed_finish_request');
+}
+
 /** Runs $job holding the lock file data/<name>; nothing when another request holds it (it is already doing the job). */
 function m3d_with_lock(string $name, callable $job): void
 {
@@ -866,18 +1097,59 @@ function m3d_is_unlocked(string $kind, array $item): bool
     return in_array(m3d_unlock_sig($kind, $item), $have, true);
 }
 
-/** Checks the password; when right, remembers it in the m3d_unlock cookie (only set at this request of the visitor). */
-function m3d_unlock(string $kind, array $item, string $password): bool
+/** Password tries one item takes in PW_TRIES_SECS (rolling); past that, item_gate() answers "Too many tries" without checking. */
+const PW_TRIES_MAX = 30;
+const PW_TRIES_SECS = 600;
+
+/**
+ * Counts a password try for one item, before it is checked (so tries sent side by side are counted too): false, counting nothing,
+ * when the item had PW_TRIES_MAX tries in the last PW_TRIES_SECS. $undo takes this request's try back (the password was right).
+ * private/cache/pw-tries.json = {"m:slug" | "o:slug": [unix…]}: items and times only, nothing about the visitor. Can't count = true.
+ */
+function m3d_pw_try(string $kind, string $slug, bool $undo = false): bool
+{
+    $dir = M3D_PRIVATE . '/cache';
+    if (!is_dir($dir)) @mkdir($dir, 0755, true);
+    $lock = @fopen("$dir/.pw-tries.lock", 'c');
+    if (!$lock || !flock($lock, LOCK_EX)) return true;
+    try {
+        $file = "$dir/pw-tries.json";
+        $all = json_decode((string) @file_get_contents($file), true);
+        $all = is_array($all) ? $all : [];
+        $cut = time() - PW_TRIES_SECS;
+        $new = [];
+        foreach ($all as $k => $times) {
+            $times = array_values(array_filter((array) $times, fn($t) => is_int($t) && $t > $cut));
+            if ($times) $new[(string) $k] = $times;
+        }
+        $key = ($kind === 'outfits' ? 'o:' : 'm:') . $slug;
+        $ok = count($new[$key] ?? []) < PW_TRIES_MAX;
+        if ($undo) { if (!empty($new[$key])) array_pop($new[$key]); }
+        elseif ($ok) $new[$key][] = time();
+        if (isset($new[$key]) && !$new[$key]) unset($new[$key]);
+        if ($new !== $all) m3d_atomic_write($file, (string) json_encode($new, JSON_UNESCAPED_SLASHES));
+        return $ok;
+    } finally {
+        flock($lock, LOCK_UN);
+        fclose($lock);
+    }
+}
+
+/**
+ * Checks the password; when right, remembers it in the m3d_unlock cookie (only set at this request of the visitor).
+ * null = too many tries on this item lately (m3d_pw_try()): the password wasn't checked.
+ */
+function m3d_unlock(string $kind, array $item, string $password): ?bool
 {
     $hash = (string) ($item['passwordHash'] ?? '');
-    if ($hash === '' || !password_verify($password, $hash)) {
-        usleep(600000);   // slows down guessing
-        return false;
-    }
+    if ($hash === '') return false;
+    if (!m3d_pw_try($kind, (string) $item['slug'])) return null;
+    if (!password_verify($password, $hash)) return false;
+    m3d_pw_try($kind, (string) $item['slug'], true);   // only wrong tries count
     $sig = m3d_unlock_sig($kind, $item);
     $k = strtok($sig, '.') . '.' . $item['slug'] . '.';
     // keep other items' entries (dropping an old one for this item), at most 40 so the cookie stays small
-    $list = array_filter(explode(',', (string) ($_COOKIE[M3D_UNLOCK_COOKIE] ?? '')), fn($s) => preg_match('/^[mo]\.[a-z0-9-]+\.[0-9a-f]{20}$/', $s) && !str_starts_with($s, $k));
+    $list = array_filter(explode(',', (string) ($_COOKIE[M3D_UNLOCK_COOKIE] ?? '')), fn($s) => preg_match('/^[mo]\.[a-z0-9-]+\.[0-9a-f]{20}$/D', $s) && !str_starts_with($s, $k));
     $list = array_slice(array_values($list), -39);
     $list[] = $sig;
     $value = implode(',', $list);
@@ -938,6 +1210,11 @@ function m3d_patron(array $cfg, bool $requireFresh = false): ?array
     // the admins list changed since this login (config or Settings): the owner pass follows the current list
     $isOwner = in_array((string) ($p['id'] ?? ''), m3d_owner_ids($cfg), true);
     if (($p['reason'] ?? '') === 'owner' && !$isOwner) return null;   // no longer an admin: logs in again, for a fresh check of their tier
+    if (!$isOwner && in_array('login', m3d_bans((string) ($p['id'] ?? '')), true)) {   // banned from logging in (Admin → Access) since this login: logged out
+        unset($_SESSION['patron'], $_SESSION['preview']);
+        $_SESSION['ban_id'] = (string) $p['id'];   // /banned/ says why
+        return null;
+    }
     if ($isOwner && ($p['reason'] ?? '') !== 'owner') $p = ['access' => true, 'reason' => 'owner'] + $p;
     if (($pv = m3d_preview()) !== null) $p = m3d_preview_patron($p, $pv);   // admin previewing the site as a patron
     return m3d_apply_exception($p);
@@ -1044,6 +1321,7 @@ function m3d_apply_exception(array $p): array
 {
     $x = m3d_exception((string) ($p['id'] ?? ''));
     if (!$x || ($p['reason'] ?? '') === 'owner') return $p;
+    if ($b = m3d_ex_bans($x)) $p['ban'] = $b;
     $num = fn($v) => is_int($v) || (is_string($v) && ctype_digit($v)) ? (int) $v : null;
     $p['exception'] = ['tier' => m3d_ex_mode($x['tier'] ?? null), 'extra' => m3d_ex_mode($x['extra'] ?? null), 'limits' => m3d_ex_mode($x['limits'] ?? null),
                        'tier_cents' => (int) ($x['tierCents'] ?? 0), 'months' => $num($x['months'] ?? null), 'total_cents' => $num($x['totalCents'] ?? null),
@@ -1054,6 +1332,99 @@ function m3d_apply_exception(array $p): array
         $p['reason'] = 'exception';
     }
     return $p;
+}
+
+// ── Bans (Admin → Access, on the same records): `ban` [codes of BAN_KINDS] + `reason` (shown to them on /banned/) ──
+// A Log In ban counts as every other one too, and ends a session already open (m3d_patron()). Admins can't be banned.
+// The bug report and comment block lists (m3d_bug_settings() / m3d_comment_settings() → blocked) are read from here.
+const BAN_KINDS = [
+    'login'    => ['Log In', 'log in'],
+    'download' => ['Downloads', 'download'],
+    'bugs'     => ['Bug Reports', 'post bug reports'],
+    'comments' => ['Comments', 'comment'],
+    'renders'  => ['Renders', 'share renders'],
+];
+const BAN_REASON_MAX = 300;
+
+/** A record's bans, in BAN_KINDS order. */
+function m3d_ex_bans(array $x): array
+{
+    $b = array_map('strval', (array) ($x['ban'] ?? []));
+    return array_values(array_filter(array_keys(BAN_KINDS), fn($k) => in_array($k, $b, true)));
+}
+
+/** What this Patreon id is banned from (never an admin). */
+function m3d_bans(string $id): array
+{
+    if ($id === '' || in_array($id, m3d_owner_ids($GLOBALS['M3D']), true)) return [];
+    $x = m3d_exception($id);
+    return $x ? m3d_ex_bans($x) : [];
+}
+
+/** Is this patron (m3d_patron(), previews too) banned from $what (a BAN_KINDS code)? A Log In ban counts for everything. */
+function m3d_banned(?array $p, string $what): bool
+{
+    if (!$p || ($p['reason'] ?? '') === 'owner') return false;
+    $b = array_key_exists('ban', $p) ? (array) $p['ban'] : m3d_bans((string) ($p['id'] ?? ''));
+    return in_array($what, $b, true) || in_array('login', $b, true);
+}
+
+/** The Patreon ids banned from $what (a Log In ban too). */
+function m3d_ban_ids(string $what): array
+{
+    $out = [];
+    foreach (m3d_exceptions() as $x) {
+        $b = m3d_ex_bans($x);
+        if (in_array($what, $b, true) || in_array('login', $b, true)) $out[] = (string) $x['id'];
+    }
+    return array_values(array_diff($out, m3d_owner_ids($GLOBALS['M3D'])));
+}
+
+/** Where a banned visitor is sent: the page with what they can't do and the reason. */
+function m3d_ban_url(string $what): string
+{
+    return '/banned/?what=' . (isset(BAN_KINDS[$what]) ? $what : 'login');
+}
+
+/**
+ * Turns one ban on or off for a Patreon id (the Block buttons of bug reports, comments and renders). A person not in the list
+ * yet gets a record with only the ban; removing the last ban of a record that holds nothing else removes the record.
+ */
+function m3d_ban_set(string $id, string $what, bool $on, string $name = ''): bool
+{
+    if (!preg_match('/^\d{1,20}$/D', $id) || !isset(BAN_KINDS[$what]) || in_array($id, m3d_owner_ids($GLOBALS['M3D']), true)) return false;
+    $people = m3d_exceptions(true);
+    $at = null;
+    foreach ($people as $i => $x) if ((string) $x['id'] === $id) $at = $i;
+    if ($at === null) {
+        if (!$on) return true;
+        $people[] = ['id' => $id, 'name' => mb_substr($name, 0, 80), 'note' => '', 'ban' => [$what], 'added' => gmdate('c')];
+    } else {
+        $b = array_diff(m3d_ex_bans($people[$at]), [$what]);
+        if ($on) $b[] = $what;
+        $people[$at]['ban'] = m3d_ex_bans(['ban' => $b]);
+        if (!$people[$at]['ban']) unset($people[$at]['ban'], $people[$at]['reason']);
+        $x = $people[$at];
+        if (!isset($x['ban']) && m3d_ex_mode($x['tier'] ?? null) === '' && m3d_ex_mode($x['extra'] ?? null) === '' && m3d_ex_mode($x['limits'] ?? null) === '' && trim((string) ($x['note'] ?? '')) === '') array_splice($people, $at, 1);
+    }
+    return m3d_save_exceptions($people);
+}
+
+/**
+ * The block lists of bug reports and comments from before the bans (settings.json → bugs / comments → blocked) move into the
+ * records once, as bans (the name from the site's records). Called by m3d_bug_settings() / m3d_comment_settings() while a list is there.
+ */
+function m3d_bans_move_blocked(string $key, string $what, array $ids): void
+{
+    static $busy = false;
+    if ($busy) return;
+    $busy = true;
+    $known = m3d_known_patrons();
+    $ok = true;
+    foreach ($ids as $id) if (preg_match('/^\d{1,20}$/D', (string) $id)) $ok = m3d_ban_set((string) $id, $what, true, (string) ($known[(string) $id] ?? '')) && $ok;   // anything else was never a Patreon id: dropped
+    if ($ok) m3d_save_setting_keys($key, ['blocked' => []]);
+    else m3d_problem('Bans', "The $key block list couldn't be moved into Access (will try again).");
+    $busy = false;
 }
 
 /** Admin = logged in with a Patreon id of m3d_owner_ids() (checked against the CURRENT config and settings). */
@@ -1323,11 +1694,12 @@ function m3d_rules_pick(array $all, int $months, ?int $tier): array
 /** A patron's downloads in the log, oldest first: [[timestamp, kind, slug, version, link label, free, update, membership], …] (patron
  *  links only: the log has nothing else; version '' on old lines; free = the item was "Exclude from Unlock Limits" then, update = a newer
  *  version unlocked again ("Updates Use an Unlock"): the 7th column, m3d_log_download(); membership = m3d_log_membership()). */
-function m3d_patron_log(string $patronId): array
+function m3d_patron_log(string $patronId, bool $fresh = false): array
 {
-    // read once per page: the limits, the header counter, the unlocked checks and the updates all ask for it
+    // read once per page: the limits, the header counter, the unlocked checks and the updates all ask for it ($fresh: read again,
+    // m3d_dl_locked() does it once it holds the lock, so the checks after it see the downloads other requests logged meanwhile)
     static $cache = [];
-    if (isset($cache[$patronId])) return $cache[$patronId];
+    if (isset($cache[$patronId]) && !$fresh) return $cache[$patronId];
     $out = [];
     $fh = @fopen(m3d_log_file(), 'rb');
     if (!$fh || $patronId === '') return $out;
@@ -1369,6 +1741,7 @@ function m3d_known_patrons(bool $all = false): array
         foreach ((array) ($b['log'] ?? []) as $x) if (($x['t'] ?? '') === 'c' && ($x['by'] ?? '') !== '' && empty($x['admin'])) $add((string) $x['by'], (string) ($x['name'] ?? ''));
     }
     if (function_exists('m3d_comments_flat')) foreach (m3d_comments_flat() as [, , $c]) if (($c['by'] ?? '') !== '' && empty($c['admin'])) $add((string) $c['by'], (string) ($c['name'] ?? ''));
+    if (function_exists('m3d_renders')) foreach (m3d_renders() as $r) if (($r['by'] ?? '') !== '') $add((string) $r['by'], (string) ($r['name'] ?? ''));
     foreach (m3d_exceptions() as $x) $add((string) $x['id'], (string) ($x['name'] ?? ''));
     return $all ? $seen : $known;
 }
@@ -1631,6 +2004,36 @@ function m3d_current_version(array $item): array
     return $en ? m3d_latest_version(['changelog' => [$en]]) : ['version' => '', 'date' => '', 'stage' => 'standard'];
 }
 
+/** Days a newly released item carries the "New" tag on catalog cards (new_tag() in view.php), and an updated one the "Updated" tag. */
+const NEW_DAYS = 14;
+
+/** When the item first came out: its patrons date when it has one, else the date of its oldest version out (a public date alone
+ *  is when it becomes free, not new); 0 = not out yet ("Coming soon", or no dated version). */
+function m3d_first_out_ts(array $item): int
+{
+    if (m3d_release_phase($item) === 'soon') return 0;
+    $r = m3d_release($item);
+    if ($r['patrons'] !== null) return $r['patrons'];
+    $out = m3d_released_versions($item);
+    return $out ? (int) (m3d_changelog_ts((string) (end($out)['date'] ?? '')) ?? 0) : 0;
+}
+
+/** True during the first NEW_DAYS days after the item came out (m3d_first_out_ts()). */
+function m3d_is_new(array $item): bool
+{
+    $t = m3d_first_out_ts($item);
+    return $t > 0 && $t <= time() && time() - $t < NEW_DAYS * 86400;
+}
+
+/** True during the first NEW_DAYS days after a new version came out (m3d_updated_ts()), for an item that isn't new itself and has an
+ *  older version out: the cards' "Updated" tag (new_tag() in view.php) and the homepage's Status chip "Updated". */
+function m3d_is_updated(array $item): bool
+{
+    if (m3d_is_new($item) || count(m3d_released_versions($item)) < 2) return false;
+    $t = m3d_updated_ts($item);
+    return $t > m3d_first_out_ts($item) && $t <= time() && time() - $t < NEW_DAYS * 86400;
+}
+
 /** When the item was last updated: the date of its newest version out (a version dated in the future doesn't count yet); 0 = none.
  *  A "Coming soon" item (before its patrons date) hasn't come out at all: 0, like What's new and Recently Updated. */
 function m3d_updated_ts(array $item): int
@@ -1720,7 +2123,8 @@ function m3d_version_url(string $kind, array $item, string $label): string
 function m3d_updates_for(?array $patron): array
 {
     $out = ['models' => [], 'outfits' => []];
-    if (!$patron || empty($patron['access'])) return $out;
+    // (no updates for someone banned from downloading: they couldn't get them)
+    if (!$patron || empty($patron['access']) || m3d_banned($patron, 'download')) return $out;
     foreach (m3d_last_downloads(m3d_patron_history($patron)) as $key => [$t, $got]) {
         [$k, $s] = explode(':', $key, 2);
         $it = m3d_item($k, $s);
@@ -1909,15 +2313,60 @@ function m3d_like_count(string $slug, string $kind = 'models'): int
 function m3d_set_like(string $slug, string $patronId, bool $like, string $kind = 'models'): array
 {
     $code = m3d_like_code($patronId);
-    return m3d_json_update('likes', function ($d) use ($slug, $code, $like, $kind) {
+    $owner = in_array($patronId, m3d_owner_ids($GLOBALS['M3D'] ?? []), true);   // the creator's own likes aren't news for the bell
+    $added = false;
+    $out = m3d_json_update('likes', function ($d) use ($slug, $code, $like, $kind, $owner, &$added) {
         $d = is_array($d) ? $d : ['models' => []];
         $had = in_array($code, $d[$kind][$slug] ?? [], true);
         $list = array_values(array_diff($d[$kind][$slug] ?? [], [$code]));
         if ($like) $list[] = $code;
         if ($list) $d[$kind][$slug] = $list; else unset($d[$kind][$slug]);
-        if ($like !== $had) $d['daily'] = m3d_likes_daily_add($d['daily'] ?? null, $like ? 1 : -1);
+        if ($like !== $had) {
+            $d['daily'] = m3d_likes_daily_add($d['daily'] ?? null, $like ? 1 : -1);
+            if (!$owner) $d['fresh'] = m3d_likes_fresh_add($d['fresh'] ?? null, "$kind:$slug", $like);
+            $added = $like && !$owner;
+        }
         return [$d, [count($list), $like]];
-    }) ?? [m3d_like_count($slug, $kind), false];
+    });
+    if ($added) m3d_notify_likes_discord();   // the creator's channel, after the response (app/notify.php)
+    return $out ?? [m3d_like_count($slug, $kind), false];
+}
+
+const LIKES_FRESH_DAYS = 14;    // how long the times of new likes are kept (the bell's "Emily got 3 new likes")
+const LIKES_FRESH_MAX = 50;     // times kept per item
+
+/** likes.json → fresh: {"kind:key": [unix, …]}: when the newest likes of each item were given, LIKES_FRESH_DAYS at most, with no
+ *  patron codes (who liked stays unknown). A removed like takes the newest time off (it can't be told whose it was), so liking and
+ *  unliking leaves nothing new. The creator's own likes aren't added. */
+function m3d_likes_fresh_add(mixed $fresh, string $key, bool $like): array
+{
+    $old = time() - LIKES_FRESH_DAYS * 86400;
+    $out = [];
+    foreach (is_array($fresh) ? $fresh : [] as $k => $ts) {
+        $ts = array_values(array_filter(array_map('intval', (array) $ts), fn($t) => $t > $old));
+        if ($ts) $out[(string) $k] = $ts;
+    }
+    $ts = $out[$key] ?? [];
+    if ($like) $ts[] = time(); else array_pop($ts);
+    if ($ts) $out[$key] = array_slice($ts, -LIKES_FRESH_MAX); else unset($out[$key]);
+    return $out;
+}
+
+/** The fresh like times from a summary of likes.json (one small file for the bell, read again only when a like changes). */
+function m3d_likes_fresh(): array
+{
+    return m3d_data_summary('likes', function () {
+        $d = m3d_read_json('likes') ?? [];
+        $old = time() - LIKES_FRESH_DAYS * 86400;
+        $fresh = [];
+        foreach ((array) ($d['fresh'] ?? []) as $k => $ts) {
+            $ts = array_values(array_filter(array_map('intval', (array) $ts), fn($t) => $t > $old));
+            if ($ts) $fresh[(string) $k] = $ts;
+        }
+        $n = [];
+        foreach ($fresh as $k => $_) { [$kind, $key] = explode(':', $k, 2) + ['', '']; $n[$k] = count((array) ($d[$kind][$key] ?? [])); }
+        return ['fresh' => $fresh, 'n' => $n];
+    }) + ['fresh' => [], 'n' => []];
 }
 
 const LIKES_DAILY_KEEP = 366;   // days of new-like counts kept (Admin → Home shows the last 7, Stats up to a year)
@@ -1988,17 +2437,29 @@ function m3d_rename_counts(string $kind, string $old, string $new): void
             foreach ($d['downloads'][$kind][$old] as $k => $n) $d['downloads'][$kind][$new][$k] = ($d['downloads'][$kind][$new][$k] ?? 0) + $n;
             unset($d['downloads'][$kind][$old]);
         }
+        foreach ($d['downloads']['pics'] ?? [] as $key => $c) {   // its pictures' full size downloads ("kind:slug:code")
+            if (!str_starts_with((string) $key, "$kind:$old:")) continue;
+            $d['downloads']['pics']["$kind:$new:" . substr((string) $key, strlen("$kind:$old:"))] = $c;
+            unset($d['downloads']['pics'][$key]);
+        }
         return [$d, null];
     });
     m3d_json_update('likes', function ($d) use ($kind, $old, $new) {
         if (!is_array($d) || !isset($d[$kind][$old])) return [$d, null];
         $d[$kind][$new] = array_values(array_unique(array_merge($d[$kind][$new] ?? [], $d[$kind][$old])));
         unset($d[$kind][$old]);
+        if (isset($d['fresh']["$kind:$old"])) {   // the bell's new likes
+            $d['fresh']["$kind:$new"] = array_merge($d['fresh']["$kind:$new"] ?? [], (array) $d['fresh']["$kind:$old"]);
+            sort($d['fresh']["$kind:$new"]);
+            unset($d['fresh']["$kind:$old"]);
+        }
         return [$d, null];
     });
     m3d_ignored_move($kind, $old, $new);   // an ignored update stays ignored
     m3d_blog_rename_item($kind, $old, $new);   // posts showing it
     m3d_comments_rename($kind, $old, $new);   // its comments
+    m3d_shares_rename($kind, $old, $new);   // its temporary links
+    m3d_showcase_rename($kind, $old, $new);   // its patrons' renders
     // the log too: what patrons unlocked, their My Models and updates are read from it by the item's address
     m3d_log_rename_items([m3d_log_item($kind, $old) => m3d_log_item($kind, $new)]);
 }
@@ -2051,6 +2512,24 @@ function m3d_log_locked(callable $fn): mixed
     if ($lock) flock($lock, LOCK_EX);
     try { return $fn(); }
     finally { if ($lock) { flock($lock, LOCK_UN); fclose($lock); } }
+}
+
+/**
+ * Runs $fn holding this patron's download lock (logs/.dl-<0-f>.lock: 16 files, picked by the id's hash), with their log read
+ * fresh first. auth/get.php checks the daily cap and the unlock limits and writes the log line inside it, so two downloads of the
+ * same patron at the same moment (two browsers: their sessions don't wait for each other) can't both pass a limit that only one
+ * fits in. Not the log's own lock (m3d_log_locked()): m3d_log_download() takes that one inside.
+ */
+function m3d_dl_locked(string $patronId, callable $fn): mixed
+{
+    $dir = M3D_PRIVATE . '/logs';
+    if (!is_dir($dir)) @mkdir($dir, 0700, true);
+    $lock = @fopen($dir . '/.dl-' . md5($patronId)[0] . '.lock', 'c');
+    if ($lock) flock($lock, LOCK_EX);
+    try {
+        m3d_patron_log($patronId, true);
+        return $fn();
+    } finally { if ($lock) { flock($lock, LOCK_UN); fclose($lock); } }
 }
 
 /**
@@ -2181,10 +2660,15 @@ function m3d_accessory_type(array $o): string { $t = trim((string) ($o['type'] ?
 function m3d_item_url(string $kind, string $slug): string { return ($kind === 'outfits' ? '/accessories/' : '/models/') . $slug . '/'; }
 function m3d_outfit(string $slug): ?array { return m3d_item('outfits', $slug); }
 
-/** Outfits made for a model, in outfit catalog order (drafts and unlisted ones left out). */
+/** An accessory made for every model (`allModels`, the editor's "All Models" switch): its `models` ticks are kept but not read. */
+function m3d_fits_all(array $o): bool { return !empty($o['allModels']); }
+/** Whether an accessory fits a model: one of its ticked models, or every model. */
+function m3d_outfit_fits(array $o, string $modelSlug): bool { return m3d_fits_all($o) || in_array($modelSlug, $o['models'] ?? [], true); }
+
+/** Outfits made for a model (its own and those for all models), in outfit catalog order (drafts and unlisted ones left out). */
 function m3d_outfits_for(string $modelSlug): array
 {
-    return array_values(array_filter(m3d_listed_items('outfits'), fn($o) => in_array($modelSlug, $o['models'] ?? [], true)));
+    return array_values(array_filter(m3d_listed_items('outfits'), fn($o) => m3d_outfit_fits($o, $modelSlug)));
 }
 
 /** Writes a JSON file safely: keeps a timestamped backup, writes to a temp file, then swaps it in. */
@@ -2426,13 +2910,14 @@ function m3d_settings(bool $fresh = false): array
 {
     static $set = null;
     if ($set !== null && !$fresh) return $set;
-    return $set = m3d_read_json('settings') ?? [];
+    $set = m3d_read_json('settings') ?? [];
+    return $set = m3d_webhooks_in($set) ? m3d_webhooks_move($set) : $set;   // webhooks belong in private/webhooks.php
 }
 
-/** Changes some settings (a null value removes that key). */
+/** Changes some settings (a null value removes that key). Webhook addresses in the changes are dropped: m3d_webhooks_save() keeps them. */
 function m3d_save_settings(array $changes): bool
 {
-    $all = array_merge(m3d_settings(true), $changes);
+    $all = array_merge(m3d_settings(true), m3d_webhooks_strip($changes));
     foreach ($changes as $k => $v) if ($v === null) unset($all[$k]);
     unset($all['version'], $all['updated']);
     $ok = m3d_write_json('settings', ['version' => 1, 'updated' => gmdate('c')] + $all);

@@ -66,7 +66,7 @@ if ($reason === 'cap') {
     }
 }
 
-layout_start('Patreon Membership Needed', 'Downloads are available to Patreon members on any tier.', 'page-gate');
+layout_start($title, 'Downloads are available to Patreon members on any tier.', 'page-gate');   // the tab says what the page says (limits, the cap…)
 ?>
   <section class="wrap gate">
     <p class="eyebrow">Downloads</p>

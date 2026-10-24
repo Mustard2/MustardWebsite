@@ -116,6 +116,24 @@ function m3d_gallery_visible(): array
     return $out;
 }
 
+/** The Gallery page's Sort choices; the first is the default. */
+const GALLERY_SORTS = ['random', 'new', 'old', 'liked'];
+
+/**
+ * The visible stills in the order the page arrives in, so the first row (fetched at once) is the one shown and nothing moves when site.js
+ * runs: random = a new order on every visit (the page is never cached), kept while the visitor filters and scrolls; new = the gallery's
+ * order; old = reversed; liked = most likes first. `n` = the place in the gallery's order (data-n: site.js sorts Newest / Oldest by it).
+ */
+function m3d_gallery_sorted(array $stills, string $sort): array
+{
+    foreach ($stills as $i => &$s) $s['n'] = $i;
+    unset($s);
+    if ($sort === 'random') shuffle($stills);
+    elseif ($sort === 'old') $stills = array_reverse($stills);
+    elseif ($sort === 'liked') usort($stills, fn($a, $b) => m3d_like_count((string) $b['id'], 'stills') <=> m3d_like_count((string) $a['id'], 'stills') ?: $a['n'] <=> $b['n']);
+    return $stills;
+}
+
 /** Characters found in a list of stills: key => {key, name, franchise, model, count, latest}, the most recent first. */
 function m3d_gallery_chars(array $stills): array
 {
@@ -149,19 +167,6 @@ function m3d_gallery_replace(array $map): bool
     foreach ($new['stills'] as &$s) if (isset($map[$s['src']])) $s['src'] = $map[$s['src']];
     unset($s);
     return $new === $g || m3d_save_gallery($new);
-}
-
-/** A model's address changed (Admin → editor): its stills follow. */
-function m3d_gallery_rename_model(string $old, string $new): void
-{
-    $g = m3d_gallery();
-    $changed = false;
-    foreach ($g['stills'] as &$s) {
-        $chars = array_map(fn($c) => $c === $old ? $new : $c, (array) ($s['chars'] ?? []));
-        if ($chars !== ($s['chars'] ?? [])) { $s['chars'] = $chars; $changed = true; }
-    }
-    unset($s);
-    if ($changed) m3d_save_gallery($g);
 }
 
 /**
@@ -204,19 +209,67 @@ function char_avatar(array $c, int $size = 28): string
     return '<span class="g-av g-av-ini" style="width:' . $size . 'px;height:' . $size . 'px" aria-hidden="true">' . e(mb_strtoupper($ini)) . '</span>';
 }
 
+/** The viewer's "Download Full Size" button (`dl` of a slide) for a full size link {url, access, size?} sent through $href (/get/still/…). */
+function full_size_dl(string $href, array $link): array
+{
+    $locked = ($link['access'] ?? 'patrons') === 'patrons' && !m3d_sees_patron_pics();
+    return ['href' => $href, 'size' => (string) ($link['size'] ?? ''), 'locked' => $locked,
+            'note' => $locked ? 'Full size for patrons (any paid tier)' : (string) ($link['size'] ?? '')];
+}
+
+// ── Full size links of model and accessory pictures ─────────────────────────────────────────────────────────────────
+// A picture of a model's gallery row (`gallery`) or of an accessory (`images`) may carry `link` {url, access, size} like a still:
+// set in the Images page's picture window (every place using the picture at once) or in the editor's picture window (that card).
+// The page's viewer gets "Download Full Size" through /get/still/<m|o>/<slug>/<code>/ (auth/get-still.php), code = m3d_pic_code().
+
+/** The item field holding its pictures with full size links. */
+const PIC_FIELDS = ['models' => 'gallery', 'outfits' => 'images'];
+
+/** A picture's code in its download address: from the picture's address, so reordering the pictures doesn't change it. */
+function m3d_pic_code(string $src): string
+{
+    return substr(md5(img_large($src)), 0, 8);
+}
+
+/** The picture of an item's gallery / pictures with that code, as stored ({src, caption?, link?}), or null. */
+function m3d_item_pic(string $kind, array $item, string $code): ?array
+{
+    foreach ((array) ($item[PIC_FIELDS[$kind] ?? ''] ?? []) as $g) {
+        if (is_array($g) && ($g['src'] ?? '') !== '' && m3d_pic_code((string) $g['src']) === $code) return $g;
+    }
+    return null;
+}
+
+/** An item's pictures for its page (as_image()), those with a full size link with the viewer's `dl` (never the link itself). */
+function item_pics(string $kind, array $item): array
+{
+    $out = [];
+    foreach ((array) ($item[PIC_FIELDS[$kind]] ?? []) as $g) {
+        $p = as_image($g);
+        if ($p['src'] === '') continue;
+        if (is_array($g['link'] ?? null) && !empty($g['link']['url'])) {
+            $p['dl'] = full_size_dl('/get/still/' . ($kind === 'outfits' ? 'o' : 'm') . '/' . $item['slug'] . '/' . m3d_pic_code($p['src']) . '/', $g['link']);
+        }
+        $out[] = $p;
+    }
+    return $out;
+}
+
 /** For the viewer (site.js): the picture, caption + characters (linked to their model pages), its like button (`like` = the still's id) and, when it has one, the "Download full size" button. */
 function still_slide(array $s): array
 {
     $cap = trim((string) ($s['caption'] ?? ''));
     $slide = ['src' => (string) $s['src'], 'caption' => $cap, 'like' => (string) $s['id']];
+    // a patron render (`from`) whose author linked their profile: its "By Name" at the end of the caption becomes that link
+    $r = !empty($s['from']) && function_exists('m3d_render') ? m3d_render((string) $s['from']) : null;
+    if ($r && ($link = m3d_render_link($r))) {
+        $tail = 'By ' . $link['name'];
+        if ($cap === $tail || str_ends_with($cap, ' · ' . $tail)) $slide = ['caption' => trim(substr($cap, 0, -strlen($tail)), ' ·'), 'by' => render_slide_by($link)] + $slide;
+    }
     // the characters after the caption, each a link to its model page (names without a model stay plain text)
     $slide['chars'] = array_map(fn($c) => ['name' => $c['name'], 'url' => $c['model'] && m3d_can_view('models', $c['model']) ? m3d_item_url('models', $c['model']['slug']) : ''], m3d_still_chars($s));
     $link = $s['link'] ?? null;
-    if (is_array($link) && !empty($link['url'])) {
-        $locked = ($link['access'] ?? 'patrons') === 'patrons' && !m3d_sees_patron_pics();
-        $slide['dl'] = ['href' => '/get/still/' . $s['id'] . '/', 'size' => (string) ($link['size'] ?? ''), 'locked' => $locked,
-                        'note' => $locked ? 'Full size for patrons (any paid tier)' : (string) ($link['size'] ?? '')];
-    }
+    if (is_array($link) && !empty($link['url'])) $slide['dl'] = full_size_dl('/get/still/' . $s['id'] . '/', $link);
     return $slide;
 }
 
@@ -245,7 +298,7 @@ function still_tile(array $s, ?int $n, bool $eager = false): string
     if (($s['visibility'] ?? 'public') === 'draft') $pills .= '<span class="lock-pill">Draft</span>';   // only admins see drafts
     $attrs = ' class="g-tile' . ($blur ? ' is-blurred' : '') . '" style="--r:' . $r . '" data-tile data-chars="' . e(implode(' ', array_column($chars, 'key'))) . '"'
         . ' data-franchises="' . e('|' . implode('|', array_unique(array_filter(array_column($chars, 'franchise')))) . '|') . '"'
-        . ' data-search="' . e(mb_strtolower($search)) . '" data-date="' . e((string) ($s['date'] ?? '')) . '"';
+        . ' data-search="' . e(mb_strtolower($search)) . '" data-date="' . e((string) ($s['date'] ?? '')) . '" data-n="' . (int) ($s['n'] ?? 0) . '"';
     $alt = $cap !== '' ? $cap : implode(', ', array_column($chars, 'name'));
     // the browser picks the thumb (≤ 560 px) or the small file by the tile's width (260 px tall, 150 px on phones; rows stretch them a little)
     $set = $blur ? '' : img_srcset((string) $s['src'], ['xs', 'sm']);
@@ -262,16 +315,17 @@ function still_tile(array $s, ?int $n, bool $eager = false): string
         . HEART_ICON . '<span data-glike-count>' . ($likes ?: '') . '</span><span class="sr-only"> likes</span></button></div>';
 }
 
-/** The wall: the tiles in a [data-slides] set, the viewer's list made of the clear ones. */
-function still_wall(array $stills): string
+/** The wall: the tiles in a [data-slides] set, the viewer's list made of the clear ones. $eager: the first row is fetched at once (not when
+ *  the address filters the pictures: those tiles may be hidden). */
+function still_wall(array $stills, bool $eager = true): string
 {
     $slides = [];
     $tiles = '';
     $extra = '';
     foreach ($stills as $k => $s) {
-        $eager = $k < 4;   // the first row: fetched at once, before the rest
-        if (($s['view'] ?? 'clear') === 'blur') { $tiles .= still_tile($s, null, $eager); continue; }
-        $tiles .= still_tile($s, count($slides), $eager);
+        $first = $eager && $k < 4;   // the first row: fetched at once, before the rest
+        if (($s['view'] ?? 'clear') === 'blur') { $tiles .= still_tile($s, null, $first); continue; }
+        $tiles .= still_tile($s, count($slides), $first);
         $slides[] = still_slide($s);
     }
     // logged in: their own likes and what they may do, in the page (site.js needs no request); visitors see the counts only

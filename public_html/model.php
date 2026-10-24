@@ -15,7 +15,7 @@ $newest = $versions && $versions[0]['slug'] !== $d['slug'] ? $versions[0] : null
 $otherVersions = array_values(array_filter($versions, fn($m) => $m['slug'] !== $d['slug']));
 $related = array_values(array_filter(m3d_listed_items('models'), fn($m) => $m['slug'] !== $d['slug'] && !in_array($m['slug'], $vSlugs, true) && ($m['franchise'] ?? '') === ($d['franchise'] ?? '')));
 $comingSoon = ($d['status'] ?? '') === 'in-development';
-$gallery = array_values(array_filter(array_map('as_image', $d['gallery'] ?? []), fn($g) => $g['src'] !== ''));
+$gallery = item_pics('models', $d);   // with the viewer's "Download Full Size" on pictures that have a full size link
 $notes = array_map('as_note', $d['notes'] ?? []);
 $coverSrc = ($d['cover'] ?? '') ?: (($d['thumb'] ?? '') ?: '');
 $slides = array_merge($coverSrc ? [['src' => $coverSrc, 'caption' => '']] : [], $gallery);   // the viewer's set (none when blurred)
@@ -29,7 +29,9 @@ $gen = ($d['generation'] ?? '') !== '' ? $d['generation'] : null;
 if ($coverSrc !== '' && m3d_visibility($d) === 'public') page_image($coverSrc);
 $major = !empty($d['majorVersion']) ? (int) $d['majorVersion'] : null;
 $title = $d['name'] . ($versions ? " v$major" : '');
-layout_start($gen !== null ? "$title (Gen $gen)" : $title, "{$d['name']} from {$d['franchise']}, a character model for Blender.", 'page-model');
+$renders = showcase_tiles('models', $d, count($slides));   // patron renders: approved ones after the creator's pictures, waiting ones first for their author and the creator
+showcase_flash();
+layout_start($gen !== null ? "$title (Gen $gen)" : $title, meta_text((string) ($d['description'] ?? ''), "{$d['name']} from {$d['franchise']}, a character model for Blender."), 'page-model');
 ?>
   <div class="wrap">
     <a class="back" href="/#catalog" data-back>← All Models</a>
@@ -38,7 +40,7 @@ layout_start($gen !== null ? "$title (Gen $gen)" : $title, "{$d['name']} from {$
       <p class="newer-note"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19V5m0 0-6 6m6-6 6 6"/></svg><span>A newer version of this model <?= m3d_status($newest) === 'in-development' ? 'is in development' : 'is available' ?>: <a href="/models/<?= e($newest['slug']) ?>/"><?= e($newest['name']) ?> v<?= (int) $newest['majorVersion'] ?> →</a></span></p>
     <?php endif ?>
     <div class="model">
-      <?= item_media('models', $d, $d, $coverSrc, $slides, $blur) ?>
+      <?= item_media('models', $d, $d, $coverSrc, array_merge($slides, $renders[1]), $blur) ?>
 
       <div class="info">
         <div class="title-row">
@@ -64,10 +66,12 @@ layout_start($gen !== null ? "$title (Gen $gen)" : $title, "{$d['name']} from {$
         <?= start_box_html('models') ?>
 
         <?= bug_item_box('models', $d) ?>
+
+        <?= showcase_box('models', $d) ?>
       </div>
     </div>
 
-    <?= gallery_strip($d['name'], $gallery, $coverSrc ? 1 : 0, $slides, $blur) ?>
+    <?= gallery_strip($d['name'], $gallery, $coverSrc ? 1 : 0, $slides, $blur, $renders) ?>
 
     <?php if ($hasDetails): ?>
       <div class="details">
@@ -93,11 +97,11 @@ layout_start($gen !== null ? "$title (Gen $gen)" : $title, "{$d['name']} from {$
           <?php if ($outfits): ?>
             <section class="block" id="accessories">
               <h2 class="block-title">Accessories for This Model <span class="count"><?= count($outfits) ?></span></h2>
-              <div class="ogrid"><?php foreach ($outfits as $o) echo outfit_card($o) ?></div>
+              <?= like_strip(array_map('outfit_card', $outfits), 'accessories', 'acc-strip') ?>
             </section>
           <?php endif ?>
 
-          <?= changelog_block($log, $d['changelogNote'] ?? null, $blur) ?>
+          <?= changelog_block($log, $d['changelogNote'] ?? null, $blur, changelog_mine('models', $d)) ?>
         </div>
 
         <?php if ($hasAside): ?>

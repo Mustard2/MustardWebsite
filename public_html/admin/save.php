@@ -34,6 +34,7 @@ try {
             array_splice($posts, $at, 1);
             if (!m3d_save_blog($posts)) throw new RuntimeException(m3d_write_error('data'));
             m3d_blog_forget_likes([$old['id']]);
+            m3d_polls_forget([$old['id']]);
             m3d_comments_forget('posts', [$old['id']]);
             admin_json(['ok' => true, 'posts' => admin_blog_posts()]);
         }
@@ -50,7 +51,7 @@ try {
         $ids = array_values(array_unique(array_map('strval', (array) ($in['ids'] ?? []))));
         $res = [];
         if ($action === 'add') {
-            // pictures from the Images library or just uploaded: newest first, tagged with the model whose folder they are in
+            // pictures from the Media library or just uploaded: newest first, tagged with the model whose folder they are in
             $have = array_column($g['stills'], 'src');
             $taken = array_column($g['stills'], 'id');
             $slugs = array_flip(array_column(m3d_models(), 'slug'));
@@ -75,7 +76,7 @@ try {
             if ($k === false) throw new InvalidArgumentException('This picture is no longer in the gallery (removed in another tab?). Reload the page.');
             $g['stills'][$k] = clean_still((array) ($in['still'] ?? []), $g['stills'][$k]);
         } elseif ($action === 'delete') {
-            // only out of the gallery: the picture stays in the Images library
+            // only out of the gallery: the picture stays in the Media library
             $g['stills'] = array_values(array_filter($g['stills'], fn($s) => !in_array($s['id'], $ids, true)));
             m3d_gallery_forget_likes($ids);
         } elseif ($action === 'order') {
@@ -212,9 +213,12 @@ try {
         $item['order'] = 1;
         array_unshift($items, $item);
     }
+    $dcBefore = m3d_discord()['last'];   // a post made by this save changes it (admin_discord_result())
     if (!m3d_save_items($kind, $items)) throw new RuntimeException(m3d_write_error('data'));
     if ($existing && ($existing['model3d'] ?? '') !== ($item['model3d'] ?? '')) m3d_glb_forget([(string) ($existing['model3d'] ?? '')]);   // replaced or removed
-    admin_json(['ok' => true, 'slug' => $item['slug'], 'created' => !$existing, 'rev' => admin_item_rev(m3d_item($kind, $item['slug']) ?? $item)]);
+    $stored = m3d_item($kind, $item['slug']) ?? $item;
+    admin_json(['ok' => true, 'slug' => $item['slug'], 'created' => !$existing, 'rev' => admin_item_rev($stored),
+        'discord' => admin_discord_result($dcBefore), 'discordState' => admin_discord_state($kind, $stored)]);
 } catch (InvalidArgumentException $ex) {
     admin_json(['ok' => false, 'error' => $ex->getMessage()], 422);
 } catch (Throwable $ex) {

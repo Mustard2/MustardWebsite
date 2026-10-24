@@ -47,6 +47,7 @@ $route = function (string $file, array $get = []) use ($root) {
 };
 if (preg_match('#^/models/([a-z0-9-]+)/?$#', $path, $m)) return $route('model.php', ['slug' => $m[1]]);
 if (preg_match('#^/patreon-required/?$#', $path)) return $route('patreon-required.php');
+if (preg_match('#^/banned/?$#', $path)) return $route('banned.php');
 if (preg_match('#^/privacy/?$#', $path)) return $route('privacy.php');
 if (preg_match('#^/contacts/?$#', $path)) return $route('contacts.php');
 if (preg_match('#^/account/?$#', $path)) return $route('account.php');
@@ -57,6 +58,7 @@ if (preg_match('#^/faq/?$#', $path)) return $route('faq.php');
 if (preg_match('#^/search/?$#', $path)) return $route('search.php');
 if (preg_match('#^/whats-new/?$#', $path)) return $route('whats-new.php');
 if (preg_match('#^/welcome/?$#', $path)) return $route('welcome.php');
+if (preg_match('#^/unlocks/?$#', $path)) return $route('unlocks.php');
 if (preg_match('#^/bugs/?$#', $path)) return $route('bugs.php');
 if (preg_match('#^/bugs/report/?$#', $path)) return $route('bugs.php', ['report' => '1']);
 if (preg_match('#^/bugs/([0-9]+)/?$#', $path, $m)) return $route('bugs.php', ['n' => $m[1]]);
@@ -68,11 +70,15 @@ if (preg_match('#^/accessories/([a-z0-9-]+)/?$#', $path, $m)) return $route('out
 if (preg_match('#^/gallery/?$#', $path)) return $route('gallery.php');
 if (preg_match('#^/blog/?$#', $path)) return $route('blog.php');
 if (preg_match('#^/blog/([a-z0-9-]+)/?$#', $path, $m)) return $route('blog.php', ['slug' => $m[1]]);
+if (preg_match('#^/og/([A-Za-z0-9_-]+)\.jpg$#D', $path, $m)) return $route('og-image.php', ['c' => $m[1]]);
+if (preg_match('#^/share/([A-Za-z0-9]{12})/?$#', $path, $m)) return $route('share.php', ['code' => $m[1]]);
 if (preg_match('#^/get/still/([a-f0-9]{8})/?$#', $path, $m)) return $route('auth/get-still.php', ['id' => $m[1]]);
+if (preg_match('#^/get/still/([mo])/([a-z0-9-]+)/([a-f0-9]{8})/?$#', $path, $m)) return $route('auth/get-still.php', ['kind' => $m[1], 'slug' => $m[2], 'code' => $m[3]]);
 if (preg_match('#^/get/outfit/([a-z0-9-]+)/([0-9]+)/?$#', $path, $m)) return $route('auth/get.php', ['type' => 'outfit', 'model' => $m[1], 'n' => $m[2]]);
 if (preg_match('#^/get/([a-z0-9-]+)/([0-9]+)/?$#', $path, $m)) return $route('auth/get.php', ['model' => $m[1], 'n' => $m[2]]);
 if (preg_match('#(^|/)\.(?!well-known/)#', $path) || preg_match('#\.(upd|upd-old|tmp)-[0-9a-f]+$#', $path) || preg_match('#(\.(bak|backup|old|orig|save|swp|swo|sql|sqlite|db|log|ini|zip|tar|gz|tgz|7z|rar)|~)$#i', $path)) { http_response_code(403); echo 'Forbidden'; return true; }   // like the scanner rules in .htaccess
 if (preg_match('#^/(app|private)/#', $path) || preg_match('#^/admin/_#', $path) || basename($path) === '.htaccess') { http_response_code(403); echo 'Forbidden'; return true; }   // like app/.htaccess, admin/.htaccess (_ files) and the server's .htaccess rule
+if (str_starts_with($path, '/media/') && !preg_match('#\.(webp|png|jpe?g|gif|glb|mp4|webm)$#iD', $path)) { http_response_code(403); echo 'Forbidden'; return true; }   // like media/.htaccess: only the file types stored there (never runs a .php there either)
 if ($path === '/admin' ) { header('Location: /admin/'); return true; }
 if (is_dir($root . $path) && is_file($root . rtrim($path, '/') . '/index.php')) return $route(ltrim(rtrim($path, '/') . '/index.php', '/'));
 if (is_file($root . $path)) return false;            // existing file: serve as-is (php files run normally)

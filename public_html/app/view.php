@@ -59,7 +59,8 @@ function status_badge(string $status): string
 const IDENTITY_DEFAULTS = [
     'name'      => 'My catalog',
     'highlight' => '',                                // the part of the name in the accent colour ('' = none)
-    'tagline'   => '3D character models',             // homepage title, footer line, default page description
+    'tagline'   => '3D character models',             // homepage title, footer line
+    'description' => '',                              // the homepage's text in search results (meta description); '' = the tagline
     'color'     => '#e8b931',                         // accent colour (buttons, links, highlights): CSS --mustard
     'logo'      => '',                                // '' = none; else /media/site/logo-<hex>.png (or a data: picture)
     'icon'      => '',                                // '' = favicon.ico/svg; else <hex> of /media/site/icon-<hex>-{32,180,192}.png
@@ -82,6 +83,25 @@ function site_name(): string
 function site_tagline(): string
 {
     return (string) m3d_identity()['tagline'];
+}
+
+/** The homepage's (and default) description for search engines and link previews: Site identity → Search Description, else the tagline. */
+function site_description(): string
+{
+    $id = m3d_identity();
+    return trim((string) $id['description']) !== '' ? (string) $id['description'] : $id['tagline'] . '.';
+}
+
+/** A page's meta description from an item's own text (its first paragraph, without the format's marks), cut at a word near
+ *  $max characters; $fallback when there is none. Search engines show it under the title. */
+function meta_text(string $md, string $fallback, int $max = 160): string
+{
+    $t = preg_replace('/\s+/u', ' ', trim(html_entity_decode(strip_tags(md_inline(md_first_text($md))), ENT_QUOTES | ENT_HTML5, 'UTF-8')));
+    if ($t === '') return $fallback;
+    if (mb_strlen($t) <= $max) return $t;
+    $cut = mb_substr($t, 0, $max - 1);
+    $sp = mb_strrpos($cut, ' ');
+    return rtrim($sp !== false && $sp > $max / 2 ? mb_substr($cut, 0, $sp) : $cut, " ,;:.-") . '…';
 }
 
 /** Text colour on the accent colour (buttons, active chips): dark on light accents, white on dark ones. */
@@ -146,7 +166,8 @@ function age_gate(string $path, ?string $return = null): string
     // the address as typed (REQUEST_URI): after a rewrite QUERY_STRING holds the internal ?slug=… too
     $q = (string) parse_url((string) ($_SERVER['REQUEST_URI'] ?? ''), PHP_URL_QUERY);
     $return = rawurlencode($return ?? $path . ($q !== '' ? '?' . $q : ''));
-    return '<div class="age-gate" role="dialog" aria-modal="true" aria-labelledby="age-title">'
+    // data-nosnippet: search engines never show this text under the site's title (they read the page behind it)
+    return '<div class="age-gate" role="dialog" aria-modal="true" aria-labelledby="age-title" data-nosnippet>'
         . '<div class="age-box">'
         . '<a class="brand" href="/">' . brand() . '</a>'
         . '<p class="age-pill">18+ Only</p>'
@@ -230,13 +251,37 @@ function maintenance_gate(): void
     exit;
 }
 
-/** Absolute address of a site path (link previews need one): this host, https behind a proxy too. */
-function abs_url(string $url): string
+/**
+ * Absolute address of a site path (link previews, Discord, the sitemap, notifications): on the site's own address, site_base().
+ * $here = on the address this request came to instead (the admin's own pages suggesting "this site's" Patreon redirect address).
+ */
+function abs_url(string $url, bool $here = false): string
 {
     if (preg_match('#^https?://#i', $url)) return $url;
+    return ($here ? request_base() : site_base()) . '/' . ltrim($url, '/');
+}
+
+/**
+ * The site's own address, "https://example.com" (no / at the end): scheme and host of the saved Patreon redirect address
+ * (…/auth/callback.php, Settings → Patreon), so what is sent off-site (Discord posts made after any visitor's page, og:image) never
+ * takes the host a request claims. The request's host only while none is saved (first-use setup, local tests) or it doesn't read.
+ */
+function site_base(): string
+{
+    $r = (string) ($GLOBALS['M3D']['redirect_uri'] ?? '');
+    $p = m3d_cfg_real($r) ? parse_url($r) : false;
+    $scheme = strtolower((string) ($p['scheme'] ?? ''));
+    $host = strtolower((string) ($p['host'] ?? ''));
+    if (!in_array($scheme, ['http', 'https'], true) || !preg_match('/^[a-z0-9.-]+$/', $host)) return request_base();
+    return $scheme . '://' . $host . (isset($p['port']) ? ':' . (int) $p['port'] : '');
+}
+
+/** The address this request came to (Host header; https behind a proxy too), "http://localhost" when the header is odd. */
+function request_base(): string
+{
     $host = (string) ($_SERVER['HTTP_HOST'] ?? '');
     if (!preg_match('/^[a-z0-9.-]+(:\d+)?$/i', $host)) $host = 'localhost';
-    return (m3d_is_https() ? 'https' : 'http') . '://' . $host . '/' . ltrim($url, '/');
+    return (m3d_is_https() ? 'https' : 'http') . '://' . $host;
 }
 
 /** Picture for link previews (Discord, X, Patreon…) of the page about to be printed: public items only, never blurred ones. */
@@ -247,7 +292,7 @@ function page_image(string $url): void
 
 function layout_start(string $title = '', string $description = '', string $bodyClass = ''): void
 {
-    if ($description === '') $description = site_tagline() . '.';
+    if ($description === '') $description = site_description();
     if (m3d_setup_needed()) m3d_redirect('/setup/');   // a fresh install: the first-use setup comes first
     maintenance_gate();
     m3d_release_tick();   // a release date has passed: its Discord post goes out after this page
@@ -274,9 +319,15 @@ function layout_start(string $title = '', string $description = '', string $body
   <meta property="og:site_name" content="<?= e(site_name()) ?>" />   <!-- link previews: the small site-name line above the title -->
   <meta property="og:title" content="<?= e($title !== '' ? $title : $full) ?>" />
   <meta property="og:description" content="<?= e($description) ?>" />
-<?php if (!empty($GLOBALS['m3d_page_image'])): ?>
-  <meta property="og:image" content="<?= e(abs_url((string) $GLOBALS['m3d_page_image'])) ?>" />
+<?php if (!empty($GLOBALS['m3d_page_image'])): $img = (string) $GLOBALS['m3d_page_image']; $dims = img_dims($img); $social = social_image_url($img); ?>
+  <meta property="og:image" content="<?= e(abs_url($img)) ?>" />
+<?php if ($dims): ?>
+  <meta property="og:image:width" content="<?= (int) $dims[0] ?>" />
+  <meta property="og:image:height" content="<?= (int) $dims[1] ?>" />
+<?php endif ?>
   <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:image" content="<?= e(abs_url($social !== '' ? $social : $img)) ?>" />   <!-- X: a 1200 × 630 JPEG of the picture (it crops anything else) -->
+  <meta name="twitter:image:alt" content="<?= e($title !== '' ? $title : site_name()) ?>" />
 <?php endif ?>
 <?= head_identity() ?>  <link rel="preload" href="/assets/fonts/inter-latin-400.woff2" as="font" type="font/woff2" crossorigin />   <!-- all four fonts start with the CSS, not after it (every page uses them) -->
   <link rel="preload" href="/assets/fonts/inter-latin-500.woff2" as="font" type="font/woff2" crossorigin />
@@ -295,16 +346,19 @@ function layout_start(string $title = '', string $description = '', string $body
     <div class="wrap header-inner">
       <a class="brand" href="/" aria-label="<?= e(site_name()) ?> home"><?= brand() ?></a>
       <nav class="nav" aria-label="Main">
-<?php foreach (site_menu() as [$label, $href, $cur]): ?>        <a href="<?= e($href) ?>"<?= $cur !== '' && str_starts_with($path, $cur) ? ' aria-current="page"' : '' ?>><?= e($label) ?></a>
-<?php endforeach ?><?php
+<?php
     // the creator (not while previewing as a patron): the bell instead of numbers in the menu (app/notify.php)
     $creatorBell = m3d_is_admin($GLOBALS['M3D']) && empty(m3d_patron($GLOBALS['M3D'])['preview']);
-    if (m3d_bugs_on()):
-    // the number: news on the reports a patron follows
-    $bugNews = $creatorBell ? 0 : m3d_bug_news_count(m3d_patron($GLOBALS['M3D']));
-    $bugTip = m3d_plural($bugNews, 'report') . ' you follow ' . ($bugNews === 1 ? 'has' : 'have') . ' news'; ?>        <a href="/bugs/<?= $bugNews ? '?status=following' : '' ?>"<?= str_starts_with($path, '/bugs') ? ' aria-current="page"' : '' ?>>Bugs<?= $bugNews ? '<span class="nav-new" title="' . e($bugTip) . '">' . $bugNews . '</span>' : '' ?></a>
-<?php endif ?>
+    foreach (site_menu() as [$label, $href, $cur, $kind]):
+        if ($kind === 'bugs'):
+            // the number: news on the reports a patron follows
+            $bugNews = $creatorBell ? 0 : m3d_bug_news_count(m3d_patron($GLOBALS['M3D']));
+            $bugTip = m3d_plural($bugNews, 'report') . ' you follow ' . ($bugNews === 1 ? 'has' : 'have') . ' news'; ?>        <a href="/bugs/<?= $bugNews ? '?status=following' : '' ?>"<?= str_starts_with($path, '/bugs') ? ' aria-current="page"' : '' ?>><?= e($label) ?><?= $bugNews ? '<span class="nav-new" title="' . e($bugTip) . '">' . $bugNews . '</span>' : '' ?></a>
+<?php else: ?>        <?= menu_link($label, $href, $cur, $kind, $path) ?>
+
+<?php endif; endforeach ?>
       </nav>
+      <div class="nav-more" data-nav-more hidden><button type="button" class="nav-more-btn" aria-expanded="false" aria-haspopup="true">More<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 10 5 5 5-5"/></svg></button><div class="nav-more-list" hidden></div></div>
 <?= header_search() ?><?= $creatorBell ? quick_add() . notify_bell() : '' ?><?= account_box($path) ?>    </div>
   </header>
 <?= site_notice($path) ?>
@@ -356,9 +410,9 @@ function layout_end(): void
         <?= social_buttons() ?>
       </div>
       <nav class="footer-links" aria-label="Explore">
-<?php foreach (site_menu() as [$label, $href]): ?>        <a href="<?= e($href) ?>"><?= e($label) ?></a>
-<?php endforeach ?><?php if (m3d_bugs_on()): ?>        <a href="/bugs/">Bug Reports</a>
-<?php endif ?>
+<?php foreach (site_menu() as [$label, $href, , $kind]): ?>        <?= menu_link($kind === 'bugs' ? 'Bug Reports' : $label, $href, '', $kind) ?>
+
+<?php endforeach ?>
       </nav>
 <?= legal_links() ?>    </div>
   </footer>
@@ -366,10 +420,12 @@ function layout_end(): void
     <figure>
       <img alt="" data-lightbox-img />
       <figcaption><span data-lightbox-cap></span><span class="lb-count" data-lightbox-count></span></figcaption>
-      <p class="lb-dl" data-lightbox-dl hidden><span class="lb-dl-note" data-lightbox-dl-note></span><button type="button" class="btn btn-ghost btn-sm lb-like" aria-pressed="false" data-lightbox-like hidden></button><a class="btn btn-primary btn-sm" href="#" data-lightbox-dl-btn></a></p>
+      <p class="lb-dl" data-lightbox-dl hidden><span class="lb-dl-note" data-lightbox-dl-note></span><button type="button" class="btn btn-ghost btn-sm lb-like" aria-pressed="false" data-lightbox-like hidden></button><button type="button" class="btn btn-ghost btn-sm lb-share" data-lightbox-share hidden><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 14a4.5 4.5 0 0 0 6.4 0l3-3a4.5 4.5 0 0 0-6.4-6.4l-1.2 1.2M14 10a4.5 4.5 0 0 0-6.4 0l-3 3a4.5 4.5 0 0 0 6.4 6.4l1.2-1.2"/></svg><span>Share</span></button><a class="btn btn-primary btn-sm" href="#" data-lightbox-dl-btn></a></p>
     </figure>
     <button class="lb-nav lb-prev" data-lb-prev aria-label="Previous image">‹</button>
     <button class="lb-nav lb-next" data-lb-next aria-label="Next image">›</button>
+    <button class="lb-play" data-lightbox-play aria-label="Play slideshow" aria-pressed="false" title="Slideshow: a new picture every 5 seconds (Space)" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><path class="lb-play-on" d="M8 5.5v13l10.5-6.5z"/><path class="lb-play-off" d="M8 5v14M16 5v14"/></svg></button>
+    <span class="lb-progress" data-lightbox-progress aria-hidden="true"></span>
     <button class="lb-zoom" data-lightbox-zoom aria-label="Zoom in" title="Zoom (or click the picture; double-tap or pinch on phones)"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m15.5 15.5 5 5M8 10.5h5"/><path class="lb-zoom-plus" d="M10.5 8v5"/></svg></button>
     <button class="lb-close" data-lightbox-close aria-label="Close">✕</button>
   </dialog>
@@ -379,16 +435,84 @@ function layout_end(): void
 <?php
 }
 
-/** The menu's links, in the header and the footer: [label, address, the start of the paths it is current on ('' = none)]; Bugs is added by each. */
+const MENU_LABEL_MAX = 24;   // an added menu link's text (the header has little room)
+const MENU_LINKS_MAX = 8;    // added menu links
+
+/** The built-in menu items, in their default order: key => [label, address, the start of the paths it is current on]. */
+const MENU_ITEMS = [
+    'characters'  => ['Characters', '/#catalog', ''],
+    'accessories' => ['Accessories', '/accessories/', '/accessories/'],
+    'gallery'     => ['Gallery', '/gallery/', '/gallery/'],
+    'blog'        => ['Blog', '/blog/', '/blog/'],
+    'mustardui'   => ['MustardUI', SITE['mustarduiPage'], '/mustardui'],
+    'docs'        => ['Docs', SITE['docs'], '/docs/'],
+    'faq'         => ['FAQ', SITE['faqs'], '/faq'],
+    'bugs'        => ['Bugs', '/bugs/', '/bugs'],
+];
+
+/** Whether a built-in menu item has something to show for this visitor (a feature that is off, or empty, leaves its item out). */
+function menu_item_ready(string $key): bool
+{
+    return match ($key) {
+        'gallery' => m3d_has_gallery(),
+        'blog' => m3d_has_blog(),
+        'mustardui' => m3d_mustardui_on(),
+        'docs' => m3d_has_docs(),
+        'faq' => m3d_has_faq(),
+        'bugs' => m3d_bugs_on(),
+        default => true,
+    };
+}
+
+/**
+ * The menu as set in Admin → Settings → Header Menu (settings.json → menu: [{key} | {label, url}, + off]), in its order:
+ * [{key ('' = an added link), label, url, off}]. Built-in items missing from the saved list (never saved, or new) come at the end.
+ */
+function menu_entries(): array
+{
+    $out = [];
+    $seen = [];
+    foreach ((array) (m3d_settings()['menu'] ?? []) as $m) {
+        if (!is_array($m)) continue;
+        $key = (string) ($m['key'] ?? '');
+        if ($key !== '') {
+            if (!isset(MENU_ITEMS[$key]) || isset($seen[$key])) continue;
+            $seen[$key] = true;
+            $out[] = ['key' => $key, 'label' => MENU_ITEMS[$key][0], 'url' => MENU_ITEMS[$key][1], 'off' => !empty($m['off'])];
+        } elseif (trim((string) ($m['label'] ?? '')) !== '' && trim((string) ($m['url'] ?? '')) !== '') {
+            $out[] = ['key' => '', 'label' => trim((string) $m['label']), 'url' => trim((string) $m['url']), 'off' => !empty($m['off'])];
+        }
+    }
+    foreach (MENU_ITEMS as $key => [$label, $url]) if (!isset($seen[$key])) $out[] = ['key' => $key, 'label' => $label, 'url' => $url, 'off' => false];
+    return $out;
+}
+
+/**
+ * The menu's links, in the header and the footer: [label, address, the start of the paths it is current on ('' = none; '=' + a path = only that page),
+ * kind: 'bugs' (its number is added by the header), 'ext' (another website: a new tab and a ↗) or ''].
+ */
 function site_menu(): array
 {
-    $m = [['Characters', '/#catalog', ''], ['Accessories', '/accessories/', '/accessories/']];
-    if (m3d_has_gallery()) $m[] = ['Gallery', '/gallery/', '/gallery/'];
-    if (m3d_has_blog()) $m[] = ['Blog', '/blog/', '/blog/'];
-    if (m3d_mustardui_on()) $m[] = ['MustardUI', SITE['mustarduiPage'], '/mustardui'];
-    if (m3d_has_docs()) $m[] = ['Docs', SITE['docs'], '/docs/'];
-    if (m3d_has_faq()) $m[] = ['FAQ', SITE['faqs'], '/faq'];
+    $m = [];
+    foreach (menu_entries() as $it) {
+        if ($it['off']) continue;
+        if ($it['key'] !== '') {
+            if (!menu_item_ready($it['key'])) continue;
+            $m[] = [$it['label'], $it['url'], MENU_ITEMS[$it['key']][2], $it['key'] === 'bugs' ? 'bugs' : ''];
+        } else {
+            $ext = (bool) preg_match('#^https?://#i', $it['url']);
+            $m[] = [$it['label'], $it['url'], $ext ? '' : '=' . (parse_url($it['url'], PHP_URL_PATH) ?: ''), $ext ? 'ext' : ''];
+        }
+    }
     return $m;
+}
+
+/** One link of the menu (header or footer, see site_menu()); $path = this page's path, to mark the current item. */
+function menu_link(string $label, string $href, string $cur, string $kind, string $path = ''): string
+{
+    $here = $cur !== '' && $path !== '' && (str_starts_with($cur, '=') ? $path === substr($cur, 1) : str_starts_with($path, $cur));
+    return '<a href="' . e($href) . '"' . ($here ? ' aria-current="page"' : '')
+        . ($kind === 'ext' ? ' target="_blank" rel="noopener">' . e($label) . ' <span class="ext" aria-hidden="true">↗</span>' : '>' . e($label)) . '</a>';
 }
 
 /** The footer's Privacy Policy and Contacts links (every page, the maintenance page too). */
@@ -454,7 +578,7 @@ function m3d_status_data(?array $p): array
     if (!$p) return ['loggedIn' => false];
     // header counter: downloads left now, per kind (the tightest rule that counts it); only when rules apply to this patron
     $left = null;
-    if (!empty($p['access']) && ($l = m3d_downloads_left($p)) !== null) {
+    if (!empty($p['access']) && !m3d_banned($p, 'download') && ($l = m3d_downloads_left($p)) !== null) {
         $next = array_filter($l['next']);
         $left = ['models' => $l['models'], 'outfits' => $l['outfits'],
                  'next' => $next ? m3d_site_time(min($next), 'D j M, H:i T') : null, 'nextTs' => $next ? min($next) : null];
@@ -536,7 +660,7 @@ const CARD_SIZES = '(max-width: 520px) 46vw, 260px';
 
 /** Model render, or a generated placeholder (colour from the franchise, initials from the name).
  *  $blur: the picture is swapped for its tiny blurred copy (blur_src), never the real file. */
-function cover(array $m, ?string $src, string $size = 'card', bool $eager = false, bool $blur = false, string $tags = '', string $sizes = ''): string
+function cover(array $m, ?string $src, string $size = 'card', bool $eager = false, bool $blur = false, string $tags = '', string $sizes = '', string $corner = ''): string
 {
     if ($blur && $src) $src = blur_src($src) ?: null;
     $h = 0;
@@ -553,9 +677,9 @@ function cover(array $m, ?string $src, string $size = 'card', bool $eager = fals
     $inner = $src
         ? '<img src="' . e($src) . '"' . $srcset . ' alt="' . e(($m['name'] ?? '') . ($blur ? ' (picture hidden)' : ' render')) . '" loading="' . ($eager ? 'eager' : 'lazy') . '"' . ($eager ? ' fetchpriority="high"' : '') . ' decoding="async" />'
         : '<div class="ph" aria-hidden="true"><span class="ph-initials">' . e($initials) . '</span></div>';
-    // tags over the picture, top left: Gen, then the card's extra ones ($tags: v2, α/β, Password / Teaser; already escaped)
+    // tags over the picture, top left: Gen, then the card's extra ones ($tags: v2, α/β, Password / Teaser; already escaped); $corner = top right (the New tag)
     $tagRow = $gen . $tags !== '' ? '<span class="cover-tags">' . $gen . $tags . '</span>' : '';
-    return '<div class="cover cover-' . e($size) . ($blur ? ' is-blurred' : '') . '" style="--h:' . $h . '">' . $inner . $tagRow . '</div>';
+    return '<div class="cover cover-' . e($size) . ($blur ? ' is-blurred' : '') . '" style="--h:' . $h . '">' . $inner . $tagRow . $corner . '</div>';
 }
 
 /** Small "Password" / "Teaser" pill on cards of items that aren't fully public, then the release date one ("Patrons 12 Oct", "Free 20 Oct"). */
@@ -655,6 +779,23 @@ function chip_row(string $label, string $pick, array $chips, string|array $curre
     return $out . '</div>';
 }
 
+/** Catalog cards in their default order, Recently Updated (newest current version first, then the Featured order: cardSorts.updated
+ *  in site.js), so the page arrives in the order site.js keeps and nothing moves when it runs. */
+function cards_by_updated(array $items): array
+{
+    usort($items, fn($a, $b) => m3d_updated_ts($b) <=> m3d_updated_ts($a) ?: ($a['order'] ?? 999) <=> ($b['order'] ?? 999));
+    return $items;
+}
+
+/** The green "New" tag on a catalog card's picture, for NEW_DAYS days after the item came out (m3d_is_new()); '' after. */
+/** The top right tag of model and accessory cards (in .cover-corner): "New" (m3d_is_new()), else "Updated" (m3d_is_updated(); the version is in the title). */
+function new_tag(array $item): string
+{
+    $tag = m3d_is_new($item) ? '<span class="new-tag">New</span>'
+        : (m3d_is_updated($item) ? '<span class="new-tag is-upd" title="' . e(m3d_released_label($item)) . ' is out">Updated</span>' : '');
+    return $tag !== '' ? '<span class="cover-corner">' . $tag . '</span>' : '';   // site.js puts the Unlocked check in front of it
+}
+
 function model_card(array $m): string
 {
     $s = status_info(m3d_status($m));
@@ -666,12 +807,13 @@ function model_card(array $m): string
         . ' data-order="' . e($m['order'] ?? 999) . '"'
         . ' data-downloads="' . m3d_downloads('models', (string) $m['slug'])['total'] . '"'
         . ' data-updated="' . m3d_updated_ts($m) . '"'   // "Recently updated" sort
+        . (m3d_is_new($m) ? ' data-new' : (m3d_is_updated($m) ? ' data-fresh' : ''))   // the Status row's "New" / "Updated" chips
         . ' data-likes="' . ($likes = m3d_like_count((string) $m['slug'])) . '">'
-        // v2, α/β (latest version) and Password / Teaser sit on the picture next to Gen, so every card body has the same rows:
+        // v2, α/β (latest version) and Password / Teaser sit on the picture next to Gen (New in the top right corner), so every card body has the same rows:
         // franchise, name, status with the likes on the right
         . cover($m, img_small(item_pic('models', $m)) ?: null, 'card', false, m3d_pics_hidden('models', $m),
             (m3d_model_versions($m) ? '<span class="ver-tag" title="Major version">v' . (int) $m['majorVersion'] . '</span>' : '')
-            . stage_badge(m3d_current_version($m)['stage'], true) . visibility_pill('models', $m))
+            . stage_badge(m3d_current_version($m)['stage'], true) . visibility_pill('models', $m), corner: new_tag($m))
         . '<div class="card-body"><p class="franchise">' . e($m['franchise'] ?? '') . '</p>'
         . '<h3>' . e($m['name']) . '</h3>'
         . '<span class="card-meta"><span class="badge tone-' . e($s['tone']) . '">' . e($s['label']) . '</span>'
@@ -741,12 +883,6 @@ function home_plans(): array
     return ['on' => !empty($p['on']), 'eyebrow' => (string) ($p['eyebrow'] ?? ''), 'title' => (string) ($p['title'] ?? ''), 'boxes' => $boxes];
 }
 
-/** Import from SmutBase (Admin → Models button, admin/import.php): Admin → Settings → SmutBase import, off until turned on. */
-function m3d_smutbase_on(): bool
-{
-    return !empty(m3d_settings()['smutbase']['on']);
-}
-
 /** The MustardUI page (/mustardui/, menu and footer item): Admin → Settings → MustardUI, off until turned on. */
 function m3d_mustardui_on(): bool
 {
@@ -769,11 +905,21 @@ function link_html(string $label, string $url): string
     return '<a href="' . e($url) . '"' . ($ext ? ' rel="noopener"' : '') . '>' . e($label) . ($ext ? ' <span class="ext" aria-hidden="true">↗</span>' : '') . '</a>';
 }
 
+/** The 404 page, with up to 3 guesses at the page meant from the words of the address (search_guess_path() in app/search.php). */
 function not_found(): never
 {
     http_response_code(404);
+    require_once __DIR__ . '/search.php';
+    $guess = m3d_maintenance_blocks() ? [] : search_guess_path((string) ($_SERVER['REQUEST_URI'] ?? ''));   // "/models/tifaa/" → Tifa
+    $rows = '';
+    foreach ($guess as $en) {
+        $pic = $en['p'] !== '' ? '<img class="hs-pic" src="' . e($en['p']) . '" alt="" loading="lazy" />' : '<span class="hs-pic" aria-hidden="true">' . e(mb_strtoupper(mb_substr($en['t'], 0, 1))) . '</span>';
+        $rows .= '<li><a href="' . e($en['u']) . '">' . $pic . '<span class="hs-t">' . e($en['t']) . '</span><span class="hs-s"><span class="hs-k">' . e($en['k']) . '</span>' . ($en['s'] !== '' ? ' · ' . e($en['s']) : '') . '</span></a></li>';
+    }
     layout_start('Page Not Found', 'This page does not exist.', 'page-gate');
-    echo '<section class="wrap gate"><p class="eyebrow">404</p><h1>Page Not Found</h1><p class="lead">This page doesn’t exist, or the model was renamed.</p><div class="cta"><a class="btn btn-primary" href="/#catalog">Browse All Models</a></div></section>';
+    echo '<section class="wrap gate"><p class="eyebrow">404</p><h1>Page Not Found</h1><p class="lead">This page doesn’t exist, or the model was renamed.</p>'
+        . ($rows !== '' ? '<div class="nf-guess"><h2 class="nf-title">Did You Mean…</h2><ul class="nf-list">' . $rows . '</ul></div>' : '')
+        . '<div class="cta"><a class="btn ' . ($rows !== '' ? 'btn-ghost' : 'btn-primary') . '" href="/#catalog">Browse All Models</a></div></section>';
     layout_end();
     exit;
 }
@@ -789,16 +935,17 @@ function item_gate(string $kind, array $item): void
     if (!in_array($v, ['public', 'blurred', 'blurred-patrons'], true) || m3d_release_hidden($item)) header('X-Robots-Tag: noindex');   // password and draft pages; teasers (blurred) and "Coming Soon" pages may be listed, like in the sitemap
     if (!m3d_can_view($kind, $item) && $v !== 'password') not_found();
     if (m3d_can_view($kind, $item)) return;
-    $wrong = false;
+    $wrong = $busy = false;
     if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST') {
-        if (m3d_unlock($kind, $item, (string) ($_POST['password'] ?? ''))) {
-            m3d_redirect(m3d_item_url($kind, $item['slug']), 303);
-        }
-        $wrong = true;
+        $ok = m3d_unlock($kind, $item, (string) ($_POST['password'] ?? ''));
+        if ($ok) m3d_redirect(m3d_item_url($kind, $item['slug']), 303);
+        $busy = $ok === null;   // too many wrong tries on this item lately: not checked
+        $wrong = !$busy;
     }
     $what = $kind === 'outfits' ? 'accessory' : 'model';
     $src = $kind === 'outfits' ? outfit_preview($item) : img_small(item_pic($kind, $item));
-    http_response_code($wrong ? 403 : 200);
+    http_response_code($busy ? 429 : ($wrong ? 403 : 200));
+    if ($busy) header('Retry-After: ' . PW_TRIES_SECS);
     layout_start($item['name'], 'This ' . $what . ' is password protected.', 'page-gate');
     ?>
   <section class="wrap gate lock-gate">
@@ -812,6 +959,7 @@ function item_gate(string $kind, array $item): void
       <button class="btn btn-primary" type="submit">Open</button>
     </form>
     <?php if ($wrong): ?><p class="lock-error" role="alert">That password isn’t right. Try again.</p><?php endif ?>
+    <?php if ($busy): ?><p class="lock-error" role="alert">Too many tries. Please wait a few minutes.</p><?php endif ?>
     <p class="fine">Entering the password stores a small cookie so this <?= $what ?> stays open on this device for <?= M3D_UNLOCK_DAYS ?> days (<a href="<?= e(SITE['privacy']) ?>">privacy policy</a>).</p>
   </section>
 <?php
@@ -861,7 +1009,7 @@ function preview_download_page(string $kind, array $item, string $label, ?string
     <p class="eyebrow">Preview</p>
     <h1>The Download Would Start Now</h1>
     <p class="lead"><?= e($item['name']) ?><?= $label !== '' ? ' · ' . e($label) : '' ?>: allowed. Nothing is downloaded or logged in the preview.</p>
-    <div class="cta"><a class="btn btn-ghost" href="<?= e($page) ?>">Back to <?= $back !== null ? 'the Gallery' : e($item['name']) ?></a></div>
+    <div class="cta"><a class="btn btn-ghost" href="<?= e($page) ?>">Back to <?= $back === '/gallery/' ? 'the Gallery' : e($item['name']) ?></a></div>
   </section>
 <?php
     layout_end();
@@ -891,7 +1039,7 @@ function outfits_intro(): string
 /** "Your download starts in…" page (auth/get.php). $go = the same /get/ address with the signed ?t=: never the real link.
  *  $confirm (limit rows): only the "Unlock this model?" question (one line, `dl_unlock_line()`), whose Yes ($go, c = m3d_dl_confirm_code()) comes back
  *  to the server for the countdown.
- *  $back: the page to go back to when it isn't the item's own (gallery pictures: /gallery/).
+ *  $back: the page to go back to when it isn't the item's own (gallery pictures: /gallery/; a model / accessory picture: its page).
  *  $update: the question is for a newer version of an item already unlocked ("Updates Use an Unlock"): "Unlock this update?". */
 function download_wait_page(string $kind, array $item, string $label, int $seconds, string $go, ?array $confirm = null, ?string $back = null, bool $update = false): never
 {
@@ -918,7 +1066,7 @@ function download_wait_page(string $kind, array $item, string $label, int $secon
       <div class="dl-bar" aria-hidden="true"><span data-dl-bar></span></div>
       <div class="cta">
         <a class="btn btn-primary" href="<?= e($go) ?>" data-dl-now aria-disabled="true">Download</a>
-        <a class="btn btn-ghost" href="<?= e($page) ?>">Back to <?= $back !== null ? 'the Gallery' : e($item['name']) ?></a>
+        <a class="btn btn-ghost" href="<?= e($page) ?>">Back to <?= $back === '/gallery/' ? 'the Gallery' : e($item['name']) ?></a>
       </div>
       <p class="fine">Didn’t start? Use the Download button once the countdown ends.</p>
     </div>
@@ -1053,7 +1201,7 @@ function download_busy_page(string $kind, array $item, array $busy, ?string $bac
     <p class="eyebrow">One Download at a Time</p>
     <h1>You Can’t Download This Yet</h1>
     <p class="lead">Your download of <b><?= e($other) ?></b> is still counting down. Wait until it starts, then try again.</p>
-    <div class="cta"><a class="btn btn-primary" href="<?= e($page) ?>">Back to <?= $back !== null ? 'the Gallery' : e($item['name']) ?></a></div>
+    <div class="cta"><a class="btn btn-primary" href="<?= e($page) ?>">Back to <?= $back === '/gallery/' ? 'the Gallery' : e($item['name']) ?></a></div>
   </section>
 <?php
     layout_end();
@@ -1137,8 +1285,7 @@ function item_media(string $kind, array $item, array $card, string $main, array 
     $m3 = !$blur && (m3d_visibility($item) === 'public' || m3d_is_admin($GLOBALS['M3D'])) ? m3d_model3d($item) : null;
     $out = '<div class="media' . ($m3 ? ' has-3d' : '') . '" data-slides="' . ($blur ? '[]' : slides_attr($slides)) . '">';
     if ($blur) $out .= cover($card, $main ?: null, 'hero', true, true) . patron_pics_note($kind, $item);
-    elseif ($main !== '') $out .= '<button class="cover-btn" data-slide="0" aria-label="Open images">' . cover($card, $main, 'hero', true)
-        . (count($slides) > 1 ? '<span class="count-pill">' . count($slides) . ' images</span>' : '') . '</button>';
+    elseif ($main !== '') $out .= '<button class="cover-btn" data-slide="0" aria-label="Open images">' . cover($card, $main, 'hero', true) . '</button>';
     else $out .= cover($card, null, 'hero', true);
     if ($m3) $out .= '<button type="button" class="v3d-btn" data-v3d="' . e($m3['src']) . '" data-v3d-name="' . e($item['name'] ?? '') . '" data-v3d-exposure="' . e(m3d_exposure($item))
         . '" data-v3d-lib="' . e(asset('vendor/model-viewer.min.js')) . '">'
@@ -1152,7 +1299,7 @@ function item_media(string $kind, array $item, array $card, string $main, array 
  * $pics = those pictures (as_image()), $first = the viewer's slide of the first one (1 after a main picture), $slides = the viewer's
  * set; blurred: tiny copies, no viewer. Nothing when there are no pictures.
  */
-function gallery_strip(string $name, array $pics, int $first, array $slides, bool $blur): string
+function gallery_strip(string $name, array $pics, int $first, array $slides, bool $blur, array $extra = ['', [], '']): string
 {
     $thumbs = '';
     foreach (array_values($pics) as $i => $g) {
@@ -1163,6 +1310,10 @@ function gallery_strip(string $name, array $pics, int $first, array $slides, boo
         $thumbs .= '<button class="thumb" data-slide="' . ($i + $first) . '" aria-label="Open image ' . ($i + $first + 1) . '">'
             . strip_img($g['src'], $g['caption'] ? "$name: {$g['caption']}" : "$name, picture " . ($i + $first + 1))
             . ($g['caption'] ? '<span class="cap">' . e($g['caption']) . '</span>' : '') . '</button>';
+    }
+    if (!$blur) {   // patron renders (showcase_tiles(): [approved tiles, slides, waiting tiles]): waiting ones first, approved after the creator's pictures
+        $thumbs = ($extra[2] ?? '') . $thumbs . $extra[0];   // their slides come after the creator's, numbered from count($slides)
+        $slides = array_merge($slides, $extra[1]);
     }
     if ($thumbs === '') return '';
     return strip_html('gallery-strip', 'gallery', $thumbs, 'pictures', 'section', ' data-slides="' . ($blur ? '[]' : slides_attr($slides)) . '" aria-label="Gallery"');
@@ -1213,11 +1364,16 @@ function strip_img(string $src, string $alt): string
         . ($r > 0 ? ' style="aspect-ratio: ' . $d[0] . ' / ' . $d[1] . '"' : '') . ' loading="lazy" decoding="async" />';
 }
 
-/** JSON for a [data-slides] attribute: [{src, caption}] with the large versions. */
+/** JSON for a [data-slides] attribute: [{src, caption, dl?}] with the large versions (`dl` = the "Download Full Size" button, item_pics()). */
 function slides_attr(array $images): string
 {
     $out = [];
-    foreach ($images as $g) { $g = as_image($g); if ($g['src'] !== '') $out[] = $g; }
+    foreach ($images as $g) {
+        $p = as_image($g);
+        if (is_array($g) && isset($g['dl'])) $p['dl'] = $g['dl'];   // never the stored `link`: its address stays out of the page
+        if (is_array($g) && isset($g['by'])) $p['by'] = $g['by'];   // a patron render's linked name (showcase_tiles())
+        if ($p['src'] !== '') $out[] = $p;
+    }
     return e(json_encode($out, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE));
 }
 
@@ -1228,6 +1384,13 @@ function stage_badge(string $stage, bool $iconOnly = false): string
     if (!isset(STAGE_ICONS[$stage])) return '';
     // $iconOnly (cards): just the α / β, the word stays in the tooltip and for screen readers
     return '<span class="badge stage stage-' . $stage . ($iconOnly ? ' stage-icon' : '') . '" title="' . M3D_STAGES[$stage] . ' version"' . ($iconOnly ? ' aria-label="' . M3D_STAGES[$stage] . ' version"' : '') . '><svg viewBox="0 0 24 24" aria-hidden="true">' . STAGE_ICONS[$stage] . '</svg>' . ($iconOnly ? '' : M3D_STAGES[$stage]) . '</span>';
+}
+
+/** The "How It Works" pill to /unlocks/ (How Unlocks Work): the guests' Download box line, My account's Unlock Limits title.
+ *  Print it only while m3d_unlocks_on(). */
+function how_pill(): string
+{
+    return '<a class="how-pill" href="/unlocks/"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M9.6 9.4a2.5 2.5 0 1 1 3.4 2.3c-.6.3-1 .8-1 1.5v.4M12 16.8v.1"/></svg>How It Works</a>';
 }
 
 /** Download box shared by model and outfit pages. Patron links go through /get/…; public ones are shown. */
@@ -1284,7 +1447,8 @@ function downloads_box(string $kind, array $item, bool $comingSoon = false): str
         if ($mark || $status) $h = str_replace('<h2>Download</h2>', '<div class="box-head"><h2>Download' . $mark . '</h2>' . $status . '</div>', $h);
         $join = social_url('patreon');
         if ($phase === 'soon' && !$admin) $patron = str_replace('class="btn btn-primary dl"', 'class="btn btn-primary dl is-limited"', $patron);
-        $h .= ($guest ? '<p class="dl-guest">Log in with Patreon to download (' . ($r['tier_cents'] ? e(m3d_money($r['tier_cents'])) . ' tier or higher' : 'any paid tier') . ').</p>' : '')
+        $h .= ($guest ? '<p class="dl-guest"><span>Log in with Patreon to unlock (' . ($r['tier_cents'] ? e(m3d_money($r['tier_cents'])) . ' tier or higher' : 'any paid tier') . ').</span>'
+                . (m3d_unlocks_on() ? how_pill() : '') . '</p>' : '')
             . $line . '<div class="dl-list">' . $patron . '</div>' . release_note($item, $outsider, $admin) . $reqs
             . ($guest && $join !== '' ? '<p class="dl-join small muted">Not a patron yet? <a href="' . e($join) . '" rel="noopener" target="_blank">See the tiers on Patreon ↗</a></p>' : '');
     } elseif (!$public) {
@@ -1347,6 +1511,7 @@ const DL_MARK_NO = '<svg width="20" height="20" viewBox="0 0 24 24" aria-hidden=
 function dl_verdict(string $kind, array $item, array $p): ?array
 {
     $what = $kind === 'outfits' ? 'accessory' : 'model';
+    if (m3d_banned($p, 'download')) return ['ok' => false, 'title' => 'You can’t download on this site.', 'text' => '', 'list' => [], 'ban' => 'download'];   // Admin → Access
     if (empty($p['access'])) return ['ok' => false, 'list' => []] + match ($p['reason'] ?? '') {
         'declined' => ['title' => 'Your last Patreon payment was declined.', 'text' => 'Downloads open again once it goes through.'],
         'no-tier'  => ['title' => 'You need a paid tier to download.', 'text' => 'Upgraded on Patreon? Press Refresh on My account.'],
@@ -1409,10 +1574,17 @@ function dl_verdict(string $kind, array $item, array $p): ?array
     return null;
 }
 
+/** The line in place of a form for someone banned from it (Admin → Access): "You can’t comment on this site. Why?" → /banned/. */
+function ban_note(string $what, string $class = 'reply-off muted small'): string
+{
+    return '<p' . ($class !== '' ? ' class="' . e($class) . '"' : '') . '>You can’t ' . e(BAN_KINDS[$what][1] ?? 'do this') . ' on this site. <a href="' . e(m3d_ban_url($what)) . '">Why?</a></p>';
+}
+
 /** The red line of a download that is blocked (dl_verdict()): what is missing, in one sentence or a short list. */
 function dl_verdict_html(array $v): string
 {
-    $h = '<div class="dl-verdict" role="status"><p><b>' . when_text($v['title']) . '</b>' . ($v['text'] !== '' ? ' ' . when_text($v['text']) : '') . '</p>';
+    $h = '<div class="dl-verdict" role="status"><p><b>' . when_text($v['title']) . '</b>' . ($v['text'] !== '' ? ' ' . when_text($v['text']) : '')
+        . (!empty($v['ban']) ? ' <a href="' . e(m3d_ban_url($v['ban'])) . '">Why?</a>' : '') . '</p>';
     if ($v['list']) $h .= '<ul>' . implode('', array_map(fn($x) => '<li>' . when_text($x) . '</li>', $v['list'])) . '</ul>';
     // below the item's minimum tier: a way to upgrade (only with a Patreon link set)
     $join = !empty($v['upgrade']) ? social_url('patreon') : '';
@@ -1421,10 +1593,32 @@ function dl_verdict_html(array $v): string
 }
 
 /** Changelog with "show older" and "oldest first" controls (one per page). */
-function changelog_block(array $log, ?string $note = null, bool $noImages = false): string
+/**
+ * The visitor's own download in an item's changelog (changelog_block()): [index of the version they last downloaded (null: none, or
+ * an old download whose version isn't known), [indices of the versions out since]]. [null, []] for visitors and items never downloaded.
+ */
+function changelog_mine(string $kind, array $item): array
+{
+    $p = m3d_patron($GLOBALS['M3D']);
+    $last = $p ? (m3d_last_downloads(m3d_patron_history($p))[$kind . ':' . ($item['slug'] ?? '')] ?? null) : null;
+    if (!$last) return [null, []];
+    [$t, $got] = $last;
+    $newer = array_flip(array_map('m3d_version_label', m3d_newer_versions($item, $got, $t)));
+    $mine = null;
+    $since = [];
+    foreach (array_values($item['changelog'] ?? []) as $i => $en) {
+        if (!is_array($en) || trim((string) ($en['version'] ?? '')) === '') continue;
+        $label = m3d_version_label($en);
+        if ($got !== '' && $label === $got) { $mine = $i; break; }
+        if (isset($newer[$label])) $since[] = $i;
+    }
+    return [$mine, $since];
+}
+
+function changelog_block(array $log, ?string $note = null, bool $noImages = false, array $mine = [null, []]): string
 {
     if (!$log) return '';
-    $SHOW = 3;
+    $SHOW = max(3, min(($mine[0] ?? 0) + 1, 6));   // the visitor's own version (changelog_mine()) shown too, when it is among the 6 newest
     $older = max(0, count($log) - $SHOW);
     $h = '<section class="block" id="changelog"><h2 class="block-title">Changelog <span class="count">' . count($log) . ' ' . (count($log) === 1 ? 'version' : 'versions') . '</span></h2>';
     if ($note) $h .= '<p class="small muted log-intro md">' . md_inline($note) . '</p>';
@@ -1432,7 +1626,7 @@ function changelog_block(array $log, ?string $note = null, bool $noImages = fals
         $h .= '<div class="log-controls"><button class="log-btn" data-log-toggle aria-expanded="false"><span data-when="closed">Show ' . $older . ' Older ' . ($older === 1 ? 'Version' : 'Versions') . '</span><span data-when="open" hidden>Hide Older Versions</span></button>'
             . '<button class="log-btn ghost" data-log-order aria-label="Change changelog order"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><path d="M7 4v16m0 0-3-3m3 3 3-3M17 20V4m0 0-3 3m3-3 3 3" stroke-linecap="round" stroke-linejoin="round"/></svg><span data-order-label>Oldest First</span></button></div>';
     }
-    $h .= '<ol class="log" data-log>' . changelog_items($log, $noImages, $SHOW, true) . '</ol>';
+    $h .= '<ol class="log" data-log>' . changelog_items($log, $noImages, $SHOW, true, $mine) . '</ol>';
     if ($older) $h .= '<button class="log-btn ghost log-bottom" data-log-toggle hidden>↑ Hide Older Versions</button>';
     return $h . '</section>';
 }
@@ -1442,8 +1636,9 @@ function changelog_block(array $log, ?string $note = null, bool $noImages = fals
  * $anchors (the item page's changelog, once per page): each version gets its id (m3d_version_ids(): #v4) and a chain-link button that
  * copies its address; site.js opens a hidden one when the address names it.
  */
-function changelog_items(array $log, bool $noImages = false, int $show = PHP_INT_MAX, bool $anchors = false): string
+function changelog_items(array $log, bool $noImages = false, int $show = PHP_INT_MAX, bool $anchors = false, array $mine = [null, []]): string
 {
+    [$yours, $since] = [$mine[0] ?? null, array_flip($mine[1] ?? [])];   // changelog_mine(): "Your Version" and "New for You" 
     $h = '';
     $ids = $anchors ? m3d_version_ids($log) : [];
     $latest = null;   // "Latest" = the newest version out; one dated in the future says when it comes instead
@@ -1451,12 +1646,15 @@ function changelog_items(array $log, bool $noImages = false, int $show = PHP_INT
         $ts = m3d_changelog_ts((string) ($en['date'] ?? ''));
         $soon = $ts !== null && $ts > time();
         if (!$soon && $latest === null) $latest = $i;
-        $cls = trim(($latest === $i ? 'latest ' : '') . ($i >= $show ? 'old ' : '') . (m3d_stage($en) !== 'standard' ? 'log-' . m3d_stage($en) : ''));   // log-alpha / log-beta: coloured dot
+        $cls = trim(($latest === $i ? 'latest ' : '') . ($i >= $show ? 'old ' : '') . (m3d_stage($en) !== 'standard' ? 'log-' . m3d_stage($en) . ' ' : '')   // log-alpha / log-beta: coloured dot
+            . (isset($since[$i]) ? 'is-new-mine ' : '') . ($yours === $i ? 'is-mine' : ''));
         $id = $ids[$i] ?? '';
         $h .= '<li class="' . $cls . '"' . ($id !== '' ? ' id="' . e($id) . '"' : '') . ($i >= $show ? ' hidden' : '') . '><div class="log-head">' . stage_badge(m3d_stage($en)) . '<span class="ver">' . e($en['version'] ?? '') . '</span>'
             . (!empty($en['date']) ? '<time>' . e($en['date']) . '</time>' : '')
             . ($latest === $i ? '<span class="badge tone-mustard">Latest</span>' : '')
             . ($soon ? '<span class="badge">Coming ' . e(m3d_release_day($ts)) . '</span>' : '')
+            . (isset($since[$i]) ? '<span class="badge mine-new" title="Out since your last download">New for You</span>' : '')
+            . ($yours === $i ? '<span class="badge mine-ver" title="The version of your last download">Your Version</span>' : '')
             . highlight_badge($en['highlight'] ?? null) . ($id !== '' ? copy_link($id, 'ver-anchor', 'Copy link to this version') : '') . '</div>';
         foreach ($en['notes'] ?? [] as $n) $h .= '<div class="log-note md">' . md_html((string) $n, ['noImages' => $noImages]) . '</div>';
         if (!empty($en['changes'])) { $h .= '<ul>'; foreach ($en['changes'] as $c) $h .= change_line((string) $c); $h .= '</ul>'; }
@@ -1514,7 +1712,6 @@ function outfit_card(array $o): string
 {
     $url = m3d_item_url('outfits', $o['slug']);
     $prev = outfit_preview($o);
-    $count = count(array_filter(array_map('as_image', $o['images'] ?? []), fn($g) => $g['src'] !== ''));
     $hidden = m3d_pics_hidden('outfits', $o);
     if ($hidden) $prev = blur_src($prev);   // never the real picture
     $img = $prev
@@ -1522,16 +1719,16 @@ function outfit_card(array $o): string
         : '<div class="ph" aria-hidden="true"><span class="ph-initials">' . e(mb_substr($o['name'], 0, 1)) . '</span></div>';
     $lv = m3d_current_version($o);
     $ver = $lv['version'] !== '' ? '<span class="muted small">' . (($sb = stage_badge($lv['stage'], true)) !== '' ? $sb . ' ' : '') . e($lv['version']) . ($lv['date'] !== '' ? ' · ' . e($lv['date']) : '') . '</span>' : '';
+    $all = m3d_fits_all($o);
     $models = [];
-    foreach ($o['models'] ?? [] as $slug) if (($m = m3d_model($slug)) && m3d_listed($m)) $models[] = e($m['name']) . (($m['generation'] ?? '') !== '' ? ' <span class="muted">G' . e($m['generation']) . '</span>' : '');
-    $fits = $models ? '<span class="fits small">' . implode(' · ', $models) . '</span>' : '';
+    if (!$all) foreach ($o['models'] ?? [] as $slug) if (($m = m3d_model($slug)) && m3d_listed($m)) $models[] = e($m['name']) . (($m['generation'] ?? '') !== '' ? ' <span class="muted">G' . e($m['generation']) . '</span>' : '');
+    $fits = $all ? '<span class="fits small">All Models</span>' : ($models ? '<span class="fits small">' . implode(' · ', $models) . '</span>' : '');
     $type = m3d_accessory_type($o);
     // on the picture: the type's icon (top-left, like the Gen tag of model cards), then Password / Teaser / Patrons
-    $pill = '<span class="cover-tags"><span class="type-tag" title="' . e($type) . '">' . accessory_icon($type) . '</span>' . visibility_pill('outfits', $o) . '</span>'
-        . (!$hidden && $count > 1 ? '<span class="count-pill">' . $count . ' images</span>' : '');
+    $pill = '<span class="cover-tags"><span class="type-tag" title="' . e($type) . '">' . accessory_icon($type) . '</span>' . visibility_pill('outfits', $o) . '</span>' . new_tag($o);   // New: top right
     $likes = m3d_like_count((string) $o['slug'], 'outfits');
     $likesPill = comments_pill('outfits', $o, (string) $o['slug']) . likes_pill($likes);
-    return '<a class="ocard" href="' . e($url) . '" data-ocard data-slug="' . e($o['slug']) . '" data-name="' . e(mb_strtolower($o['name'])) . '" data-order="' . e($o['order'] ?? 999) . '" data-likes="' . $likes . '" data-updated="' . m3d_updated_ts($o) . '" data-downloads="' . m3d_downloads('outfits', (string) $o['slug'])['total'] . '" data-type="' . e(mb_strtolower(m3d_accessory_type($o))) . '" data-models="' . e(implode(' ', array_filter($o['models'] ?? [], fn($sl) => ($mm = m3d_model($sl)) && m3d_listed($mm)))) . '">'
+    return '<a class="ocard" href="' . e($url) . '" data-ocard data-slug="' . e($o['slug']) . '" data-name="' . e(mb_strtolower($o['name'])) . '" data-order="' . e($o['order'] ?? 999) . '" data-likes="' . $likes . '" data-updated="' . m3d_updated_ts($o) . '" data-downloads="' . m3d_downloads('outfits', (string) $o['slug'])['total'] . '" data-type="' . e(mb_strtolower(m3d_accessory_type($o))) . '" data-models="' . ($all ? '*' : e(implode(' ', array_filter($o['models'] ?? [], fn($sl) => ($mm = m3d_model($sl)) && m3d_listed($mm))))) . '">'
         . '<span class="ocard-img' . ($hidden ? ' is-blurred' : '') . '">' . $img . $pill . '</span>'
         . '<span class="ocard-body"><span class="franchise">' . e($type) . '</span><h3>' . e($o['name']) . '</h3>' . $ver . $fits . ($likesPill ? '<span class="card-meta">' . $likesPill . '</span>' : '') . '</span></a>';
 }
@@ -1597,6 +1794,12 @@ function card_pic(string $kind, array $it): array
 function like_strip(array $cards, string $what, string $class = ''): string
 {
     return strip_html(trim("like-strip $class"), 'like-row', implode('', $cards), $what);
+}
+
+/** Accessory pages, "Optimized For" of an accessory made for every model (`allModels`): one pill, a link to the models catalog. */
+function fit_all_pill(): string
+{
+    return '<a class="fit-all" href="/#catalog"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="9" cy="8" r="3.4"/><path d="M2.8 19.5c.6-3.4 3.1-5.4 6.2-5.4s5.6 2 6.2 5.4"/><path d="M15.2 4.9a3.4 3.4 0 0 1 0 6.3"/><path d="M17.6 14.4c2 .7 3.3 2.5 3.6 5.1"/></svg>All Models</a>';
 }
 
 /**
@@ -1704,7 +1907,13 @@ function md_id(string $text): string
  *  'paywall' => true draws it as the "Patreon Access from Here" bar (md_paywall(), for the post's writers), 'paywall' => 'skip' leaves it out
  *  (readers). Elsewhere it stays a plain line of text. */
 const MD_PAYWALL = '[ ]{0,3}-{3,}[ ]*patreon[ ]*-{3,}[ ]*';
+/** A divider line: three or more "-", "*" or "_" alone on a line (spaces between allowed, as in Markdown) = <hr class="md-hr">,
+ *  a block of its own like a heading. "--- Patreon ---" (MD_PAYWALL) isn't one: it holds a word. */
+const MD_HR = '[ ]{0,3}(?:(?:-[ ]*){3,}|(?:\*[ ]*){3,}|(?:_[ ]*){3,})';
 const MD_IMG = '/^!\[([^\]]*)\]\(((?:https?:\/\/|\/(?![\/\\\\]))[^\s)]+)\)$/';   // "//other-site/…" (or "/\other-site/…") isn't a picture of this site: never loaded
+/** A fenced code block: a line "```" (+ a language) at the start of a line, up to the next line ending in "```". The one rule for code
+ *  blocks: md_blocks() renders them with it and md_tabs() (md_code_lines()) keeps "=== …" lines inside them as code. */
+const MD_FENCE = '/^```([\w+-]*)[ ]*\n(.*?)\n?```[ ]*$/ms';
 
 /**
  * One list (bullets or numbered) from its lines. Indented lines continue the item above; indented "- " or "1. " lines make a
@@ -1773,6 +1982,23 @@ function md_table(array $lines): string
     return $out . '</tbody></table></div>';
 }
 
+/** Picture lines of one block: consecutive pictures = one picture or a gallery (md_images()), a video of this site = a player (md_video()),
+ *  a video on another website = a plain link (never loaded from there). */
+function md_media(array $imgs): string
+{
+    $out = '';
+    $pics = [];
+    foreach ([...$imgs, null] as $m) {
+        $video = $m !== null && preg_match('/\.(mp4|webm)(?:[?#]|$)/i', $m[2]);
+        if (($m === null || $video) && $pics) { $out .= md_images($pics); $pics = []; }
+        if ($m === null) break;
+        if (!$video) $pics[] = $m;
+        elseif (m3d_is_video_url($m[2])) $out .= md_video($m[2], $m[1]);
+        else $out .= '<p><a href="' . e($m[2]) . '" rel="noopener">' . e($m[1] !== '' ? $m[1] : $m[2]) . '</a></p>';
+    }
+    return $out;
+}
+
 function md_images(array $imgs): string
 {
     $set = slides_attr(array_map(fn($m) => ['src' => $m[2], 'caption' => $m[1]], $imgs));
@@ -1822,7 +2048,7 @@ function md_callout(string $inner, array $opts = []): string
             $inner = ltrim(substr(ltrim($inner), strlen($m[0])), "\n");
         }
     } elseif (preg_match('/^\*\*(warning|caution|important|tip|note)\b/i', ltrim($inner), $m)) {
-        $type = strtolower($m[1]);   // "> **Warning:** …": typed by hand, and how the SmutBase import writes a quoted warning
+        $type = strtolower($m[1]);   // "> **Warning:** …": typed by hand
     }
     $head = $title !== null
         ? '<p class="callout-title"><svg viewBox="0 0 24 24" aria-hidden="true">' . CALLOUTS[$type][1] . '</svg>' . md_inline($title) . '</p>'
@@ -1844,8 +2070,8 @@ function md_tabs(string $text, array $opts, array &$tabs): string
     $inner = array_diff_key($opts, ['docs' => 1]);
     $out = [];
     $group = null;   // [[name, lines], …] while inside a group
-    $fence = false;
-    $close = function () use (&$group, &$out, &$tabs, $inner) {
+    $code = md_code_lines($text);   // "=== …" lines inside code stay code
+    $close =function () use (&$group, &$out, &$tabs, $inner) {
         $list = $panels = '';
         foreach ($group as [$name, $lines]) {
             $key = mb_strtolower($name);
@@ -1859,19 +2085,32 @@ function md_tabs(string $text, array $opts, array &$tabs): string
         $out[] = '';
         $group = null;
     };
-    foreach (explode("\n", $text) as $line) {
+    foreach (explode("\n", $text) as $i => $line) {
+        $fence = isset($code[$i]);
         if (!$fence && preg_match('/^===[ ]+(\S.*?)[ ]*$/', $line, $m)) {   // a new tab (and a new group when outside one)
             $group ??= [];
             $group[] = [mb_substr($m[1], 0, 60), []];
             continue;
         }
-        if (str_starts_with(ltrim($line), '```')) $fence = !$fence;   // "=== …" lines inside code stay code
         if ($group !== null && !$fence && rtrim($line) === '===') { $close(); continue; }
         if ($group !== null) $group[count($group) - 1][1][] = $line;
         else $out[] = $line;
     }
     if ($group !== null) $close();
     return implode("\n", $out);
+}
+
+/** The numbers (from 0) of the text's lines that belong to a fenced code block, fences included, as keys: found with MD_FENCE,
+ *  exactly as md_blocks() finds the blocks, so a line md_tabs() takes for code is code on the page too, and the other way round. */
+function md_code_lines(string $text): array
+{
+    if (!str_contains($text, '```') || !preg_match_all(MD_FENCE, $text, $all, PREG_OFFSET_CAPTURE)) return [];
+    $lines = [];
+    foreach ($all[0] as [$block, $at]) {
+        $from = substr_count($text, "\n", 0, $at);
+        $lines += array_fill_keys(range($from, $from + substr_count($block, "\n")), true);
+    }
+    return $lines;
 }
 
 /**
@@ -1909,13 +2148,14 @@ function md_blocks(string $text, array $opts, ?array &$toc): string
     $tabs = [];
     $text = md_tabs($text, $opts, $tabs);   // "=== Name" tab groups first: a tab can hold anything, blank lines too
     // fenced code blocks first: they may contain blank lines
-    $text = preg_replace_callback('/^```([\w+-]*)[ ]*\n(.*?)\n?```[ ]*$/ms', function ($m) use (&$code) {
+    $text = preg_replace_callback(MD_FENCE, function ($m) use (&$code) {
         $code[] = [$m[1], $m[2]];
         return "\n\n\x02" . (count($code) - 1) . "\x02\n\n";   // (not \x00: trim() strips it)
     }, $text);
     // a heading line is a block of its own, also with text right under (or above) it and no blank line between
     $text = preg_replace('/^(#{2,3}[ ]+\S.*)$/m', "\n\n$1\n\n", $text);
     if (!empty($opts['paywall'])) $text = preg_replace('/^' . MD_PAYWALL . '$/mi', "\n\n$0\n\n", $text);   // the bar is a block of its own too
+    $text = preg_replace('/^' . MD_HR . '$/m', "\n\n---\n\n", $text);   // a divider line too (after the code blocks: "---" inside one stays code)
     $out = '';
     foreach (preg_split('/\n\s*\n/', trim($text)) as $block) {
         $block = rtrim($block);
@@ -1929,13 +2169,14 @@ function md_blocks(string $text, array $opts, ?array &$toc): string
             $out .= '<div class="md-code' . ($numbered ? ' numbered' : '') . '"><button type="button" class="code-copy" data-copy-code>Copy</button><pre><code' . ($lang !== '' ? ' data-lang="' . e($lang) . '"' : '') . '>' . $body . '</code></pre></div>';
             continue;
         }
+        if ($block === '---') { $out .= '<hr class="md-hr" />'; continue; }
         if (!empty($opts['paywall']) && preg_match('/^' . MD_PAYWALL . '$/i', $block)) { $out .= $opts['paywall'] === 'skip' ? '' : md_paywall(); continue; }
         $lines = explode("\n", $block);
         $imgs = [];
         foreach ($lines as $l) { if (preg_match(MD_IMG, trim($l), $im)) $imgs[] = $im; else { $imgs = []; break; } }
         if ($imgs) {
             if (!empty($opts['picLinks'])) $out .= '<p>' . implode('<br>', array_map(fn($im) => '<a href="' . e($im[2]) . '" rel="nofollow ugc noopener">' . e($im[1] !== '' ? $im[1] : $im[2]) . '</a>', $imgs)) . '</p>';   // visitors' texts: a link, never a picture from another website
-            elseif (empty($opts['noImages'])) $out .= md_images($imgs);   // noImages: blurred items
+            elseif (empty($opts['noImages'])) $out .= md_media($imgs);   // noImages: blurred items
             continue;
         }
         if (count($lines) === 1 && preg_match('/^(#{2,3})\s+(.+)$/', $block, $m)) {
@@ -1959,6 +2200,7 @@ function md_blocks(string $text, array $opts, ?array &$toc): string
             $out .= md_callout(implode("\n", array_map(fn($l) => preg_replace('/^>\s?/', '', $l), $lines)), $opts);
             continue;
         }
+        if (!md_ugc() && ($cards = md_link_cards($lines)) !== '') { $out .= $cards; continue; }   // never in visitors' texts
         // text lines followed by a list in the same block: paragraph + list
         $first = null;
         foreach ($lines as $i => $l) if (preg_match('/^(-|\d+\.)\s/', $l)) { $first = $i; break; }
@@ -1970,6 +2212,91 @@ function md_blocks(string $text, array $opts, ?array &$toc): string
         $out .= '<p>' . md_inline($block) . '</p>';
     }
     return $out;
+}
+
+/** A line holding only a link to a model, accessory or docs page ("[Get the Pose Library](/accessories/pose-library/)", an #anchor allowed):
+ *  [link text, kind (models | outfits | docs), slug ('' = the docs home), anchor], else null. md_link_cards() makes it a card; md_first_text() skips it. */
+function md_card_line(string $line): ?array
+{
+    if (!preg_match('~^\[([^\]]+)\]\(/(models|accessories|docs)/(?:([a-z0-9][a-z0-9_-]*)/?)?(#[\w-]*)?\)$~i', trim($line), $m)) return null;
+    $kind = ['models' => 'models', 'accessories' => 'outfits', 'docs' => 'docs'][strtolower($m[2])];
+    if ($kind !== 'docs' && ($m[3] ?? '') === '') return null;
+    return [$m[1], $kind, $m[3] ?? '', $m[4] ?? ''];
+}
+
+/**
+ * A block whose every line is md_card_line(): one preview card per line (md_link_card(), md_doc_card()), side by side when several; ''
+ * when any line isn't one, or its item / page is missing or hidden from this visitor (m3d_can_view(): drafts, locked password items,
+ * hidden "Coming soon"; docs drafts except for admins): the block then stays a paragraph of plain links.
+ */
+function md_link_cards(array $lines): string
+{
+    $cards = [];
+    foreach ($lines as $l) {
+        if (!($c = md_card_line($l))) return '';
+        [$text, $kind, $slug, $anchor] = $c;
+        if ($kind === 'docs') {
+            if (($card = md_doc_card($slug, $text, $anchor)) === '') return '';
+            $cards[] = $card;
+            continue;
+        }
+        $it = m3d_item($kind, $slug);
+        if (!$it || !m3d_can_view($kind, $it)) return '';
+        $cards[] = md_link_card($kind, $it, $text, $anchor);
+    }
+    return '<div class="md-cards' . (count($cards) > 1 ? ' is-multi' : '') . '">' . implode('', $cards) . '</div>';
+}
+
+/** One preview card: picture (card_pic(): blurred when hidden), type or franchise · Gen, name, two lines of description (else the
+ *  first features), version · date, and the link's own text in yellow when it says more than the name ($text as written). */
+function md_link_card(string $kind, array $it, string $text, string $anchor = ''): string
+{
+    [$src, $hidden] = card_pic($kind, $it);
+    $isOutfit = $kind === 'outfits';
+    $kicker = $isOutfit ? accessory_icon(m3d_accessory_type($it)) . e(m3d_accessory_type($it))
+        : e($it['franchise'] ?? '') . (($it['generation'] ?? '') !== '' ? ' · Gen ' . e($it['generation']) : '');
+    $plain = fn(string $t): string => trim(html_entity_decode(strip_tags(md_inline($t)), ENT_QUOTES | ENT_HTML5, 'UTF-8'));
+    $desc = $plain(md_first_text((string) ($it['description'] ?? '')));
+    if ($desc === '') $desc = implode(' ', array_filter(array_map(fn($f) => $plain(is_array($f) ? (string) ($f['text'] ?? '') : (string) $f), array_slice((array) ($it['features'] ?? []), 0, 3))));
+    $v = m3d_current_version($it);
+    $ts = m3d_changelog_ts((string) ($v['date'] ?? ''));
+    $ver = ($l = m3d_version_label($v)) !== '' ? 'Version ' . e($l) . ($ts ? ' · ' . e(m3d_site_time($ts, 'j M Y')) : '') : '';
+    $name = m3d_model_name($it);
+    $said = $plain($text);
+    $go = strcasecmp($said, $name) !== 0 && strcasecmp($said, (string) $it['name']) !== 0;
+    return '<a class="md-card' . ($go ? ' has-go' : '') . '" href="' . e(m3d_item_url($kind, $it['slug']) . $anchor) . '">'
+        . '<span class="md-card-img' . ($hidden ? ' is-blurred' : '') . '">' . card_img($src, (string) $it['name']) . '</span>'
+        . '<span class="md-card-body">'
+        . ($kicker !== '' ? '<span class="md-card-kind">' . $kicker . '</span>' : '')
+        . '<b class="md-card-name">' . e($name) . '</b>'
+        . ($desc !== '' ? '<span class="md-card-desc">' . e($desc) . '</span>' : '')
+        . '<span class="md-card-foot">' . ($ver !== '' ? '<span class="md-card-ver">' . $ver . '</span>' : '')
+        . '<span class="md-card-go">' . ($go ? e($said) . ' ' : '') . '<span aria-hidden="true">→</span></span></span>'
+        . '</span></a>';
+}
+
+/** A docs page's card: the docs icon in the picture's place, "Docs · <section>", title, summary and the link's own text; '' when the page
+ *  is missing or a draft this visitor can't see ($slug '' = the docs home, m3d_docs_home()). */
+function md_doc_card(string $slug, string $text, string $anchor = ''): string
+{
+    $slug = $slug !== '' ? $slug : m3d_docs_home();
+    $page = null;
+    foreach (m3d_doc_pages() as $p) if (($p['slug'] ?? '') === $slug) { $page = $p; break; }
+    if (!$page || (!empty($page['draft']) && !m3d_is_admin($GLOBALS['M3D']))) return '';
+    $plain = fn(string $t): string => trim(html_entity_decode(strip_tags(md_inline($t)), ENT_QUOTES | ENT_HTML5, 'UTF-8'));
+    $title = (string) ($page['title'] ?? '');
+    $said = $plain($text);
+    $go = strcasecmp($said, $title) !== 0;
+    $url = ($slug === m3d_docs_home() ? '/docs/' : '/docs/' . $slug . '/') . $anchor;
+    $sec = trim((string) ($page['section'] ?? ''));
+    return '<a class="md-card is-doc' . ($go ? ' has-go' : '') . '" href="' . e($url) . '">'
+        . '<span class="md-card-img"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20V3H6.5A2.5 2.5 0 0 0 4 5.5z"/><path d="M4 19.5A2.5 2.5 0 0 0 6.5 22H20v-5M8 7h8M8 11h6"/></svg></span>'
+        . '<span class="md-card-body">'
+        . '<span class="md-card-kind">Docs' . ($sec !== '' ? ' · ' . e($sec) : '') . '</span>'
+        . '<b class="md-card-name">' . e($title) . '</b>'
+        . (($sum = $plain((string) ($page['summary'] ?? ''))) !== '' ? '<span class="md-card-desc">' . e($sum) . '</span>' : '')
+        . '<span class="md-card-foot"><span class="md-card-go">' . ($go ? e($said) . ' ' : '') . '<span aria-hidden="true">→</span></span></span>'
+        . '</span></a>';
 }
 
 /** The bar where the patrons' part of a blog post starts (MD_PAYWALL). */
@@ -1985,11 +2312,13 @@ function md_paywall(): string
 function md_first_text(string $text): string
 {
     $text = preg_replace('/^```.*?^```[ ]*$/ms', '', str_replace("\r\n", "\n", $text));   // code blocks may hold blank lines
+    $text = preg_replace('/^' . MD_HR . '$/m', "\n", $text);   // a divider line ends the paragraph above it
     foreach (preg_split('/\n\s*\n/', trim((string) $text)) as $block) {
         $lines = array_values(array_filter(explode("\n", rtrim($block)), fn($l) => !preg_match('/^===(\s|$)/', $l)));   // tab names and ends
         while ($lines && preg_match('/^#{1,6}\s/', $lines[0])) array_shift($lines);   // a heading, then text: the text
         if (!$lines || trim($lines[0]) === '' || preg_match('/^(-|\d+\.)\s|^\s*[>|]|^```|^\s/', $lines[0])) continue;
         if (!array_filter($lines, fn($l) => !preg_match(MD_IMG, trim($l)))) continue;   // only pictures
+        if (!array_filter($lines, fn($l) => !md_card_line($l))) continue;   // only links to models / accessories (cards)
         $keep = [];
         foreach ($lines as $l) { if (preg_match('/^(-|\d+\.)\s/', $l)) break; $keep[] = $l; }   // text lines, then a list: the text
         return trim(implode("\n", $keep));

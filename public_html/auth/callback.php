@@ -64,6 +64,13 @@ if (!empty($result['currency']) && ($result['currency'] !== (m3d_settings()['cur
 // and its paid tiers (names + prices): the editors offer them for a model's minimum tier; saved only when one is new or renamed
 m3d_learn_tiers($result['tier_list'] ?? []);
 session_regenerate_id(true);
+if (!$setup && in_array('login', m3d_bans((string) $result['id']), true)) {   // banned from logging in (Admin → Access): not logged in, /banned/ says why
+    unset($_SESSION['patron'], $_SESSION['csrf'], $_SESSION['preview']);
+    $_SESSION['ban_id'] = (string) $result['id'];
+    m3d_redirect(m3d_ban_url('login'));
+}
+unset($_SESSION['ban_id']);
+unset($_SESSION['csrf']);   // a new form token with the new login (m3d_csrf() makes it)
 $_SESSION['patron'] = $result + ['checked_at' => time()];
 $_SESSION['started'] = time();   // the login lasts m3d_session_lifetime() from here (bootstrap.php)
 
@@ -80,7 +87,11 @@ if (!empty($M3D['debug'])) {
 
 $patron = m3d_apply_exception($result);
 if (!$setup && ($result['reason'] ?? '') !== 'owner') m3d_login_count((bool) $patron['access']);   // Admin → Home → Logins (numbers only)
-if (!$patron['access']) $fail($result['reason']);   // Admin → Access exceptions ("Bypass Tier") count here too
+// Admin → Access exceptions ("Bypass Tier") count here too. Without a paid tier: the page that says why, unless they logged in to
+// comment or report a bug where any Patreon account may (Settings → Comments / Bug Reports → Who): then back there
+$freeOk = (str_starts_with($return, '/bugs/') && m3d_bugs_on() && m3d_bug_settings()['who'] === 'any')
+    || (str_ends_with($return, '#comments') && m3d_comment_settings()['on'] && m3d_comment_settings()['who'] === 'any');
+if (!$patron['access'] && !$freeOk) $fail($result['reason']);
 // a paying patron's first login: the welcome page first (Admin → Settings → Features → Welcome Page), which continues to $return
 if (m3d_welcome_due($patron)) $return = '/welcome/' . ($return !== '/' ? '?return=' . rawurlencode($return) : '');
 m3d_redirect($return);

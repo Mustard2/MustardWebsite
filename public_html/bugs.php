@@ -53,6 +53,7 @@ if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST') {
     elseif ($do === 'follow' && m3d_bug_can_follow($p)) {
         $b = m3d_bug((int) ($_POST['n'] ?? 0));
         if (!$b || !m3d_bug_visible($b, $p)) not_found();
+        if (!m3d_bug_toggle_ok()) m3d_redirect('/bugs/' . (int) $b['n'] . '/?wait=1#metoo');
         $code = m3d_like_code((string) $p['id']);
         m3d_bug_change((int) $b['n'], function (array $b) use ($p, $code) {
             if (isset(m3d_bug_followers($b)[$code])) { $b['fol'] = m3d_bug_followers($b); unset($b['fol'][$code]); return $b; }
@@ -60,12 +61,14 @@ if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST') {
         });
         m3d_redirect('/bugs/' . (int) $b['n'] . '/#metoo');
     }
+    elseif ($can['why'] === 'banned') m3d_redirect(m3d_ban_url('bugs'));   // banned in Admin → Access: the page with the reason
     elseif (!$can['ok']) $error = $can['why'] === 'login' ? 'Please log in with Patreon first.' : $can['why'];
     elseif ($do === 'report') {
         $abouts = m3d_bug_abouts();
         $form = $readForm();
         $item = $abouts[$form['about']][2] ?? null;
         $versions = m3d_bug_versions($item);
+        $limitMsg = 'You sent ' . m3d_plural($S['per_day'], 'report') . ' in the last 24 hours: please wait a little before sending more.';
         if ($form['ver'] !== '' && $versions && !in_array($form['ver'], $versions, true)) $form['ver'] = '';
         if (!isset($abouts[$form['about']])) $error = 'Pick what the bug is about.';
         elseif (mb_strlen($form['title']) < 5) $error = 'Write a short title (5 characters at least).';
@@ -74,7 +77,7 @@ if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST') {
         elseif (m3d_bug_needs_versions($form['about']) && $form['blender'] === '') $error = 'Write the Blender version you use.';
         elseif (m3d_bug_needs_versions($form['about']) && m3d_mustardui_on() && $form['mui'] === '') $error = 'Write the MustardUI version you use.';
         // the daily limit is for visitors: admins enter reports for others ("+ New report")
-        elseif (!$admin && m3d_bug_sent_today((string) $p['id']) >= $S['per_day']) $error = 'You sent ' . m3d_plural($S['per_day'], 'report') . ' in the last 24 hours: please wait a little before sending more.';
+        elseif (!$admin && m3d_bug_sent_today((string) $p['id']) >= $S['per_day']) $error = $limitMsg;   // checked again under the lock below
         else {
             $pics = [];
             if ($S['uploads'] && !empty($_FILES['pics'])) {
@@ -84,6 +87,7 @@ if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST') {
             if ($error === '') {
                 $now = time();
                 $bug = m3d_bugs_update(function (array $bugs, int $next) use ($form, $pics, $p, $abouts, $S, $now, $admin) {
+                    if (!$admin && m3d_bug_sent_today((string) $p['id'], $bugs) >= $S['per_day']) return [$bugs, $next, 'limit'];   // another session sent one meanwhile
                     $b = ['n' => $next, 'title' => $form['title'], 'about' => $form['about'], 'about_name' => bug_about_name($abouts[$form['about']][0]),
                         'ver' => $form['ver'], 'blender' => $form['blender'], 'mui' => $form['mui'], 'body' => $form['body'], 'steps' => $form['steps'],
                         'links' => $form['links'], 'pics' => $pics, 'by' => (string) $p['id'], 'name' => (string) ($p['name'] ?? ''),
@@ -93,11 +97,11 @@ if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST') {
                     $bugs[] = m3d_bug_follow($b, $p, $now);
                     return [$bugs, $next + 1, $b];
                 });
-                if (!$bug) { bug_delete_pics($pics); $error = 'The report could not be saved. Please try again.'; }
+                if (!is_array($bug)) { bug_delete_pics($pics); $error = $bug === 'limit' ? $limitMsg : 'The report could not be saved. Please try again.'; }
                 else {
                     if (!$admin) m3d_bug_notify($bug);
                     // the creator: on the new report, with "added"
-                    if ($admin) m3d_redirect('/bugs/' . (int) $bug['n'] . '/?done=' . rawurlencode('Report #' . (int) $bug['n'] . ' added.'));
+                    if ($admin) m3d_redirect('/bugs/' . (int) $bug['n'] . '/?done=added-' . (int) $bug['n']);
                     m3d_redirect('/bugs/' . (int) $bug['n'] . '/?sent=1');
                 }
             }
@@ -110,6 +114,7 @@ if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST') {
         if ($do === 'metoo') {
             // Fixed / Closed: no more Me Too; never on one's own report or by an admin (the page shows no button then either)
             if (!in_array($b['status'] ?? 'new', BUG_OPEN, true) || $admin || (string) ($b['by'] ?? '') === (string) ($p['id'] ?? '')) m3d_redirect("/bugs/$n/#metoo");
+            if (!m3d_bug_toggle_ok()) m3d_redirect("/bugs/$n/?wait=1#metoo");
             $code = m3d_like_code((string) $p['id']);
             m3d_bug_change($n, function (array $b) use ($code, $p) {
                 $list = (array) ($b['metoo'] ?? []);
@@ -125,18 +130,24 @@ if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST') {
         elseif (mb_strlen($text) < 2) $error = 'Write a comment first.';
         else {
             $now = time();
-            $saved = m3d_bug_change($n, function (array $b) use ($p, $text, $now, $admin) {
-                $b['log'][] = ['t' => 'c', 'by' => (string) $p['id'], 'name' => (string) ($p['name'] ?? ''), 'at' => $now, 'text' => $text] + ($admin ? ['admin' => true] : []);
-                $b['act'] = $now;
-                if (!$admin) {   // a new comment: the report is "not seen" again, and the bell tells new comments from a new report
-                    if (!empty($b['seen'])) $b['seen_at'] = $now - 1;
-                    unset($b['seen']);
-                }
-                return m3d_bug_follow($b, $p, $now);
+            // the daily limit, checked under the same lock as the save (two sessions at once can't both pass); admins have none
+            $saved = m3d_bugs_update(function (array $bugs, int $next) use ($n, $p, $text, $now, $admin) {
+                if (!$admin && m3d_bug_comments_today((string) $p['id'], $bugs) >= BUG_COMMENTS_PER_DAY) return [$bugs, $next, 'limit'];
+                $i = array_search($n, array_map(fn($b) => (int) ($b['n'] ?? 0), $bugs), true);
+                if ($i === false) return [$bugs, $next, null];   // deleted meanwhile
+                if (!empty($bugs[$i]['locked']) && !$admin) return [$bugs, $next, 'locked'];   // locked meanwhile
+                $bugs[$i] = m3d_bug_add_comment($bugs[$i], $p, $text, $now, $admin);
+                return [$bugs, $next, true];
             });
-            if ($saved && !$admin) m3d_bug_comment_notify($b, (string) ($p['name'] ?? ''), $text);
-            if ($saved) m3d_redirect("/bugs/$n/#comments");
-            $error = 'Your comment could not be saved. Please try again.';
+            if ($saved === true) {
+                if (!$admin) m3d_bug_comment_notify($b, (string) ($p['name'] ?? ''), $text);
+                m3d_redirect("/bugs/$n/#comments");
+            }
+            $error = match ($saved) {
+                'limit'  => 'You wrote ' . m3d_plural(BUG_COMMENTS_PER_DAY, 'comment') . ' on bug reports in the last 24 hours: please wait a little before writing more.',
+                'locked' => 'Comments are closed on this report.',
+                default  => 'Your comment could not be saved. Please try again.',
+            };
         }
     }
 }
@@ -189,8 +200,6 @@ if ($n > 0) {
     // the creator manages the report here (Creator Tools, Reported By, the ⋯ menus; the changes go to admin/bug.php and come back
     // with ?done= / ?err=); ?edit=report | c<i> = that post as a form. Opening it = seen (off the creator's Not Seen list).
     if ($creator && empty($b['seen'])) m3d_bug_change($n, function (array $x) { $x['seen'] = true; return $x; });
-    $done = $creator ? bug_line($_GET['done'] ?? '', 200) : '';
-    $fail = $creator ? bug_line($_GET['err'] ?? '', 200) : '';
     $edit = $creator ? bug_str($_GET['edit'] ?? '') : '';
     $act = '/admin/bug.php?n=' . $n;
     $keys = '<input type="hidden" name="csrf" value="' . e(m3d_csrf()) . '" />';
@@ -215,7 +224,7 @@ if ($n > 0) {
     <?php if (!empty($b['pending'])): ?>
       <div class="bug-notice"><span>Waiting for the creator to check it: only you<?= $admin ? ' (and admins)' : '' ?> can see this report.</span><?php if ($creator): ?><form method="post" action="<?= e($act) ?>"><?= $keys ?><button class="btn btn-primary btn-sm" name="do" value="publish">Publish</button></form><?php endif ?></div>
     <?php endif ?>
-    <?php if ($done !== '') site_flash('✓ ' . e($done)); if ($fail !== '') site_flash('<b>Not saved:</b> ' . e($fail), 'err') ?>
+    <?php bug_result_flash($creator) // ?done= / ?err= codes of the creator's changes, ?wait=1 ?>
     <?php if (!empty($b['hidden'])): ?><p class="bug-notice"><span>Hidden from the site: only admins see this report.</span></p><?php endif ?>
     <header class="bug-top">
       <div class="bug-top-row"><?= bug_status_badge($b) ?><?php if (!empty($b['pin']) && in_array($status, BUG_OPEN, true)): ?><span class="pin-tag"><?= bug_icon('pin') ?>Known Issue</span><?php endif ?></div>
@@ -334,7 +343,7 @@ if ($n > 0) {
         <?php elseif ($can['why'] === 'login'): ?>
           <div class="reply reply-login"><span class="muted">Log in to comment or press Me Too.</span><a class="btn btn-patreon btn-sm" rel="nofollow" href="<?= e($loginUrl) ?>">Log In with Patreon</a></div>
         <?php else: ?>
-          <p class="reply-off muted small"><?= e($can['why']) ?></p>
+          <?= $can['why'] === 'banned' ? ban_note('bugs') : '<p class="reply-off muted small">' . e($can['why']) . '</p>' ?>
         <?php endif ?>
       </div>
 
@@ -447,7 +456,7 @@ if (!empty($_GET['report'])) {
             <a class="btn btn-patreon" rel="nofollow" href="<?= e($loginUrl) ?>">Log In with Patreon</a>
           <?php else: ?>
             <h2>You Can’t Report Bugs</h2>
-            <p><?= e($can['why']) ?></p>
+            <?= $can['why'] === 'banned' ? ban_note('bugs', '') : '<p>' . e($can['why']) . '</p>' ?>
           <?php endif ?>
         </div>
       <?php else: ?>
@@ -522,9 +531,9 @@ if (!empty($_GET['report'])) {
 $f = [
     // '' = Open, the default (like GitHub); 'all' = every status
     'status' => in_array($_GET['status'] ?? '', ['all', 'fixed', 'closed', 'following', ...($creator ? ['unseen', 'pending', 'hidden'] : [])], true) ? (string) $_GET['status'] : '',
-    'by'     => $creator && preg_match('/^[0-9A-Za-z_-]{1,40}$/', bug_str($_GET['by'] ?? '')) ? (string) $_GET['by'] : '',   // one reporter's reports (the creator)
+    'by'     => $creator && preg_match('/^[0-9A-Za-z_-]{1,40}$/D', bug_str($_GET['by'] ?? '')) ? (string) $_GET['by'] : '',   // one reporter's reports (the creator)
     'kind'   => in_array($_GET['kind'] ?? '', ['models', 'outfits', 'other'], true) ? (string) $_GET['kind'] : '',
-    'about'  => preg_match('/^(models|outfits):[a-z0-9-]{1,64}$|^(mustardui|site|other)$/', bug_str($_GET['about'] ?? '')) ? (string) $_GET['about'] : '',
+    'about'  => preg_match('/^(models|outfits):[a-z0-9-]{1,64}$|^(mustardui|site|other)$/D', bug_str($_GET['about'] ?? '')) ? (string) $_GET['about'] : '',
     'tag'    => is_string($_GET['tag'] ?? null) && isset($tags[$_GET['tag']]) ? $_GET['tag'] : '',
     'mine'   => $p && in_array($_GET['mine'] ?? '', ['sent', 'metoo'], true) ? (string) $_GET['mine'] : '',
     'sort'   => in_array($_GET['sort'] ?? '', ['metoo', 'active'], true) ? (string) $_GET['sort'] : '',
@@ -587,8 +596,6 @@ asort($aboutNames, SORT_NATURAL | SORT_FLAG_CASE);
 $usedTags = array_filter($tags, fn($id) => array_filter($all, fn($b) => in_array((string) $id, (array) ($b['tags'] ?? []), true)), ARRAY_FILTER_USE_KEY);
 $chip = fn(string $label, array $q, bool $on, string $extra = '') => '<a class="chip" href="' . e(bugs_url($q, $cur)) . '" aria-pressed="' . ($on ? 'true' : 'false') . '">' . $extra . $label . '</a>';
 
-$okMsg = $creator ? bug_line($_GET['done'] ?? '', 200) : '';   // back from a batch change (admin/bugs.php) or a deleted report
-$errMsg = $creator ? bug_line($_GET['err'] ?? '', 200) : '';
 $byName = '';
 if ($f['by'] !== '') foreach ($all as $b) if ((string) ($b['by'] ?? '') === $f['by'] && ($b['name'] ?? '') !== '') { $byName = (string) $b['name']; break; }
 
@@ -607,7 +614,7 @@ layout_start('Bug Reports', 'Known bugs in the models, accessories and website o
         <a class="btn btn-primary" href="/bugs/report/<?= $f['about'] !== '' ? '?about=' . e(rawurlencode($f['about'])) : '' ?>"><?= bug_icon('bug') ?>Report a Bug</a>
       </div>
     </header>
-    <?php if ($okMsg !== '') site_flash('✓ ' . e($okMsg)); if ($errMsg !== '') site_flash('<b>Not saved:</b> ' . e($errMsg), 'err') ?>
+    <?php bug_result_flash($creator) // back from a batch change (admin/bugs.php) or a deleted report ?>
 
     <nav class="chips bugs-status" aria-label="Status">
       <?= $chip('Open <span>' . $counts['open'] . '</span>', ['status' => ''], $f['status'] === '', '<i class="sdot" style="--c:#7cc4ff"></i>') ?>

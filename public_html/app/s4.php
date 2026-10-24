@@ -109,7 +109,7 @@ function m3d_s4_domain_clean(string $d): string
 {
     $d = strtolower(trim($d));
     if (preg_match('#^https://([^/?\#]+)/?$#', $d, $m)) $d = $m[1];
-    if (!preg_match('/^(?=.{4,253}$)([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/', $d)) return '';
+    if (!preg_match('/^(?=.{4,253}$)([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/D', $d)) return '';
     return preg_match(S4_HOST_RE, $d) ? '' : $d;
 }
 
@@ -144,7 +144,7 @@ function m3d_s4_parse(string $url, ?string $bucket = null): ?array
     } else {
         [$bucket, $key] = [$m[1], $path];
     }
-    if (!preg_match('/^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$/', $bucket) || $key === '' || str_ends_with($key, '/')) return null;   // a bucket or folder isn't a file
+    if (!preg_match('/^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$/D', $bucket) || $key === '' || str_ends_with($key, '/')) return null;   // a bucket or folder isn't a file
     return [$m[2], $bucket, $key, $m[3]];
 }
 
@@ -226,7 +226,7 @@ function m3d_s4_probe(string $url, ?string $region = null, ?array $keys = null, 
     curl_exec($ch);
     $code = (int) curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
     $cerr = curl_errno($ch) && curl_errno($ch) !== CURLE_WRITE_ERROR ? curl_error($ch) : '';
-    curl_close($ch);
+    unset($ch);
     if ($cerr !== '' || $code === 0) return ['ok' => false, 'code' => 0, 'size' => 0, 'err' => $cerr ?: 'no answer'];
     if ($code === 200 || $code === 206) return ['ok' => true, 'code' => $code, 'size' => $size, 'err' => ''];
     $err = preg_match('#<Code>([^<]{1,80})</Code>#', $body, $m) ? $m[1] : "HTTP $code";
@@ -259,7 +259,7 @@ function m3d_s4_list(string $prefix = '', ?array $keys = null, ?string $region =
         $body = curl_exec($ch);
         $code = (int) curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
         $cerr = curl_error($ch);
-        curl_close($ch);
+        unset($ch);
         if (!is_string($body) || $code === 0) return ['err' => 'S4 didn’t answer (' . ($cerr ?: 'no answer') . ')'] + $out;
         if ($code !== 200) {
             $err = preg_match('#<Code>([^<]{1,80})</Code>#', $body, $m) ? $m[1] : "HTTP $code";

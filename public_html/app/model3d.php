@@ -25,7 +25,7 @@ const M3D_LIGHT_RANGE = [20, 200];
 /** '/media/<folder>/<name>.glb' → the file's path when it exists, else null. */
 function m3d_glb_path(string $url): ?string
 {
-    if (!preg_match('#^/media/([a-z0-9-]+/)*[a-z0-9-]+\.glb$#', $url)) return null;
+    if (!preg_match('#^/media/([a-z0-9-]+/)*[a-z0-9-]+\.glb$#D', $url)) return null;
     $file = M3D_SITE . $url;
     return is_file($file) ? $file : null;
 }

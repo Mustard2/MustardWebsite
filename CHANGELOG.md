@@ -1,5 +1,148 @@
 # Changelog
 
+## 2026.10.24-2 · 24 Oct 2026
+
+- Change: the model catalogue and the Accessories page open sorted by Recently Updated.
+- New: Models and accessories show a green "New" tag on their card for 14 days after they come out
+- New: The homepage's Status filter has a "New" chip for the models that just came out
+- New: Settings → Site → Header Menu: add your own links to the header menu, reorder all items by dragging, and hide any of them
+- New: On narrower screens, menu links that don't fit on the header row go into a "More" menu
+- Fix: Stats → one model's or accessory's All Time now counts every download, also those from before its oldest changelog version
+- Fix: Stats → one item's All Time shows a single "all time" ranking instead of two different ones
+- Fix: Stats no longer writes a PHP warning for very old download log lines without a link label
+- Fix: the admin Models and Accessories lists no longer make the whole page scroll sideways on phones
+- Fix: duplicating the same model or accessory a second time gives "(Copy 2)" and a free address instead of "already used" on Save
+- New: The model and accessory editor says whether saving posts the new version on Discord, and the save message says whether it was posted
+- New: The changelog shows patrons which version they have and which versions are new for them
+- New: An "All Models" switch for accessories made for every model, future ones included
+- New: A link to a model or accessory page alone on its own line now shows as a preview card with its picture, description and version
+- Change: Model and accessory cards in texts are centered, like pictures
+- New: A link to a docs page alone on its own line now shows as a card too, with the page's title and summary
+- New: A search that finds nothing now corrects typos and shows the results for the corrected spelling, for example “tiffa” → Tifa. This works both on the search page and in the header search.
+- New: The 404 page suggests up to 3 pages that match the words in the address (“Did You Mean…”).
+- Change: "Accessories for This Model" on model pages is now a row with ‹ › arrows that goes round at the ends, like the other card rows.
+- Fix: The model cards in the accessory editor's Optimized For section line up and are all the same height
+- Change: The "N images" pill is no longer shown on the main picture of model and accessory pages or on accessory cards.
+- Change: Blog posts with a cover open with the picture across the full width and the title on its faded bottom.
+- Fix: The cover at the top of a blog post is no longer zoomed in on wide screens and phones.
+- New: Type @ in an admin text, or use the Card button in the docs and blog toolbars, to add a card for a model, an accessory or a docs page.
+- New: In the blog editor, a model or accessory card added to the text also goes into "Models and Accessories in This Post".
+- Fix: the admin editors (blog, models, accessories, docs, FAQ, gallery) now ask before View Post, the menu or any other link drops unsaved changes.
+- Change: The green "New" tag on model and accessory cards moved to the top right corner of the picture, so the other tags stay on one row.
+- New: A yellow "Updated" tag on cards for 14 days after a new version comes out, with an "Updated" chip in the homepage's Status filters.
+- Fix: Accessories now show up when searching in the blog's "Models and Accessories in This Post" field and in the "@" list. They can also be found by the models they fit and those models' franchise.
+- Fix: Suggestion lists in the admin open above the field when it sits at the end of the page, instead of being cut off.
+- Fix: Items whose picture is on another website now show it in the blog's item list.
+- New: Admin Home's Latest Downloads shows the name of the download link each patron used.
+- Change: The like count on blog cards is red and bigger, like on model cards.
+- Fix: Search engines no longer show the 18+ check's text under the site's title.
+- New: Site identity has a Search Description, the text search engines show under the homepage.
+- Change: Model and accessory pages describe themselves to search engines with the first paragraph of their description.
+- Change: in Admin → Settings, the Notifications tab now comes after Patreon.
+- New: the admin bell tells you when a model, accessory, blog post or gallery picture gets new likes (how many, never who), with its own switch in Settings → Notifications and an optional hourly Discord summary.
+- Fix: no PHP 8.5 deprecation warnings in the server's error log.
+- New: The Images page's picture window can set a picture's full size download link, for every place showing that picture at once.
+- New: Pictures in a model's gallery and an accessory's pictures can have a full size download link, shown as "Download Full Size" in the page's viewer.
+- New: The editor's gallery cards can set their full size link in the picture window, and show a "Full Size" pill when they have one.
+- Change: Link Check also lists and replaces the full size links of model and accessory pictures.
+- Fix: Stats → All Time no longer shows one bar over the whole chart when the log is young: bars are days, weeks or months by how long the log is.
+- Fix: the Stats chart axis never shows the same date twice, and adds the year to dates of an earlier year.
+- Change: the Stats page drops the notes under the Downloads and Activity charts, and the free-links detail is behind a "?" next to the Downloads title.
+- Fix: Restoring a backup always keeps the current admins, and an uploaded backup no longer installs code.
+- Fix: Downloading from several browsers at once no longer gets around the unlock limits or the daily download cap.
+- Fix: A blog post's patrons-only part stays locked even with unusual code formatting around the Patreon line.
+- Fix: Comments on bug reports are limited to 30 a day per account, and Me Too / Follow to 30 an hour.
+- Fix: Item passwords allow at most 30 tries in 10 minutes.
+- Fix: Discord posts, link previews and the sitemap always use the site's own address.
+- Fix: Bug notices on Discord no longer turn the version field into a link.
+- Fix: Links from other websites can no longer log visitors out or mark notifications read.
+- Fix: Link Check, outside images and the SmutBase import refuse addresses on private networks.
+- Change: Other websites can't show the site in a frame, and browsers always use https.
+- Change: The media folder serves only pictures and 3D files.
+- Change: Discord webhooks are stored in a private file, out of backups and the change history.
+- Change: New bug reports and comments wait for review by default while anyone can post.
+- Fix: Patreon names are cleaned at login, and return addresses and form tokens are stricter.
+- Fix: A picture used both by a model and in the Gallery is now listed in both tabs of the Images page, not only under Models.
+- Change: The changelog version editor is more compact: Version, Release, Date and Label on one row, Notes and Image only once added, and a new version opens ready to type its first change.
+- New: Closed changelog versions show their number of changes and their label.
+- Change: The Discord notice in the changelog editor is now a small pill on the version it talks about, with the full sentence on hover.
+- Change: The admin menu no longer has Downloads: the download log opens from the Patron Log button on Stats.
+- Change: Backups moved from the admin menu to a tab of Settings.
+- Fix: On phones, the Settings tab row scrolls to show the tab you're on.
+- Change: small changes behind the scenes
+- Fix: a new release always holds the newest code, even when two changes are merged at the same moment
+- New: Drop pictures anywhere on Admin → Gallery to upload them; the Add Pictures window opens with them
+- New: The Gallery shows its pictures in a random order by default (Sort: Random); Newest, Oldest and Most Liked are still in the Filters.
+- Change: The Gallery loads 40 more pictures as you scroll instead of showing pages.
+- Change: The Gallery's picture viewer goes through every matching picture, not only those already on screen.
+- Change: in Stats, the Downloads chart counts a patron's first download of each download link (Model, Textures…) as First Download; only the same link downloaded again is Again.
+- Fix: The admin no longer hangs for long when GitHub is down. Update checks give up after a few seconds, and Settings → Update waits 5 minutes before asking GitHub again after a failure.
+- Fix: On servers that can't send a page before finishing background work, the bell's update check no longer delays the creator's pages.
+- New: Clear All in the notifications bell marks everything read and empties the list. Waiting comments stay.
+- New: each notification has ✓ Mark as Read and ✕ Remove. A removed one comes back only when something new happens on it.
+- New: a link can open one Gallery picture, and the picture viewer has a Share button that copies it (the share sheet on phones)
+- Change: Discord posts about new Gallery pictures link the picture itself
+- New: the picture viewer has a slideshow (▶, or Space) that shows the next picture every 5 seconds
+- New: a ↑ button on the Gallery takes you back to the top
+- New: blog posts can carry a poll that patrons vote in, with picture choices, results bars, a closing date and an optional vote change
+- New: the blog editor has a Poll section to write the question and choices and see the votes so far
+- New: Patrons can share renders made with a model or accessory from its page ("Made by Patrons"); each one shows after the creator approves it.
+- New: Admin → Gallery → From Patrons to approve, reject or remove patron renders, with an "Also in Gallery" switch that adds one to the Gallery credited to the patron.
+- New: Settings → Features → Patron Renders (off by default, with Renders per Day) and a "Patron Renders" notification in the bell.
+- New: Bans in Access (Log In, Downloads, Bug Reports, Comments, Renders) with a reason, shown on a "You Can’t …" page when the person tries
+- New: Ban button on patron renders in Gallery → From Patrons
+- Change: Access Exceptions is a compact list with search, filters, sortable columns and 25 people per page
+- Change: the Block buttons on bug reports and comments now set bans, and the old block lists moved into Access
+- New: Patrons can add an X or Patreon link to their name when sharing a render; the name links there with the network's icon
+- New: Remove Link on patron renders in Gallery → From Patrons
+- Change: Rejecting a patron render warns that the picture and the request are deleted for good
+- New: Temporary links. Give someone a link to download all of a model's or accessory's files for a while, without Patreon. Make one from the editor's Downloads box or Access → Temporary Links, with an expiry (1 hour to 30 days), a number of downloads per file and a note.
+- New: Access → Temporary Links lists every link with its downloads and status, with Copy, Cancel and Delete.
+- New: Videos in blog posts: a Video button (or drop a video on the text) checks the file before it uploads (50 MB at most, plays in every browser, starts at once), with a frame or picture as cover and a caption
+- New: Videos in posts show their cover with a play button and length, and load nothing until Play
+- Change: The admin's Images page is now called Media and has a Videos tab (cover, copy link, delete unused)
+- New: patrons can add a link to the full-quality picture when they share a render; the viewer then offers Download Full Size.
+- Fix: the Show My Name switch in the Share window no longer touches its label.
+- Change: Access → Temporary Links is more compact. Its buttons sit on the title line, and an empty list shows no text.
+- Change: Admin → Access is split into tabs: Downloads, Exceptions and Temporary Links.
+- New: Temporary links show a link preview on Discord and in chat apps, with the model's picture, name, version and how long the link works.
+- Change: The window after making a temporary link is shorter: the link, Copy, and when it ends.
+- Fix: a patron banned from downloading no longer sees "↑ Update" tags, the account dot or unlocks left in the header. My account now says downloads are off, with a Why? link, instead of showing Download buttons and limits.
+- Fix: deleting a model or accessory now ends its temporary links for good. Before, a new item made later at the same address took the old links over and handed out its own files.
+- Fix: crafted requests to the bell, the video Cover window and the From Patrons buttons no longer write PHP warnings to the server log.
+- Change: Approved patron renders now show in the model's or accessory's own gallery, after the creator's pictures, with the patron's name on each one.
+- Change: Sharing a render moved to a "Made a Render?" box under "Found a Bug?". It links to the renders in the gallery and lists your own renders, so you can withdraw or remove them.
+- Fix: Clicking Copy in the temporary links list no longer shifts the table.
+- Change: The link preview of a temporary link lists when it ends, the downloads per file and the number of files, one per line.
+- Fix: Less space between the title and the Active / All chips in Access → Temporary Links.
+- Fix: Settings → Notifications: the event table and the webhook field fill the whole box.
+- Fix: A patron banned from downloads is no longer shown the welcome tour
+- Fix: A free Patreon member who logs in to comment or report a bug goes back to where they were
+- Fix: The backup change history names Blog, Gallery and Access Exceptions and shows how many entries they hold
+- Fix: The tab title of the "why can't I download" page matches what the page says
+- Fix: Discord post messages say "Panam Version 1" instead of "Panam 1" when a version is a bare number
+- Change: Saved webhooks, keys and secrets in the admin show as a locked field with a Change button, instead of an empty field that says "Saved".
+- Change: Patreon Client ID, Redirect URI and Campaign ID, and the S4 Access Key ID, Bucket Address and Download Domain, are locked once saved too, so they can't be changed by accident.
+- Change: A model or accessory's saved password shows as a locked field with Change.
+- Fix: The Change button of a locked field no longer jumps out of the field on hover.
+- Change: Renders waiting for approval show first in the item's gallery, greyed with a dashed edge, only for the patron who sent them and the creator
+- New: Patrons can remove their own renders with an ✕ on them in the gallery
+- New: My Account lists your renders in a row that turns by itself, waiting ones marked, each with an ✕ to remove it
+- Change: The Made a Render? box shows only text lines, no pictures
+- Fix: The creator no longer sees "Share Yours" in the Made a Render? box
+- Change: The creator sees "Share Yours" in the Made a Render? box again
+- Change: The SmutBase importer is removed (the Import from SmutBase button on Admin → Models and its switch in Settings → Features)
+- Change: Media cards are as tall as the Gallery's (9:16, the whole picture shown), two a row on phones.
+- Change: The picture window's Details panel is cleaner: no Crop & Rotate button at the bottom, sizes on one line, the Full Size Download box folded to "+ Add" until a link is set.
+- Change: The Media page no longer shows the "1–60 of N" count next to Unused Only.
+- New: a "How Unlocks Work" page that explains the unlock limits, with a table of what each Patreon tier gets by months as a patron and the patron's own tier highlighted
+- Change: the Download box tells visitors "Log in with Patreon to unlock" and has a "How It Works" button
+- New: My Account's Unlock Limits has a "How It Works" button
+- New: A line of `---`, `***` or `___` alone in a text draws a divider line (docs, blog posts, FAQ, descriptions, notes, changelog notes, boxes and tabs).
+- Change: The "How to Format" help lists only the site's own additions (boxes, pictures, cards, tabs, the Patreon line); standard Markdown is no longer explained there or in field tooltips.
+- Change: The format help's Card example shows a real card of one of your models instead of a description.
+- Fix: Links to models, accessories, Gallery pictures and blog posts posted on X now come with a picture sized for X's cards.
+
 ## 2026.10.18-4 · 18 Oct 2026
 
 - Change: The admin's View Page buttons open the page in the same tab.

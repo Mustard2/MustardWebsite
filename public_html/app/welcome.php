@@ -73,6 +73,7 @@ function m3d_welcome_due(?array $p): bool
     $id = (string) ($p['id'] ?? '');
     if (!$w['on'] || !$p || empty($p['access']) || !empty($p['preview']) || $id === '') return false;
     if (($p['reason'] ?? '') === 'owner' || in_array($id, m3d_owner_ids($GLOBALS['M3D']), true)) return false;
+    if (m3d_banned($p, 'download')) return false;   // a tour of downloads they can't make (Admin → Access ban)
     if (m3d_welcome_seen($id)) return false;
     if ($w['skip_old'] && $w['since'] > 0) {
         $log = m3d_patron_log($id);
@@ -149,4 +150,64 @@ function m3d_welcome_rule_rows(): array
         array_push($rows, ...$tierRows);
     }
     return $rows;
+}
+
+// ── How Unlocks Work (/unlocks/, unlocks.php): the unlock limits explained to anyone, patrons or not ──
+
+/** Whether any unlock limit rule is on: the /unlocks/ page and its "How It Works" buttons exist only then. */
+function m3d_unlocks_on(): bool
+{
+    foreach (m3d_dl_settings()['rules'] as $r) if (!empty($r['on'])) return true;
+    return false;
+}
+
+/**
+ * The unlock limits as a grid for /unlocks/: the paid tiers as columns (m3d_known_tiers() plus any tier a rule names; one column, 0,
+ * when no rule is for one tier), the stretches of "months as a patron" as rows (two stretches in a row that allow the same are one),
+ * each cell the rules m3d_rules_pick() gives that tier at those months, like a patron's own:
+ * {cols: [cents => name], rows: [{from, to, label, cells: [cents => [rule…]]}]}, a cell's rules models first, then accessories, then
+ * both (an empty cell = no limit). [] when no rule is on.
+ */
+function m3d_unlock_grid(): array
+{
+    $rules = array_values(array_filter(m3d_dl_settings()['rules'], fn($r) => !empty($r['on'])));
+    if (!$rules) return [];
+    $cols = [];
+    foreach ($rules as $r) if ((int) ($r['tier'] ?? 0) > 0) $cols[(int) $r['tier']] = '';
+    if ($cols) {
+        $cols = m3d_known_tiers() + $cols;   // every tier patrons were seen with, and the ones the rules name
+        ksort($cols);
+    } else {
+        $cols = [0 => ''];
+    }
+    $cuts = [0];
+    foreach ($rules as $r) foreach (['from', 'to'] as $f) if (isset($r[$f]) && $r[$f] !== '' && (int) $r[$f] > 0) $cuts[] = (int) $r[$f];
+    $cuts = array_values(array_unique($cuts));
+    sort($cuts);
+    $order = ['models' => 0, 'outfits' => 1, 'all' => 2];
+    $rows = [];
+    foreach ($cuts as $i => $from) {
+        $to = $cuts[$i + 1] ?? null;
+        $cells = [];
+        foreach (array_keys($cols) as $c) {
+            $cell = m3d_rules_pick($rules, $from, $c ?: null);
+            usort($cell, fn($a, $b) => ($order[$a['what'] ?? 'models'] ?? 0) <=> ($order[$b['what'] ?? 'models'] ?? 0));
+            $cells[$c] = array_map(fn($r) => ['max' => max(1, (int) ($r['max'] ?? 1)), 'per' => m3d_rule_period($r)[1],
+                'what' => isset(DL_WHAT[$r['what'] ?? '']) ? $r['what'] : 'models'], $cell);
+        }
+        $prev = $rows ? $rows[count($rows) - 1] : null;
+        if ($prev && $prev['cells'] === $cells) {
+            array_pop($rows);
+            $from = $prev['from'];
+        }
+        $rows[] = ['from' => $from, 'to' => $to, 'cells' => $cells];
+    }
+    foreach ($rows as &$row) $row['label'] = match (true) {
+        $row['from'] === 0 && $row['to'] === null => 'Any Time',
+        $row['from'] === 0                        => 'Under ' . m3d_plural($row['to'], 'month'),
+        $row['to'] === null                       => $row['from'] . '+ months',
+        default                                   => $row['from'] . '–' . m3d_plural($row['to'], 'month'),
+    };
+    unset($row);
+    return ['cols' => $cols, 'rows' => $rows];
 }

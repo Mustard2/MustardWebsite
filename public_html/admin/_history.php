@@ -12,7 +12,7 @@ const HISTORY_PARTS = [
     'Basics'              => ['name', 'franchise', 'game', 'generation', 'majorVersion', 'type'],
     'Visibility & Status' => ['visibility', 'unlisted', 'status', 'featured', 'noComments'],
     'Images'              => ['thumb', 'cover', 'gallery', 'images', 'model3d', 'model3dLight'],
-    'Optimized For'       => ['models'],
+    'Optimized For'       => ['allModels', 'models'],
     'Description'         => ['description', 'note'],
     'Requirements'        => ['blender', 'addons'],
     'Downloads'           => ['links'],
@@ -27,7 +27,7 @@ const HISTORY_LABELS = [
     'name' => 'Name', 'franchise' => 'Franchise', 'game' => 'Game', 'generation' => 'Generation', 'majorVersion' => 'Major Version', 'type' => 'Type',
     'visibility' => 'Visibility', 'unlisted' => 'Unlisted', 'status' => 'Status', 'featured' => 'Featured', 'noComments' => 'Comments Off',
     'thumb' => 'Catalog Image', 'cover' => 'Main Image', 'gallery' => 'Gallery', 'images' => 'Pictures', 'model3d' => '3D Preview', 'model3dLight' => '3D Brightness',
-    'models' => 'Optimized For', 'description' => 'Description', 'note' => 'Rig Note', 'blender' => 'Blender Version', 'addons' => 'Add-ons',
+    'allModels' => 'All Models', 'models' => 'Optimized For', 'description' => 'Description', 'note' => 'Rig Note', 'blender' => 'Blender Version', 'addons' => 'Add-ons',
     'links' => 'Download Links', 'requireTierCents' => 'Minimum Tier', 'requireMonths' => 'Months as a Patron', 'requireTotalCents' => 'Total Support',
     'requireMode' => 'Months or Total', 'noLimits' => 'Doesn’t Use Unlocks', 'patronsFrom' => 'Patrons From', 'publicFrom' => 'Everyone From',
     'releaseBefore' => 'Before the Patrons Date', 'features' => 'Features', 'notes' => 'Notes', 'changelogNote' => 'Changelog Note',
@@ -45,7 +45,7 @@ function history_files(string $kind): array
 /** One item from a saved copy (null: not a copy of this kind's file, damaged, or the item isn't in it). */
 function history_item(string $kind, string $file, string $slug): ?array
 {
-    if (!preg_match('/^' . preg_quote($kind, '/') . '-\d{8}-\d{6}-[0-9a-f]+\.json$/', $file) || !($path = bk_file($file))) return null;
+    if (!preg_match('/^' . preg_quote($kind, '/') . '-\d{8}-\d{6}-[0-9a-f]+\.json$/D', $file) || !($path = bk_file($file))) return null;
     $data = json_decode((string) @file_get_contents($path), true);
     foreach ((array) (is_array($data) ? ($data[$kind] ?? []) : []) as $it) if (is_array($it) && ($it['slug'] ?? null) === $slug) return $it;
     return null;

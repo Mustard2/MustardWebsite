@@ -1,5 +1,6 @@
 <?php
-// Downloads: the patron download log with filters, search and CSV export (the totals per model and accessory are on Stats, admin/stats.php).
+// Patron Log: the patron download log with filters, search and CSV export. A page of Stats (no menu item: its "Patron Log" button,
+// top right, opens it); the totals per model and accessory are on Stats itself (admin/stats.php).
 require __DIR__ . '/_admin.php';
 admin_require($M3D);
 
@@ -11,7 +12,7 @@ if (admin_form_post('remove-all')) {
 }
 if (admin_form_post('remove-patron')) {
     $who = (string) ($_POST['patron'] ?? '');
-    if (preg_match('/^[0-9A-Za-z_-]{1,40}$/', $who)) {
+    if (preg_match('/^[0-9A-Za-z_-]{1,40}$/D', $who)) {
         $n = m3d_log_remove_patron($who);
         m3d_redirect('/admin/log.php?removed=' . $n . '#log');
     }
@@ -20,7 +21,7 @@ if (admin_form_post('remove-rows')) {
     // the ticked lines only (codes from m3d_log_row_key()); back to the same filtered view
     $n = m3d_log_remove_rows(array_slice((array) ($_POST['rows'] ?? []), 0, 500));
     $back = (string) ($_POST['back'] ?? '');
-    $back = preg_match('~^/admin/log\.php(\?[^#\s]*)?$~', $back) ? $back : '/admin/log.php';
+    $back = preg_match('~^/admin/log\.php(\?[^#\s]*)?$~D', $back) ? $back : '/admin/log.php';
     m3d_redirect($back . (str_contains($back, '?') ? '&' : '?') . 'removed=' . $n . '&rows=1#log');
 }
 if (ctype_digit(m3d_get_text('removed'))) $removed = (int) m3d_get_text('removed');
@@ -82,7 +83,7 @@ $memText = function (array $m): string {
 $f = [
     'q'      => trim(mb_substr(m3d_get_text('q'), 0, 100)),
     'item'   => mb_substr(m3d_get_text('item'), 0, 200),   // an address, or "<name> (removed <date>)" for a deleted item (admin_forget_items())
-    'patron' => preg_match('/^[0-9A-Za-z_-]{1,40}$/', m3d_get_text('patron')) ? m3d_get_text('patron') : '',
+    'patron' => preg_match('/^[0-9A-Za-z_-]{1,40}$/D', m3d_get_text('patron')) ? m3d_get_text('patron') : '',
     'link'   => trim(mb_substr(m3d_get_text('link'), 0, 60)),
     'from'   => $date($_GET['from'] ?? ''),
     'to'     => $date($_GET['to'] ?? ''),
@@ -152,21 +153,17 @@ const LOG_ICONS = [
 ];
 $ico = fn(string $k): string => '<svg class="h-ico" viewBox="0 0 24 24" aria-hidden="true">' . LOG_ICONS[$k] . '</svg>';
 
-admin_start('Downloads', 'log');
+// a page of Stats (Stats is lit in the menu): back to Stats, of the same model or accessory when the log is filtered by one
+$back = isset($tags[$f['item']]) ? '/admin/stats.php?of=' . rawurlencode($tags[$f['item']][2] . ':' . $tags[$f['item']][3]['slug']) : '/admin/stats.php';
+admin_start('Patron Log', 'stats');
 ?>
     <div class="admin-head">
       <div>
-        <h1>Downloads</h1>
-      </div>
-      <div class="head-actions"><a class="btn btn-ghost" href="/admin/stats.php">Stats</a></div>
-    </div>
-    <section class="sec log-sec" id="log">
-    <div class="dl-log-head">
-      <div>
-        <h2 class="small-h">Patron Download Log<?= tip('Downloads of patron links from the last ' . (int) ($M3D['log_retention_days'] ?? 365) . ' days, in the site’s time zone (' . e(str_replace('_', ' ', m3d_tz_id())) . '). It also decides what each patron has unlocked.') ?></h2>
+        <a class="back" href="<?= e($back) ?>">← Stats</a>
+        <h1>Patron Log<?= tip('Downloads of patron links from the last ' . (int) ($M3D['log_retention_days'] ?? 365) . ' days, in the site’s time zone (' . e(str_replace('_', ' ', m3d_tz_id())) . '). It also decides what each patron has unlocked.') ?></h1>
       </div>
       <?php if ($rows): ?>
-        <div class="log-actions">
+        <div class="head-actions log-actions">
           <a class="btn btn-ghost btn-sm" href="<?= e(str_replace('#log', '', $url(['csv' => 1]))) ?>">Export <?= $filtered ? 'These ' . number_format(count($found)) : 'All' ?> as CSV</a>
           <form method="post" class="log-remove" onsubmit="return confirm(<?= e(json_encode('Are you sure? This removes the downloads of EVERY patron (' . count($rows) . ' in the log): all download histories, My Models lists and unlocks. Everyone\'s limits start again from zero. The all-time download counts stay. This cannot be undone: export the log as CSV first if you want a copy (the automatic weekly backups also have it).')) ?>)">
             <?= form_keys() ?>
@@ -175,6 +172,7 @@ admin_start('Downloads', 'log');
         </div>
       <?php endif ?>
     </div>
+    <section class="sec log-sec" id="log">
     <?php if ($removed !== null && !empty($_GET['rows'])) admin_flash($removed ? '✓ ' . m3d_plural($removed, 'download') . ' removed from the log.' : 'Nothing removed: those downloads were already gone.', $removed ? 'ok' : 'info');
     elseif ($removed !== null) { $all = !empty($_GET['all']); admin_flash($removed ? '✓ ' . m3d_plural($removed, 'download') . ' removed: ' . ($all ? 'every patron starts' : 'that patron starts') . ' again with nothing unlocked.' : 'Nothing to remove: ' . ($all ? 'the log was already empty.' : 'that patron had no downloads in the log.'), $removed ? 'ok' : 'info'); } ?>
     <?php if (!$rows): ?>
@@ -228,7 +226,7 @@ admin_start('Downloads', 'log');
               <input type="hidden" name="tier" value="ok" /><input type="hidden" name="as" value="<?= e($f['patron']) ?>" /><input type="hidden" name="dl_models" value="0" /><input type="hidden" name="dl_outfits" value="0" /><input type="hidden" name="updates" value="0" /><input type="hidden" name="real" value="1" />
               <button class="btn btn-sm btn-preview" name="do" value="apply" title="<?= e('Their My Account page, with their real downloads and their exception' . ($lastMem ? ', and the membership saved with their newest download' : '')) ?>">Preview as This Patron</button>
             </form>
-            <a class="btn btn-ghost btn-sm" href="/admin/users.php?<?= e($hasEx ? 'ex=' . rawurlencode($f['patron']) . '#ex-' . $f['patron'] : http_build_query(['add' => $f['patron'], 'name' => $who !== $f['patron'] ? $who : '']) . '#add-user') ?>"><?= $hasEx ? 'Edit Exception' : 'Add Exception' ?></a>
+            <a class="btn btn-ghost btn-sm" href="/admin/users.php?tab=exceptions&amp;<?= e($hasEx ? 'ex=' . rawurlencode($f['patron']) . '#ex-' . $f['patron'] : http_build_query(['add' => $f['patron'], 'name' => $who !== $f['patron'] ? $who : '']) . '#add-user') ?>"><?= $hasEx ? 'Edit Exception' : 'Add Exception' ?></a>
             <?php endif ?>
             <a class="btn btn-ghost btn-sm" href="<?= e($url(['patron' => ''])) ?>">Show All Patrons</a>
             <form method="post" class="log-remove" onsubmit="return confirm(<?= e(json_encode('Are you sure? This removes ALL downloads of ' . $who . ' (Patreon id ' . $f['patron'] . ') from the log: their download history, My Models and everything they unlocked. Their limits start again from zero. The all-time download counts stay. This cannot be undone (the automatic weekly backups still have the old log).')) ?>)">

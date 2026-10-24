@@ -2,7 +2,8 @@
 declare(strict_types=1);
 defined('M3D_PRIVATE') || exit;
 
-// Discord announcements (Admin → Settings → Discord announcements; settings.json → discord: {on, webhook, message, sent, last}).
+// Discord announcements (Admin → Settings → Discord announcements; settings.json → discord: {on, message, sent, last}; the webhook in
+// private/webhooks.php, m3d_webhook('discord')).
 // When a save makes a new version visible, the site posts it to a Discord channel through a webhook: no bot, no polling.
 // m3d_save_items() calls m3d_discord_after_save() with the items before and after the save. A version is posted once:
 // its code "kind:slug@label" goes into `sent`. Posted: the top changelog version of a public or blurred item (never draft or
@@ -16,7 +17,7 @@ defined('M3D_PRIVATE') || exit;
 // ones together ("New renders"), the picture itself only for public ones. Only gallery changes queue pictures: publishing a model
 // doesn't post its older pictures, and turning the switch on posts nothing already there.
 
-const DISCORD_WEBHOOK_RE = '#^https://(?:(?:ptb|canary)\.)?discord(?:app)?\.com/api/webhooks/\d{5,30}/[A-Za-z0-9_-]{20,200}$#';
+const DISCORD_WEBHOOK_RE = '#^https://(?:(?:ptb|canary)\.)?discord(?:app)?\.com/api/webhooks/\d{5,30}/[A-Za-z0-9_-]{20,200}$#D';
 const DISCORD_SENT_MAX = 1000;
 const DISCORD_EMBEDS = 10;   // per message (Discord's limit)
 const DISCORD_MESSAGES = 3;  // per save at most: a bigger batch (publishing many items at once) posts the 30 newest
@@ -28,7 +29,7 @@ function m3d_discord(): array
     $d = m3d_settings()['discord'] ?? [];
     return [
         'on'      => !empty($d['on']),
-        'webhook' => (string) ($d['webhook'] ?? ''),
+        'webhook' => m3d_webhook('discord'),   // private/webhooks.php (m3d_webhooks())
         'message' => (string) ($d['message'] ?? ''),
         'sent'    => array_values(array_filter((array) ($d['sent'] ?? []), 'is_string')),
         'retry'   => array_values(array_filter((array) ($d['retry'] ?? []), 'is_string')),   // codes whose post failed: posted on the next save
@@ -120,7 +121,7 @@ function m3d_discord_after_save(string $kind, array $old, array $new): void
                 if (($r['status'] ?? 0) === 400) $mark = array_merge($mark, array_column($chunk, 0));   // refused as it is: trying again would fail again and hold up later posts
                 else { $failed = array_merge($failed, array_column($chunk, 0)); $stop = true; }   // not posted (Discord down, slow): tried again on the next save of the item
             }
-            $last = ['at' => gmdate('c'), 'ok' => $res['ok'], 'error' => $res['error'], 'what' => implode(', ', array_map(fn($p) => $p[1]['name'] . ' ' . m3d_version_label(m3d_current_version($p[1])), $post))];
+            $last = ['at' => gmdate('c'), 'ok' => $res['ok'], 'error' => $res['error'], 'what' => implode(', ', array_map(fn($p) => $p[1]['name'] . ' ' . bug_version_words(m3d_version_label(m3d_current_version($p[1]))), $post))];
             if (!$res['ok']) m3d_problem('Discord', 'Post about ' . $last['what'] . ' failed: ' . $res['error']);
         }
         $done = array_flip(array_merge($mark, $posted));
@@ -216,7 +217,7 @@ function m3d_discord_post(string $webhook, string $message, array $embeds): arra
         $res = curl_exec($ch);
         $status = (int) curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
         $err = curl_error($ch);
-        curl_close($ch);
+        unset($ch);
         if ($status >= 200 && $status < 300) return ['ok' => true, 'error' => '', 'status' => $status];
         $json = is_string($res) ? json_decode($res, true) : null;
         $wait = (float) ($json['retry_after'] ?? 0);
@@ -313,7 +314,8 @@ function m3d_discord_still_embed(array $s): array
     $plain = implode(', ', array_column($chars, 'name'));
     $e = [
         'title'  => mb_substr($caption !== '' ? $caption : 'New render' . ($plain !== '' ? ' · ' . $plain : ''), 0, 250),
-        'url'    => abs_url('/gallery/' . ($chars ? '?c=' . rawurlencode((string) $chars[0]['key']) : '')),
+        // the picture itself (?p=, opened in the viewer); a blurred one also picks its character, so visitors land on that character's pictures
+        'url'    => abs_url('/gallery/?' . (m3d_still_public_view($s) !== 'clear' && $chars ? 'c=' . rawurlencode((string) $chars[0]['key']) . '&' : '') . 'p=' . rawurlencode((string) $s['id'])),
         'footer' => ['text' => mb_substr('Gallery · ' . site_name(), 0, 200)],
     ];
     $lines = [];

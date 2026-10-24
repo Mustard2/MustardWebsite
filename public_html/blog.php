@@ -21,6 +21,7 @@ if ($slug !== '') {
     elseif (($p['cover'] ?? '') !== '' && ($p['visibility'] ?? 'public') === 'public') page_image((string) $p['cover']);   // link previews: the cover of Public posts only
     $path = m3d_post_url($p);
     $sum = trim((string) ($p['summary'] ?? ''));
+    $cover = ($p['cover'] ?? '') !== '';
     // older / newer: by date among the posts this visitor sees (pinned or not)
     $all = m3d_blog_visible();
     usort($all, fn($a, $b) => m3d_post_ts($b) <=> m3d_post_ts($a));
@@ -32,15 +33,23 @@ if ($slug !== '') {
     $patreon = social_url('patreon');
 
     $free = m3d_post_free($p);   // null = no "--- Patreon ---" line
+    if (m3d_get_text('poll') === 'voted') site_flash('✓ Thanks for voting!');
+    elseif (isset(POLL_ERRORS[m3d_get_text('pollerr')])) site_flash('<b>Not saved:</b> ' . e(POLL_ERRORS[m3d_get_text('pollerr')]), 'err');
     $first = trim(html_entity_decode(strip_tags(md_inline(md_first_text($free ?? (string) ($p['body'] ?? '')))), ENT_QUOTES | ENT_HTML5, 'UTF-8'));   // without the format's marks (**bold**, links…)
     layout_start($p['title'] . ' · ' . $cfg['title'], $sum !== '' ? $sum : ($first ?: $cfg['title'] . ' · ' . site_name()), 'page-blog');
     ?>
-  <article class="bl-post">
-    <div class="bl-wrap">
+  <article class="bl-post<?= $cover ? ' has-hero' : '' ?>">
+    <?php if ($cover): // the cover fills the width under the header, the title sits on its faded bottom ?>
+    <header class="bl-hero" style="<?= e(blog_hero_ratio((string) $p['cover'])) ?>">
+      <div class="bl-cover"><?= blog_cover($p, '100vw', true) ?></div>
+    <?php endif ?>
+    <div class="bl-wrap bl-top">
       <a class="back" href="/blog/" data-back>← All Posts</a>
       <?= $offBanner ?>
       <?php if ($state === 'draft'): ?><p class="vis-banner"><?= LOCK_ICON ?><span>Draft: only admins can see this post. <a href="/admin/blog.php?post=<?= e($p['id']) ?>">Change</a></span></p><?php endif ?>
       <?php if ($state === 'scheduled'): ?><p class="vis-banner"><?= LOCK_ICON ?><span>Scheduled for <?= when_html(m3d_post_ts($p)) ?>: only admins can see it until then. <a href="/admin/blog.php?post=<?= e($p['id']) ?>">Change</a></span></p><?php endif ?>
+    </div>
+    <div class="bl-wrap bl-intro">
       <div class="title-row bl-title">
         <p class="bl-meta"><?= blog_pills($p, false) ?><?php foreach ((array) ($p['topics'] ?? []) as $t) echo blog_topic((string) $t, '/blog/?topic=' . rawurlencode((string) $t)) ?><?= blog_meta($p) ?></p>
         <?= like_button($p['id'], 'posts') ?>
@@ -49,7 +58,7 @@ if ($slug !== '') {
       <?php if ($sum !== ''): ?><p class="lead bl-lead-text"><?= e($sum) ?></p><?php endif ?>
       <?= admin_edit_button('/admin/blog.php?post=' . rawurlencode($p['id']), 'Edit Post') ?>
     </div>
-    <?php if (($p['cover'] ?? '') !== ''): ?><div class="bl-cover"><?= blog_cover($p, '(max-width: 1112px) 96vw, 1080px', true) ?></div><?php endif ?>
+    <?php if ($cover): ?></header><?php endif ?>
     <div class="bl-wrap">
       <?php if ($view === 'teaser' && $free !== null): // everything above the "--- Patreon ---" line, its end slowly fading ?>
         <?php if (trim($free) !== ''): ?><div class="md docs-body bl-body bl-fade-end"><?= md_html($free, ['docs' => true]) ?></div><?php endif ?>
@@ -71,6 +80,7 @@ if ($slug !== '') {
         </div>
       <?php else: ?>
         <div class="md docs-body bl-body"><?= md_html((string) ($p['body'] ?? ''), ['docs' => true, 'paywall' => $admin ? true : 'skip']) ?></div>
+        <?= blog_poll($p) ?>
         <?php if ($items): ?>
           <section class="bl-items" aria-label="In this post">
             <h2>In This Post</h2>

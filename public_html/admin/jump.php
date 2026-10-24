@@ -2,7 +2,8 @@
 // GET JSON for "Jump to…" (Ctrl+K / the magnifier in the admin header, admin.js initJump()): every admin page, Settings box,
 // model, accessory, docs page, blog post and bug report, as [{t: title, k: kind label, s: line under the title, u: address, p: small picture,
 // x: extra words to match}]; models and accessories also v (latest version, "Version 4") and d (its date, a timestamp, 0 = none).
-// ?items=1: only the models and accessories (Quick Add → Add Changelog Version, bell.js).
+// ?items=1: only the models and accessories (Quick Add → Add Changelog Version, bell.js); they also carry l (their public page).
+// ?cards=1: those plus the docs pages, each with l: what the text editors' "@" list and Card button offer (itemMention() / cardPicker() in admin.js).
 // Only addresses and names the admin already sees; loaded once, when the box is first opened.
 require __DIR__ . '/_admin.php';
 admin_require($M3D, true);
@@ -27,42 +28,58 @@ foreach (m3d_models() as $m) {
     $gen = ($m['generation'] ?? '') !== '' ? 'Gen ' . $m['generation'] : '';
     $add(m3d_model_name($m), 'Model', '/admin/edit.php?slug=' . rawurlencode($m['slug']), '',
         implode(' · ', array_filter([(string) ($m['franchise'] ?? ''), $gen, $vis($m)])), item_pic('models', $m));
-    $items[] = array_pop($out) + $ver($m);
+    $items[] = array_pop($out) + $ver($m) + ['l' => m3d_item_url('models', $m['slug'])];
 }
-$names = array_column(m3d_models(), 'name', 'slug');
+$models = array_column(m3d_models(), null, 'slug');
 foreach (m3d_outfits() as $o) {
-    $for = array_values(array_filter(array_map(fn($s) => (string) ($names[$s] ?? ''), (array) ($o['models'] ?? []))));
-    $add($o['name'], m3d_accessory_type($o), '/admin/edit.php?kind=outfits&slug=' . rawurlencode($o['slug']), 'accessory',
+    $fits = m3d_fits_all($o) ? [] : array_values(array_filter(array_map(fn($s) => $models[$s] ?? null, (array) ($o['models'] ?? []))));
+    $for = m3d_fits_all($o) ? ['All Models'] : array_map('m3d_model_name', $fits);
+    // extra words: every model it fits and their franchises ("fantasy" finds Tifa's outfit), not only the three in the line under it
+    $x = implode(' ', array_unique(array_merge(['accessory'], $for, array_map(fn($m) => (string) ($m['franchise'] ?? ''), $fits))));
+    $add($o['name'], m3d_accessory_type($o), '/admin/edit.php?kind=outfits&slug=' . rawurlencode($o['slug']), $x,
         implode(' · ', array_filter([$for ? 'For ' . implode(', ', array_slice($for, 0, 3)) . (count($for) > 3 ? '…' : '') : '', $vis($o)])), item_pic('outfits', $o));
-    $items[] = array_pop($out) + $ver($o);
+    $items[] = array_pop($out) + $ver($o) + ['l' => m3d_item_url('outfits', $o['slug'])];
 }
 if (isset($_GET['items'])) admin_json(['ok' => true, 'items' => $items]);
+if (isset($_GET['cards'])) {
+    $home = m3d_docs_home();
+    foreach (m3d_doc_pages() as $p) {
+        $slug = (string) $p['slug'];
+        $items[] = ['t' => (string) ($p['title'] ?? $slug), 'k' => 'Docs', 'u' => '', 'p' => '', 'x' => (string) ($p['summary'] ?? ''),
+            's' => implode(' · ', array_filter([(string) ($p['section'] ?? ''), !empty($p['draft']) ? 'Draft' : ''])),
+            'l' => $slug === $home ? '/docs/' : '/docs/' . $slug . '/'];
+    }
+    admin_json(['ok' => true, 'items' => $items]);
+}
 
 $add('Home', 'Page', '/admin/', 'dashboard overview downloads today week needs a look');
 $add('Models', 'Page', '/admin/models.php', 'assets characters list add model');
 $add('Accessories', 'Page', '/admin/outfits.php', 'assets outfits hair list add accessory');
 $add('Link Check', 'Page', '/admin/links.php', 'broken dead links mega transfer.it downloads check');
 $add('Gallery', 'Page', '/admin/gallery.php', 'renders stills pictures');
+if (m3d_showcase_on() || m3d_showcase_stored()) $add('From Patrons', 'Page', '/admin/showcase.php', 'patron renders made by patrons showcase approve reject shared fan art');
 if (m3d_blog_on() || m3d_blog()['posts']) $add('Blog', 'Page', '/admin/blog.php', 'posts news articles write');
 $add('Docs', 'Page', '/admin/docs.php', 'documentation pages');
 $add('FAQ', 'Page', '/admin/faq.php', 'questions answers');
 if (m3d_bugs_on()) {
     $add('Bug Reports', 'Page', '/bugs/', 'bugs list not seen waiting hidden tags');
 }
-$add('Downloads', 'Page', '/admin/log.php', 'log patrons csv export reset unlocks');
+$add('Patron Log', 'Page', '/admin/log.php', 'downloads log patrons csv export reset unlocks stats');
 $add('Stats', 'Page', '/admin/stats.php', 'statistics totals downloads likes logins patrons tiers versions uptake chart');
-$add('Access', 'Page', '/admin/users.php', 'users exceptions unlock limits rules download wait');
-$add('Images', 'Page', '/admin/images.php', 'library pictures upload crop unused media');
+$add('Access', 'Page', '/admin/users.php', 'downloads unlock limits rules download wait countdown daily cap');
+$add('Access Exceptions', 'Page', '/admin/users.php?tab=exceptions', 'users exceptions bans banned block patrons bypass custom access');
+$add('Temporary Links', 'Page', '/admin/users.php?tab=links', 'share temporary download links tester collaborator give file expire access');
+$add('Media', 'Page', '/admin/images.php', 'images library pictures videos upload crop unused 3d files');
 $add('Backups', 'Page', '/admin/backups.php', 'restore history');
 $add('Update', 'Page', '/admin/update.php', 'install site update remote zip version github channel stable development key');
-if (m3d_smutbase_on()) $add('Import from SmutBase', 'Page', '/admin/import.php', 'smutbase import models');
 $add('+ Add Model', 'Page', '/admin/edit.php', 'new model create');
 $add('+ Add Accessory', 'Page', '/admin/edit.php?kind=outfits', 'new accessory outfit create');
 
 // the Settings boxes, with words people may look for
 $boxes = [
-    'identity'    => ['Site Identity', 'name logo icon colour color tagline brand'],
+    'identity'    => ['Site Identity', 'name logo icon colour color tagline brand search description google'],
     'social'      => ['Social Links', 'discord patreon x twitter footer'],
+    'menu'        => ['Header Menu', 'navigation nav links order header add link tabs'],
     'homepage'    => ['Homepage Section', 'plans how to get tiers'],
     'notice'      => ['Site Notice', 'banner announcement message'],
     'legal'       => ['Legal & Contact', 'privacy imprint address support email'],
@@ -73,9 +90,9 @@ $boxes = [
     'bugs'        => ['Bug Reports (Settings)', 'bugs uploads moderation blender mustardui versions'],
     'comments'    => ['Comments (Settings)', 'comments comment moderation approve block delete all'],
     'discord'     => ['Discord Announcements', 'webhook post new versions renders gallery message'],
+    'showcase'    => ['Patron Renders (Settings)', 'made by patrons showcase fan art renders share'],
     's4'          => ['MEGA S4 Downloads', 'object storage bucket signed temporary download links keys download domain worker proxy cdn'],
     'mustardui'   => ['MustardUI Page', 'add-on addon'],
-    'smutbase'    => ['SmutBase Import (Setting)', 'import'],
     'patreon'     => ['Patreon', 'client id secret campaign currency keys creator access refresh token pledge history months as a patron'],
     'logins'      => ['Logins', 'session days log out'],
     'maintenance' => ['Maintenance Mode', 'back soon offline'],

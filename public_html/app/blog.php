@@ -9,6 +9,7 @@
 // Patrons Only posts: anyone sees the title, cover, summary and the first paragraph; the rest only who sees patron pictures
 // (m3d_sees_patron_pics(): paying patrons, exceptions, admins not previewing). A "--- Patreon ---" line in the text (MD_PAYWALL, any
 // visibility) does the same from that line on: everyone reads what is above it (m3d_post_free()), patrons see the bar and the rest. Likes: likes.json → posts {post id: [codes]}.
+// A post may carry a poll (`poll`, see "Polls" below): paying patrons vote under it, votes in data/polls.json.
 declare(strict_types=1);
 defined('M3D_PRIVATE') || exit;
 
@@ -90,16 +91,15 @@ function m3d_post_view(array $p): string
     return 'full';
 }
 
-/** The text above the post's "--- Patreon ---" line (MD_PAYWALL, outside code blocks), or null when it has none. The line is found
- *  exactly as md_html() finds it (tabs as 4 spaces, code blocks by md_html()'s own pattern), so a line the page leaves out for readers
- *  always hides what is under it too (an unclosed ``` or a tab after the line once showed the patrons' part to everyone). */
+/** The text above the post's first "--- Patreon ---" line (MD_PAYWALL), or null when it has none. Fails closed: the first such line
+ *  anywhere counts, inside a code block or a tab too (tabs as 4 spaces, as md_html() reads them), so a line the page may leave out for
+ *  readers always hides what is under it (code blocks and tabs written oddly around the line once showed the patrons' part to everyone).
+ *  A post that shows "--- Patreon ---" as an example inside code is cut there for readers as well. */
 function m3d_post_free(array $p): ?string
 {
     $body = str_replace(["\r\n", "\t"], ["\n", '    '], (string) ($p['body'] ?? ''));
     if (stripos($body, 'patreon') === false) return null;
-    // code blocks blanked out, their length kept: a line inside one isn't the paywall
-    $plain = preg_replace_callback('/^```([\w+-]*)[ ]*\n(.*?)\n?```[ ]*$/ms', fn($m) => preg_replace('/[^\n]/', ' ', $m[0]), $body);
-    if (!preg_match('/^' . MD_PAYWALL . '$/mi', (string) $plain, $m, PREG_OFFSET_CAPTURE)) return null;
+    if (!preg_match('/^' . MD_PAYWALL . '$/mi', $body, $m, PREG_OFFSET_CAPTURE)) return null;
     return rtrim(substr($body, 0, $m[0][1]));
 }
 
@@ -174,6 +174,7 @@ function m3d_blog_replace(array $map): bool
     foreach ($map as $old => $new) $inText['](' . $old . ')'] = '](' . $new . ')';
     $new = array_map(function ($p) use ($map, $inText) {
         if (isset($map[$p['cover'] ?? ''])) $p['cover'] = $map[$p['cover']];
+        foreach ((array) ($p['poll']['opts'] ?? []) as $i => $o) if (isset($map[$o['pic'] ?? ''])) $p['poll']['opts'][$i]['pic'] = $map[$o['pic']];
         if (isset($p['body'])) $p['body'] = strtr((string) $p['body'], $inText);
         return $p;
     }, $posts);
@@ -188,6 +189,10 @@ function m3d_blog_rename_item(string $kind, string $old, string $new): void
     $posts = m3d_blog(true)['posts'];
     $changed = false;
     foreach ($posts as &$p) {
+        foreach ((array) ($p['poll']['opts'] ?? []) as $k => $o) if (($o['item'] ?? '') === $kind . ':' . $old) {   // a poll choice keeps its text, without the link once deleted
+            if ($new !== '') $p['poll']['opts'][$k]['item'] = $kind . ':' . $new; else unset($p['poll']['opts'][$k]['item']);
+            $changed = true;
+        }
         $i = array_search($kind . ':' . $old, (array) ($p['items'] ?? []), true);
         if ($i === false) continue;
         if ($new !== '') $p['items'][$i] = $kind . ':' . $new;
@@ -299,6 +304,7 @@ function blog_pills(array $p, bool $pinned = true): string
     if ($state === 'scheduled') $out .= '<span class="draft-pill bl-sched">Scheduled</span>';
     if ($pinned && !empty($p['pinned'])) $out .= '<span class="bl-pin">Pinned</span>';
     if (($p['visibility'] ?? '') === 'patrons') $out .= '<span class="lock-pill">' . BLOG_LOCK_ICON . 'Patrons</span>';
+    if (($poll = m3d_poll($p)) && !m3d_poll_closed($poll)) $out .= '<span class="bl-poll">Poll</span>';   // an open poll: patrons can vote
     return $out;
 }
 
@@ -309,6 +315,16 @@ function blog_cover(array $p, string $sizes, bool $eager = false): string
     if ($src === '') return '<span class="bl-ph" aria-hidden="true">' . e(mb_substr((string) $p['title'], 0, 1)) . '</span>';
     $set = img_srcset($src, ['xs', 'sm', 'md', '']);
     return '<img src="' . e(img_small($src)) . '"' . ($set !== '' ? ' srcset="' . e($set) . '" sizes="' . e($sizes) . '"' : '') . ' alt="" loading="' . ($eager ? 'eager' : 'lazy') . '"' . ($eager ? ' fetchpriority="high"' : '') . ' decoding="async" />';
+}
+
+/** The post page's hero keeps the cover's own shape: --ar = its width / height (wide screens: the picture is that wide at the hero's height, its sides fading),
+ *  --ar-s = the phones' frame (at most 4:3, so a wide render isn't zoomed in much). Unknown size = 16:9. */
+function blog_hero_ratio(string $src): string
+{
+    $d = img_dims($src);
+    $ar = $d && $d[0] > 0 && $d[1] > 0 ? $d[0] / $d[1] : 16 / 9;
+    $ar = max(1.2, min(3.0, $ar));
+    return '--ar: ' . round($ar, 4) . '; --ar-s: ' . round(min($ar, 4 / 3), 4);
 }
 
 /** One card of /blog/ ($lead: the big one on top of the first page). */
@@ -340,3 +356,205 @@ function blog_card(array $p, bool $lead = false): string
         . '<span class="bl-meta">' . blog_meta($p) . $likesHtml . '</span>'
         . '</span></a>';
 }
+
+// ── Polls ────────────────────────────────────────────────────────────────────
+// A post's `poll`: {q (question), opts [{id (4 hex, never changes: votes are kept under it), text, pic? (picture address), item? ("models:<slug>" |
+// "outfits:<slug>": its card picture and a link)}], max (choices each patron picks, 1–opts), closes? (UTC 'Y-m-d\TH:i:s\Z'; absent = open until
+// removed), results (POLL_RESULTS: who sees the counts before it closes), change? (a patron may change their vote while it is open)}; clean_poll() in _admin.php.
+// Paying patrons vote (the same rule as likes and downloads: `access`), on a live post they can read in full; auth/vote.php.
+// data/polls.json: {votes: {post id: {patron code (m3d_like_code()): [option ids]}}}: no raw ids or names (privacy.php, Personal Data);
+// restored with the counters (DATA_PARTS). An option removed in the editor drops out of the counts (its votes are ignored).
+
+const POLL_RESULTS = ['after' => 'After Voting', 'always' => 'Always', 'closed' => 'When Closed'];
+const POLL_OPTS_MAX = 8;
+// why auth/vote.php refused a vote (?pollerr=)
+const POLL_ERRORS = ['session' => 'Your session expired. Reload the page and vote again.', 'login' => 'Log in with Patreon to vote.',
+    'patron' => 'Polls are for patrons on any paid tier.', 'preview' => 'Voting is off while previewing as a patron.', 'closed' => 'This poll is closed.',
+    'voted' => 'You have already voted in this poll.', 'pick' => 'Pick at least one choice.', 'many' => 'Too many choices picked.', 'save' => 'Your vote couldn’t be saved. Try again in a moment.'];
+
+/** The post's poll when it has one worth showing (a question and two choices or more), else null. */
+function m3d_poll(array $p): ?array
+{
+    $poll = $p['poll'] ?? null;
+    if (!is_array($poll) || trim((string) ($poll['q'] ?? '')) === '' || count((array) ($poll['opts'] ?? [])) < 2) return null;
+    return $poll;
+}
+
+function m3d_poll_closes(array $poll): int { return (int) (strtotime((string) ($poll['closes'] ?? '')) ?: 0); }
+
+function m3d_poll_closed(array $poll): bool { return ($t = m3d_poll_closes($poll)) > 0 && $t <= time(); }
+
+/** Every vote of one post: [patron code => [option ids]] (read once per request). */
+function m3d_poll_votes(string $postId, bool $fresh = false): array
+{
+    static $all = null;
+    if ($all === null || $fresh) $all = (array) ((m3d_read_json('polls') ?? [])['votes'] ?? []);
+    return array_map(fn($v) => array_values(array_map('strval', (array) $v)), (array) ($all[$postId] ?? []));
+}
+
+/** The counts: [voters, [option id => votes]] (only the options the poll still has). */
+function m3d_poll_tally(array $p): array
+{
+    $ids = array_column((array) ($p['poll']['opts'] ?? []), 'id');
+    $c = array_fill_keys($ids, 0);
+    $n = 0;
+    foreach (m3d_poll_votes((string) $p['id']) as $picked) {
+        $picked = array_intersect($picked, $ids);
+        if (!$picked) continue;
+        $n++;
+        foreach ($picked as $id) $c[$id]++;
+    }
+    return [$n, $c];
+}
+
+/** The options this patron picked (still in the poll), [] = not voted. */
+function m3d_poll_mine(array $p, ?array $patron): array
+{
+    if (!$patron || empty($patron['id']) || !empty($patron['preview'])) return [];
+    $ids = array_column((array) ($p['poll']['opts'] ?? []), 'id');
+    return array_values(array_intersect(m3d_poll_votes((string) $p['id'])[m3d_like_code((string) $patron['id'])] ?? [], $ids));
+}
+
+/** Saves a vote: 'ok', 'voted' (already voted and the poll doesn't allow changes) or 'save' (not written). */
+function m3d_poll_vote(array $p, string $patronId, array $picked): string
+{
+    $code = m3d_like_code($patronId);
+    $ids = array_column((array) ($p['poll']['opts'] ?? []), 'id');
+    $change = !empty($p['poll']['change']);
+    $r = m3d_json_update('polls', function ($d) use ($p, $code, $ids, $picked, $change) {
+        $d = is_array($d) ? $d : [];
+        $had = array_intersect((array) ($d['votes'][$p['id']][$code] ?? []), $ids);
+        if ($had && !$change) return [$d, 'voted'];
+        $d['votes'][$p['id']][$code] = array_values($picked);
+        return [$d, 'ok'];
+    });
+    m3d_poll_votes('', true);
+    return is_string($r) ? $r : 'save';
+}
+
+/** Posts deleted in the admin: their votes go (like their likes). */
+function m3d_polls_forget(array $ids): void
+{
+    if (!$ids || !is_file(M3D_PRIVATE . '/data/polls.json')) return;
+    m3d_json_update('polls', function ($d) use ($ids) {
+        $d = is_array($d) ? $d : [];
+        foreach ($ids as $id) unset($d['votes'][$id]);
+        $d['votes'] = (object) ($d['votes'] ?? []);
+        return [$d, true];
+    });
+}
+
+/** Whether data/polls.json holds any vote (privacy.php names polls while the blog is on or while it does). */
+function m3d_polls_stored(): bool
+{
+    return (bool) array_filter((array) ((m3d_read_json('polls') ?? [])['votes'] ?? []));
+}
+
+/** One option's picture [src, blurred] and link: its own picture, else its model's / accessory's card picture (blurred when that is hidden). */
+function m3d_poll_opt_view(array $o): array
+{
+    $link = '';
+    if (($o['item'] ?? '') !== '') {
+        [$kind, $slug] = explode(':', (string) $o['item'], 2) + [1 => ''];
+        $it = in_array($kind, ['models', 'outfits'], true) ? m3d_item($kind, $slug) : null;
+        if ($it && m3d_listed($it)) {
+            $link = m3d_item_url($kind, $slug);
+            if (($o['pic'] ?? '') === '') return [...card_pic($kind, $it), $link];
+        }
+    }
+    $pic = (string) ($o['pic'] ?? '');
+    return [$pic !== '' ? img_small($pic) : '', false, $link];
+}
+
+/** The poll under a post (only for readers who see it in full). Votes: a form to auth/vote.php; results: bars with the patron's own choices. */
+function blog_poll(array $p): string
+{
+    $poll = m3d_poll($p);
+    if (!$poll) return '';
+    $who = m3d_patron($GLOBALS['M3D']);
+    $creator = m3d_is_admin($GLOBALS['M3D']) && !m3d_preview();
+    $closed = m3d_poll_closed($poll);
+    $live = m3d_post_state($p) === 'live';
+    $mine = m3d_poll_mine($p, $who);
+    $can = $who && !empty($who['access']) && empty($who['preview']) && $live && !$closed;
+    $max = max(1, min((int) ($poll['max'] ?? 1), count($poll['opts'])));
+    $res = (string) ($poll['results'] ?? 'after');
+    $showRes = $closed || $creator || $res === 'always' || ($res === 'after' && $mine);
+    [$n, $counts] = m3d_poll_tally($p);
+    $closes = m3d_poll_closes($poll);
+    $icon = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><path d="M5 20V10M12 20V4M19 20v-7" stroke-linecap="round"/></svg>';
+    $check = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" aria-hidden="true"><path d="m5 12 5 5 9-10" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+    // a picture for every choice when some have one (the others get their first letter), none when no choice has one
+    $anyPic = (bool) array_filter($poll['opts'], fn($o) => m3d_poll_opt_view($o)[0] !== '');
+    $picHtml = function (array $o) use ($anyPic): string {
+        if (!$anyPic) return '';
+        [$src, $blur] = m3d_poll_opt_view($o);
+        return $src !== '' ? '<span class="pl-pic' . ($blur ? ' is-blurred' : '') . '"><img src="' . e($src) . '" alt="" loading="lazy" decoding="async"></span>'
+            : '<span class="pl-pic pl-ph" aria-hidden="true">' . e(mb_strtoupper(mb_substr((string) $o['text'], 0, 1))) . '</span>';
+    };
+    $when = $closed ? 'Closed ' . when_mark($closes, 'date') : ($closes ? 'Closes ' . when_mark($closes) : '');
+    $meta = implode(' · ', array_filter([$when, m3d_plural($n, 'vote')]));
+    $h = '<section class="pl-card" id="poll" aria-label="Poll"><div class="pl-head"><span class="pl-badge' . ($closed ? ' is-closed' : '') . '">' . $icon . ($closed ? 'Poll Closed' : 'Patron Poll') . '</span>'
+        . '<span class="pl-when">' . when_text($meta) . '</span></div><h2 class="pl-q">' . e((string) $poll['q']) . '</h2>';
+
+    // the choices to pick (a form for patrons who can vote, the same tiles greyed for everyone else)
+    $choices = function (bool $form) use ($poll, $max, $mine, $check, $anyPic, $picHtml): string {
+        $h = '<div class="pl-grid' . ($anyPic ? '' : ' is-text') . '">';   // no pictures at all: one row per choice
+        foreach ($poll['opts'] as $o) {
+            $on = in_array($o['id'], $mine, true);
+            $h .= '<label class="pl-opt"><input type="' . ($max > 1 ? 'checkbox' : 'radio') . '" name="opt[]" value="' . e($o['id']) . '"'
+                . ($on ? ' checked' : '') . ($form ? '' : ' disabled') . '>' . $picHtml($o)
+                . '<span class="pl-tick">' . $check . '</span><span class="pl-name">' . e((string) $o['text']) . '</span></label>';
+        }
+        return $h . '</div>';
+    };
+    $form = function (string $button) use ($p, $choices, $max): string {
+        return '<form class="pl-form" method="post" action="/auth/vote.php" data-poll="' . $max . '"><input type="hidden" name="csrf" value="' . e(m3d_csrf()) . '"><input type="hidden" name="post" value="' . e((string) $p['id']) . '">'
+            . $choices(true) . '<div class="pl-foot"><p class="pl-note" data-poll-count>' . ($max > 1 ? 'Pick up to ' . $max . '.' : 'Pick one.') . '</p><button class="btn btn-primary" type="submit">' . $button . '</button></div></form>';
+    };
+
+    if ($can && (!$mine || (!empty($poll['change']) && !$showRes))) {   // can vote and hasn't yet (or may change a vote whose results are still hidden)
+        $hint = ($max > 1 ? 'Pick up to ' . $max . '.' : 'Pick one.') . (!empty($poll['change']) ? ' You can change your vote until the poll closes.' : '')
+            . ($res === 'after' && !$creator ? ' Results show once you voted.' : '') . ($res === 'closed' && !$creator ? ' Results show when the poll closes.' : '');
+        return $h . '<p class="pl-hint">' . e($hint) . '</p>' . $form($mine ? 'Save My Vote' : 'Vote') . '</section>';
+    }
+    if ($showRes) {
+        $top = $counts ? max($counts) : 0;
+        $h .= '<div class="pl-res">';
+        foreach ($poll['opts'] as $o) {
+            $link = m3d_poll_opt_view($o)[2];
+            $c = $counts[$o['id']] ?? 0;
+            $pct = $n ? (int) round($c * 100 / $n) : 0;
+            $win = $closed && $top > 0 && $c === $top;
+            $name = e((string) $o['text']);
+            if ($link !== '') $name = '<a href="' . e($link) . '">' . $name . '</a>';
+            $h .= '<div class="pl-row' . ($top > 0 && $c === $top ? ' is-top' : '') . ($anyPic ? '' : ' no-pic') . '">' . $picHtml($o)
+                . '<div class="pl-bar-wrap"><div class="pl-line"><span class="pl-name">' . $name
+                . (in_array($o['id'], $mine, true) ? ' <span class="pl-mine">' . $check . 'Your Vote</span>' : '') . ($win ? ' <span class="pl-won">Winner</span>' : '')
+                . '</span><span class="pl-pct">' . $pct . '%</span></div><div class="pl-bar"><i style="width:' . $pct . '%"></i></div><span class="pl-sub">' . m3d_plural($c, 'vote') . '</span></div></div>';
+        }
+        $h .= '</div>';
+    } else {
+        $h .= $choices(false);
+    }
+    // under it: what this visitor can do
+    if ($can && $mine && !empty($poll['change'])) {
+        $h .= '<details class="pl-change"><summary class="btn btn-ghost btn-sm">Change My Vote</summary>' . $form('Save My Vote') . '</details>';
+    } elseif ($mine) {
+        $h .= '<div class="pl-foot"><p class="pl-note">Thanks for voting!' . ($showRes ? '' : ' The results show when the poll closes.') . '</p></div>';
+    } elseif (!$closed && $live) {
+        $note = $res === 'closed' ? ' Results show when the poll closes.' : ($res === 'after' ? ' Results show once you voted.' : '');
+        if (!$who) {
+            $h .= '<div class="pl-foot"><p class="pl-note">Patrons on any paid tier can vote.' . $note . '</p><a class="btn btn-primary" rel="nofollow" href="/auth/login.php?return=' . e(rawurlencode(m3d_post_url($p) . '#poll')) . '">Log In with Patreon to Vote</a></div>';
+        } elseif (!empty($who['preview'])) {
+            $h .= '<div class="pl-foot"><p class="pl-note">Voting is off while previewing as a patron.</p></div>';
+        } elseif (empty($who['access'])) {
+            $join = social_url('patreon');
+            $h .= '<div class="pl-foot"><p class="pl-note">Patrons on any paid tier can vote.' . $note . '</p>' . ($join !== '' ? '<a class="btn btn-primary" href="' . e($join) . '" rel="noopener" target="_blank">See the Tiers</a>' : '') . '</div>';
+        }
+    } elseif (!$live) {
+        $h .= '<div class="pl-foot"><p class="pl-note">Voting opens when the post is published.</p></div>';
+    }
+    return $h . '</section>';
+}
+

@@ -14,7 +14,7 @@ $cmOn = m3d_comments_on();   // the Comments column (app/comments.php)
       <div>
         <h1>Models</h1>
       </div>
-      <div class="row-btns"><?php if (m3d_smutbase_on()): ?><a class="btn btn-ghost" href="/admin/import.php">Import from SmutBase</a><?php endif ?><a class="btn btn-primary" href="/admin/edit.php">+ Add Model</a></div>
+      <div class="row-btns"><a class="btn btn-primary" href="/admin/edit.php">+ Add Model</a></div>
     </div>
     <?= assets_menu('models') ?>
 

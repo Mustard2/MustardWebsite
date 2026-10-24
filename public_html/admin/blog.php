@@ -4,14 +4,26 @@
 require __DIR__ . '/_admin.php';
 admin_require($M3D);
 
-$items = [];   // what "Models and Accessories in This Post" can pick (drafts too: they show on the post once listed)
+$items = [];   // what "Models and Accessories in This Post" can pick (drafts too: they show on the post once listed);
+// x = more words to find it by: an accessory's models with their franchises ("fantasy" finds Tifa's outfit), a model's generation
+$models = array_column(m3d_models(), null, 'slug');
 foreach (['models', 'outfits'] as $kind) foreach (m3d_items($kind) as $it) {
     $pic = item_pic($kind, $it);
+    if ($kind === 'models') {
+        $sub = trim('Model · ' . ($it['franchise'] ?? ''), ' ·');
+        $x = ($it['generation'] ?? '') !== '' ? 'gen ' . $it['generation'] : '';
+    } else {
+        $fits = m3d_fits_all($it) ? [] : array_values(array_filter(array_map(fn($s) => $models[$s] ?? null, (array) ($it['models'] ?? []))));
+        $for = m3d_fits_all($it) ? ['All Models'] : array_map('m3d_model_name', $fits);
+        $sub = implode(' · ', array_filter([m3d_accessory_type($it), $for ? 'For ' . implode(', ', array_slice($for, 0, 2)) . (count($for) > 2 ? '…' : '') : '']));
+        $x = implode(' ', array_unique(array_merge($for, array_map(fn($m) => (string) ($m['franchise'] ?? ''), $fits))));
+    }
     $items[] = ['ref' => $kind . ':' . $it['slug'], 'name' => $kind === 'models' ? m3d_model_name($it) : (string) $it['name'],
-        'sub' => $kind === 'outfits' ? m3d_accessory_type($it) : trim('Model · ' . ($it['franchise'] ?? ''), ' ·'), 'pic' => str_starts_with($pic, '/media/') ? img_thumb($pic) : ''];
+        'sub' => $sub, 'x' => $x, 'pic' => $pic !== '' ? img_thumb($pic) : ''];
 }
 $payload = ['kind' => 'blog', 'posts' => admin_blog_posts(), 'post' => m3d_get_text('post'), 'items' => $items,
-    'discord' => m3d_discord_on(), 'discordUrl' => settings_url('discord'), 'comments' => m3d_comments_on('posts'), 'commentsUrl' => settings_url('comments'), 'now' => m3d_site_time(time(), 'Y-m-d\TH:i'), 'tz' => m3d_site_time(time(), 'T')];
+    'discord' => m3d_discord_on(), 'discordUrl' => settings_url('discord'), 'comments' => m3d_comments_on('posts'), 'commentsUrl' => settings_url('comments'), 'now' => m3d_site_time(time(), 'Y-m-d\TH:i'), 'tz' => m3d_site_time(time(), 'T'),
+    'video' => m3d_video_max()];
 
 admin_start('Blog', 'blog');
 ?>
@@ -26,8 +38,8 @@ admin_start('Blog', 'blog');
     </div>
     <?php if (!m3d_blog_on()): ?><p class="notice">The blog is off: only admins can see it. <a href="<?= e(settings_url('blog')) ?>">Turn it on in Settings</a> when the first posts are ready.</p><?php endif ?>
 
-    <?= format_help('How to Format Posts', ['para', 'inline', 'heading', 'list', 'steps', 'box', 'table', 'code', 'image', 'tabs', 'paywall'],
-        'The summary is shown on the cards and in link previews. Site pages can be linked as <code>[Lena](/models/lena/)</code>. A <code>--- Patreon ---</code> line keeps the rest of the post for patrons, in any post. The toolbar above the text inserts most of these for you.', true) ?>
+    <?= format_help('How to Format Posts', ['box', 'image', 'card', 'tabs', 'paywall'],
+        'The toolbar above the text inserts most of them for you. The summary is shown on the cards and in link previews.', true) ?>
 
     <form class="docs-editor blog-editor" data-editor novalidate></form>
     <script type="application/json" id="editor-data"><?= json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AMP) ?></script>

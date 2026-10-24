@@ -49,10 +49,14 @@ $logKey = $item ? m3d_log_item($kind, $slug) : '';
 $url = fn(array $q = []): string => '/admin/stats.php' . (($q = array_filter(['of' => $q['of'] ?? $of, 'p' => $q['p'] ?? $per], fn($v, $k) => $v !== '' && !($k === 'p' && $v === '30'), ARRAY_FILTER_USE_BOTH)) ? '?' . http_build_query($q) : '');
 $inScope = fn(string $k, string $s): bool => $scope === 'site' || ($k === $kind && ($scope === 'kind' || $s === $slug));
 
-// the first log line (the log is in time order): where "All Time" starts
-$firstLog = 0;
+// the first log line (the log is in time order): where "All Time" starts; one item: also its own first line
+$firstLog = $firstItem = 0;
 if (($fh = @fopen(m3d_log_file(), 'rb'))) {
-    while (($line = fgets($fh)) !== false) if (isset(($r = m3d_log_cols($line))[3]) && ($t = strtotime((string) $r[0]))) { $firstLog = $t; break; }
+    while (($line = fgets($fh)) !== false) {
+        if (!isset(($r = m3d_log_cols($line))[3]) || !($t = strtotime((string) $r[0]))) continue;
+        $firstLog = $firstLog ?: $t;
+        if (!$item || $r[3] === $logKey) { $firstItem = $t; break; }
+    }
     fclose($fh);
 }
 if ($perDays) {
@@ -63,10 +67,20 @@ if ($perDays) {
     $start = $firstLog ?: $now;
     $oldest = null;
     if ($item) foreach (m3d_released_versions($item) as $en) if (($t = m3d_changelog_ts((string) ($en['date'] ?? '')))) $oldest = min($oldest ?? $t, $t);
+    if ($oldest !== null && $firstItem) $oldest = min($oldest, $firstItem);   // downloaded before its oldest version in the changelog: every download still counts
     $from = (new DateTimeImmutable('@' . max($start, $oldest ?? $start)))->setTimezone($tz)->setTime(0, 0);
+    $preWhat = ($oldest ?? 0) > $start ? 'its first version' : 'the oldest line of the log';
     $prevFrom = null;
 }
+$preWhat ??= '';
 $fromTs = $from->getTimestamp();
+// All Time: a bar a day while that's up to 90 days, a week up to two years, else a month; at least 30 days are drawn (grey before the start)
+$chartFrom = $from;
+if (!$perDays) {
+    $span = (int) $from->diff($today)->days + 1;
+    $unit = $span <= 90 ? 'day' : ($span <= 730 ? 'week' : 'month');
+    if ($span < 30) $chartFrom = $today->modify('-29 days');
+}
 
 // the bars: one a day, a week (from Monday) or a month, in site time; key => [first downloads, again]
 $bucketOf = function (string $day) use ($unit): string {   // a day (Y-m-d) => its bar's key
@@ -77,8 +91,9 @@ $bucketOf = function (string $day) use ($unit): string {   // a day (Y-m-d) => i
     return $memo[$day] = $unit === 'week' ? $d->modify('-' . ($d->format('N') - 1) . ' days')->format('Y-m-d') : $d->format('Y-m');
 };
 $bars = [];
-for ($d = $from; $d <= $today; $d = $d->modify($unit === 'month' ? 'first day of next month' : '+1 ' . $unit)) $bars[$bucketOf($d->format('Y-m-d'))] = [0, 0];
+for ($d = $chartFrom; $d <= $today; $d = $d->modify($unit === 'month' ? 'first day of next month' : '+1 ' . $unit)) $bars[$bucketOf($d->format('Y-m-d'))] = [0, 0];
 $bars[$bucketOf($today->format('Y-m-d'))] ??= [0, 0];
+$preKey = $chartFrom < $from ? $bucketOf($from->format('Y-m-d')) : '';   // bars before it: before the log (or the item) starts
 $barText = function (string $key) use ($unit, $tz): string {
     $d = new DateTimeImmutable($unit === 'month' ? "$key-01" : $key, $tz);
     return $unit === 'day' ? $d->format('D j M') : ($unit === 'week' ? 'Week of ' . $d->format('j M') : $d->format('F Y'));
@@ -96,7 +111,7 @@ $localWh = function (int $t) use ($tz): array {   // [weekday 0 (Monday)–6, ho
 
 // ── One pass over the download log ──
 $dl = $prev = 0;            // downloads in the period / in the period before it
-$seen = [];                 // "patron|item" => true once downloaded (the first one is a "first download")
+$seen = [];                 // "patron|item|link" => true once downloaded: a patron's first download of each link of an item is a "first download", the same link again (an update, a re-download) is "again"
 $firstIn = [];              // patron => their first download in scope
 $who = [];                  // patron => their membership at their last download in the period (null: not recorded)
 $heat = array_fill(0, 7, array_fill(0, 24, 0));
@@ -112,7 +127,7 @@ if (($fh = @fopen(m3d_log_file(), 'rb'))) {
         $ik = (string) $r[3];
         [$k, $s] = m3d_log_item_parts($ik);
         $ver = (string) ($r[5] ?? '');
-        $pair = "$id|$ik";
+        $pair = "$id|$ik|" . mb_strtolower(trim((string) ($r[4] ?? '')));   // the log keeps the link's label: a renamed link starts again
         $first = !isset($seen[$pair]);
         $seen[$pair] = true;
         $last[$ik][$id] = $ver;
@@ -128,7 +143,7 @@ if (($fh = @fopen(m3d_log_file(), 'rb'))) {
         $who[$id] = m3d_log_membership($r);
         [$wd, $hr] = $localWh($t);
         $heat[$wd][$hr]++;
-        if ($item) $links[(string) $r[4] ?: 'Download'] = ($links[(string) $r[4] ?: 'Download'] ?? 0) + 1;
+        if ($item) $links[(string) ($r[4] ?? '') ?: 'Download'] = ($links[(string) ($r[4] ?? '') ?: 'Download'] ?? 0) + 1;   // very old lines have no link label
     }
     fclose($fh);
 }
@@ -291,14 +306,19 @@ $wdNames = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 
 $maxBar = max(1, ...array_values(array_map('array_sum', $bars)));
 $keys = array_keys($bars);
 $axis = [$barText($keys[0]), $barText($keys[intdiv(count($keys) - 1, 2)]), ['day' => 'Today', 'week' => 'This Week', 'month' => 'This Month'][$unit]];
-if ($unit !== 'month') foreach ([0, 1] as $i) $axis[$i] = preg_replace('/^(Week of|\w{3}) /', '', $axis[$i]);   // "5 Oct", not "Mon 5 Oct"
-$chart = function (array $data, string $cls = '', ?string $since = null, string $noun = 'download') use ($barText, $bucketOf): string {   // a plain bar chart (the small ones)
+if ($unit !== 'month') foreach ([0, 1] as $i) {   // "5 Oct", not "Mon 5 Oct"; with the year when it isn't this one
+    $y = substr($keys[$i ? intdiv(count($keys) - 1, 2) : 0], 0, 4);
+    $axis[$i] = preg_replace('/^(Week of|\w{3}) /', '', $axis[$i]) . ($y !== $today->format('Y') ? " $y" : '');
+}
+if (count($keys) < 3) $axis[1] = '';   // the middle bar is the first or the last one: never the same label twice
+if (count($keys) < 2) $axis[0] = '';
+$chart = function (array $data, string $cls = '', ?string $since = null, string $noun = 'download') use ($barText, $bucketOf, $preKey, $preWhat): string {   // a plain bar chart (the small ones)
     $max = max(1, ...array_values($data));
     $sinceKey = $since === null ? '' : ($since === '' ? '9999' : $bucketOf($since));   // bars before it: not counted yet
     $h = '<div class="sp-chart sp-mini ' . $cls . '" aria-hidden="true">';
     foreach ($data as $key => $n) {
-        $pre = $sinceKey !== '' && $key < $sinceKey;
-        $h .= '<i class="' . ($pre ? 'pre' : '') . '" style="height:' . ($pre ? 2 : max(2, round(max(0, $n) / $max * 100, 1))) . '%" title="' . e($barText($key) . ': ' . ($pre ? 'not counted yet' : m3d_plural(max(0, $n), $noun))) . '"></i>';
+        $pre = ($early = $preKey !== '' && $key < $preKey) || ($sinceKey !== '' && $key < $sinceKey);
+        $h .= '<i class="' . ($pre ? 'pre' : '') . '" style="height:' . ($pre ? 2 : max(2, round(max(0, $n) / $max * 100, 1))) . '%" title="' . e($barText($key) . ': ' . ($early ? 'before ' . $preWhat : ($pre ? 'not counted yet' : m3d_plural(max(0, $n), $noun)))) . '"></i>';
     }
     return $h . '</div>';
 };
@@ -390,15 +410,14 @@ admin_start($item ? $name($kind, $item) . ' · Stats' : 'Stats', 'stats');
       <div class="sp-tiles"><?= implode('', $tiles) ?></div>
 
       <section class="sec sp-w8 sp-chart-box">
-        <h2>Downloads, <?= e($perLabel) ?> <span class="sp-legend"><span><i class="a"></i>First Download</span><span><i class="b"></i>Again<?= tip('An update, or the same item downloaded again.') ?></span><?php if ($item): ?><span><i class="v"></i>New Version</span><?php endif ?></span></h2>
+        <h2><span>Downloads, <?= e($perLabel) ?><?= tip('Patron downloads only: free links aren’t in the log, they count only in the all-time totals.') ?></span> <span class="sp-legend"><span><i class="a"></i>First Download</span><span><i class="b"></i>Again<?= tip('The same download link again: an update, or the same file downloaded again. Each link of an item (Model, Textures…) has its own first download.') ?></span><?php if ($item): ?><span><i class="v"></i>New Version</span><?php endif ?></span></h2>
         <div class="sp-chart sp-dl" role="img" aria-label="<?= e(m3d_plural($dl, 'patron download') . ', ' . mb_strtolower($perLabel)) ?>">
-          <?php foreach ($bars as $key => [$a, $b]): ?><i style="height:<?= $a + $b ? max(2, round(($a + $b) / $maxBar * 100, 1)) : 1 ?>%" title="<?= e($barText($key) . ': ' . m3d_plural($a + $b, 'download') . ($a + $b ? ", $a first" : '')) ?>"><b style="flex:<?= $a ?>"></b><s style="flex:<?= $b ?>"></s></i><?php endforeach ?>
+          <?php foreach ($bars as $key => [$a, $b]): if ($preKey !== '' && $key < $preKey): ?><i class="pre" style="height:1%" title="<?= e($barText($key) . ': before ' . $preWhat) ?>"></i><?php continue; endif ?><i style="height:<?= $a + $b ? max(2, round(($a + $b) / $maxBar * 100, 1)) : 1 ?>%" title="<?= e($barText($key) . ': ' . m3d_plural($a + $b, 'download') . ($a + $b ? ", $a first" : '')) ?>"><b style="flex:<?= $a ?>"></b><s style="flex:<?= $b ?>"></s></i><?php endforeach ?>
           <?php if ($item): $n = count($keys); foreach (m3d_released_versions($item) as $en): $t = m3d_changelog_ts((string) ($en['date'] ?? '')); if (!$t || $t < $fromTs) continue; $at = array_search($bucketOf($localDay($t)), $keys, true); if ($at === false) continue; ?>
             <em style="left:<?= round(($at + 0.5) / $n * 100, 2) ?>%" title="<?= e($verLabel(m3d_version_label($en)) . ' out ' . m3d_site_time($t, 'j M Y')) ?>"><span><?= e($verLabel(m3d_version_label($en))) ?></span></em>
           <?php endforeach; endif ?>
         </div>
         <div class="sp-axis"><span><?= e($axis[0]) ?></span><span><?= e($axis[1]) ?></span><span><?= e($axis[2]) ?></span></div>
-        <p class="sp-foot">A bar a <?= $unit ?><?= $perDays ? '' : ', since the oldest line of the log' ?>. Patron downloads only: free links are counted only in the all-time totals.</p>
       </section>
 
       <section class="sec sp-w4">
@@ -457,7 +476,7 @@ admin_start($item ? $name($kind, $item) . ' · Stats' : 'Stats', 'stats');
         </ul>
         <?php endif ?>
         <p class="sp-h3">Ranking</p>
-        <div class="sp-rank"><span><b>#<?= $rank('period') ?></b>downloads, <?= e(mb_strtolower($perLabel)) ?></span><span><b>#<?= $rank('total') ?></b>downloads, all time</span><span><b>#<?= $rank('likes') ?></b>likes</span></div>
+        <div class="sp-rank"><?php if ($perDays): /* All Time: the next one says it */ ?><span><b>#<?= $rank('period') ?></b>downloads, <?= e(mb_strtolower($perLabel)) ?></span><?php endif ?><span><b>#<?= $rank('total') ?></b>downloads, all time</span><span><b>#<?= $rank('likes') ?></b>likes</span></div>
         <p class="sp-foot">Among the <?= m3d_plural(count($same), $kind === 'outfits' ? 'accessory' : 'model', $kind === 'outfits' ? 'accessories' : 'models') ?>.</p>
       </section>
 
@@ -548,7 +567,6 @@ admin_start($item ? $name($kind, $item) . ' · Stats' : 'Stats', 'stats');
           <?php endforeach ?>
         </div>
         <div class="sp-axis"><span><?= e($axis[0]) ?></span><span><?= e($axis[2]) ?></span></div>
-        <?php if ($scope === 'site'): ?><p class="sp-foot">Logins and likes are counted per day (numbers only) and kept for a year.</p><?php endif ?>
       </section>
       <?php endif ?>
 

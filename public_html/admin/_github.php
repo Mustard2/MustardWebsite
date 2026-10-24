@@ -17,6 +17,7 @@ const UPDATE_CHANNELS = [
     'dev'    => ['Development', 'Mustard2/Website', true],
 ];
 const CHECK_TTL = 900;                 // seconds a check is reused when the page is opened again
+const CHECK_FAIL_TTL = 300;            // a failed check: GitHub down or slow, so Settings → Update doesn't wait for it on every visit
 const UPDATE_MAX = 25 * 1024 * 1024;   // largest update zip (the same limit as an uploaded one)
 
 /** private/github.php: ['channel' => stable|dev, 'token' => key or '']. */
@@ -71,8 +72,11 @@ function gh_request(string $url, string $token = '', string $accept = 'applicati
         CURLOPT_MAXREDIRS      => 3,
         CURLOPT_PROTOCOLS      => CURLPROTO_HTTPS,
         CURLOPT_REDIR_PROTOCOLS => CURLPROTO_HTTPS,
-        CURLOPT_CONNECTTIMEOUT => 10,
-        CURLOPT_TIMEOUT        => $saveTo ? 180 : 20,
+        // short: an outage at GitHub must not hold a page for long (a check is a small answer that normally comes in a second)
+        CURLOPT_CONNECTTIMEOUT => 5,
+        CURLOPT_TIMEOUT        => $saveTo ? 180 : 10,
+        CURLOPT_LOW_SPEED_LIMIT => 1024,   // a download that stalls (under 1 KB/s for 30 s) stops instead of using all 180 s
+        CURLOPT_LOW_SPEED_TIME  => 30,
         CURLOPT_HEADERFUNCTION => function ($c, $line) use (&$headers) {
             if (str_contains($line, ':')) { [$k, $v] = explode(':', $line, 2); $headers[strtolower(trim($k))] = trim($v); }
             return strlen($line);
@@ -90,7 +94,7 @@ function gh_request(string $url, string $token = '', string $accept = 'applicati
     $body = curl_exec($ch);
     $status = (int) curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
     $err = curl_error($ch);
-    curl_close($ch);
+    unset($ch);
     if ($fh) fclose($fh);
     return [$status, is_string($body) ? $body : null, $headers, $err];
 }
@@ -121,14 +125,14 @@ function gh_cache_file(string $channel): string
 /**
  * The channel's releases, newest first: ['at' => checked, 'error' => '', 'expires' => key expiry ('' = none or unknown),
  * 'releases' => [['v', 'at' (ts), 'notes', 'zip' => asset id, 'size', 'sum' => asset id]]]. Reuses the last check for
- * CHECK_TTL seconds unless $fresh; a failed check only for a minute, so reopening the page soon tries again.
+ * CHECK_TTL seconds unless $fresh; a failed check for CHECK_FAIL_TTL ("Check Again" asks at once).
  */
 function gh_check(string $channel, bool $fresh = false): array
 {
     $cache = gh_cache_file($channel);
     if (!$fresh && is_file($cache)) {
         $c = json_decode((string) @file_get_contents($cache), true);
-        if (is_array($c) && is_array($c['releases'] ?? null) && ($c['at'] ?? 0) > time() - (($c['error'] ?? '') === '' ? CHECK_TTL : 60)) return $c;
+        if (is_array($c) && is_array($c['releases'] ?? null) && ($c['at'] ?? 0) > time() - (($c['error'] ?? '') === '' ? CHECK_TTL : CHECK_FAIL_TTL)) return $c;
     }
     $save = function (array $out) use ($cache): array {
         if (!is_dir(dirname($cache))) @mkdir(dirname($cache), 0700, true);
@@ -173,13 +177,14 @@ function gh_newer(array $check): array
 
 /**
  * The last check of $channel as saved, without asking GitHub, for pages that only show it (Admin → Home): when it is missing
- * or older than CHECK_TTL, a new check runs after the page has been sent, so the page never waits for GitHub.
+ * or older than CHECK_TTL, a new check runs after the page has been sent, so the page never waits for GitHub. A server that
+ * can't send the page first (m3d_can_finish_early()) skips it: the check would hold the page; Settings → Update still checks.
  */
 function gh_check_cached(string $channel): ?array
 {
     $c = json_decode((string) @file_get_contents(gh_cache_file($channel)), true);
     $c = is_array($c) && is_array($c['releases'] ?? null) ? $c : null;
-    if (!$c || ($c['at'] ?? 0) <= time() - CHECK_TTL) {
+    if ((!$c || ($c['at'] ?? 0) <= time() - CHECK_TTL) && m3d_can_finish_early()) {
         // one request at a time (every admin page asks, for the bell); gh_check() without $fresh reuses a check another one just made.
         // A new version is told on Discord once (Settings → Notifications)
         m3d_after_response(fn() => m3d_with_lock('.update-check-lock', fn() => m3d_notify_update(gh_check($channel))));

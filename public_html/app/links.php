@@ -24,7 +24,7 @@ function lc_links(): array
 }
 
 /**
- * Replace a Link Everywhere (Link Check → "Replace…"): every model and accessory download link and add-on, and every Gallery full size link,
+ * Replace a Link Everywhere (Link Check → "Replace…"): every model and accessory download link and add-on, every full size link of their pictures and of the Gallery,
  * whose address is $old gets $new (already checked by the caller). Reads the data fresh and saves each file it changes once.
  * Returns how many places changed, or null when a save failed.
  */
@@ -40,6 +40,9 @@ function lc_replace_everywhere(string $old, string $new): ?int
                 foreach ($it[$k] as &$l) if (is_array($l) && trim((string) ($l['url'] ?? '')) === $old) { $l['url'] = $new; $hit++; }
                 unset($l);
             }
+            foreach ((array) ($it[PIC_FIELDS[$kind]] ?? []) as $i => $g) {   // full size links of its pictures
+                if (is_array($g) && trim((string) ($g['link']['url'] ?? '')) === $old) { $it[PIC_FIELDS[$kind]][$i]['link']['url'] = $new; $hit++; }
+            }
         }
         unset($it);
         if ($hit && !m3d_save_items($kind, $items)) return null;
@@ -53,7 +56,7 @@ function lc_replace_everywhere(string $old, string $new): ?int
     return $n + $hit;
 }
 
-/** Every full (https) address among models' and accessories' download links and add-ons and Gallery full size links:
+/** Every full (https) address among models' and accessories' download links, add-ons and pictures' full size links, and Gallery full size links:
  *  [{h, url, kind, slug, name, sub, label, access, edit, host}] in the admin lists' order. */
 function lc_all_links(): array
 {
@@ -80,6 +83,10 @@ function lc_all_links(): array
             foreach ((array) ($it['addons'] ?? []) as $a) {
                 if (!is_array($a)) continue;
                 $add($base + ['url' => (string) ($a['url'] ?? ''), 'label' => (string) ($a['label'] ?? 'Add-on'), 'access' => 'Add-on']);
+            }
+            foreach ((array) ($it[PIC_FIELDS[$kind]] ?? []) as $g) {   // full size links of its pictures
+                if (!is_array($g) || empty($g['link']['url'])) continue;
+                $add($base + ['url' => (string) $g['link']['url'], 'label' => trim('Full size picture ' . (string) ($g['caption'] ?? '')), 'access' => ($g['link']['access'] ?? '') === 'public' ? 'Public' : 'Patrons']);
             }
         }
     }
@@ -156,7 +163,7 @@ function lc_clean_domain(string $s): string
     $s = strtolower(trim($s));
     if ($s === '') return '';
     $d = str_contains($s, '://') ? lc_domain($s) : lc_domain('https://' . $s);
-    return preg_match('/^(?=.{3,100}$)([a-z0-9-]+\.)+[a-z0-9-]{2,}$/', $d) ? $d : '';
+    return preg_match('/^(?=.{3,100}$)([a-z0-9-]+\.)+[a-z0-9-]{2,}$/D', $d) ? $d : '';
 }
 
 /** The other websites the admin wants checked too (settings.json → linkcheck.sites): a website covers its parts (www., drive.google.com for google.com). */
@@ -202,7 +209,7 @@ function lc_mega_call(string $api, array $query, array $cmd, string &$err = ''):
     $body = curl_exec($ch);
     $code = (int) curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
     $err = curl_error($ch) ?: ($code !== 200 ? "HTTP $code" : '');
-    curl_close($ch);
+    unset($ch);
     if (!is_string($body) || $code !== 200) return null;
     $d = json_decode($body, true);
     if (is_int($d)) return $d;                          // the whole request refused (e.g. -3: try again)
@@ -301,28 +308,23 @@ function lc_check_s4(string $url): array
 function lc_check_web(string $url): array
 {
     $try = function (bool $head) use ($url): array {
-        $ch = curl_init($url);
         $got = 0;
-        curl_setopt_array($ch, [
+        // m3d_fetch(): http / https only, never this server or a private network, each of the 5 redirects checked again
+        $r = m3d_fetch($url, [
             CURLOPT_NOBODY         => $head,
-            CURLOPT_FOLLOWLOCATION => true,
-            CURLOPT_MAXREDIRS      => 5,
             CURLOPT_CONNECTTIMEOUT => 10,
             CURLOPT_TIMEOUT        => 20,
-            CURLOPT_PROTOCOLS      => CURLPROTO_HTTP | CURLPROTO_HTTPS,
-            CURLOPT_REDIR_PROTOCOLS => CURLPROTO_HTTP | CURLPROTO_HTTPS,
             CURLOPT_HTTPHEADER     => ['User-Agent: Mozilla/5.0 (compatible; site link check)', 'Range: bytes=0-1023'],
             // a GET stops after the first bytes: a big file is never downloaded
             CURLOPT_WRITEFUNCTION  => function ($ch, string $data) use (&$got) { $got += strlen($data); return $got > 65536 ? 0 : strlen($data); },
-        ]);
-        curl_exec($ch);
-        $out = [(int) curl_getinfo($ch, CURLINFO_RESPONSE_CODE), curl_errno($ch), curl_error($ch)];
-        curl_close($ch);
-        return $out;
+        ], 5);
+        return [$r['code'], $r['errno'], $r['err']];
     };
     [$code, $errno, $err] = $try(true);
+    if ($errno === M3D_FETCH_REFUSED) return ['st' => 'unknown', 'why' => $err];
     if ($errno === 0 && ($code === 405 || $code === 403 || $code === 400 || $code === 501 || $code === 404)) [$code, $errno, $err] = $try(false);   // some sites refuse HEAD
     if ($errno === CURLE_WRITE_ERROR) $errno = 0;   // stopped on purpose after the first bytes
+    if ($errno === M3D_FETCH_REFUSED) return ['st' => 'unknown', 'why' => $err];   // the GET was sent somewhere else
     if ($errno === CURLE_COULDNT_RESOLVE_HOST) return ['st' => 'dead', 'why' => 'This website’s address doesn’t exist'];
     if ($errno !== 0) return ['st' => 'unknown', 'why' => 'No answer (' . ($err ?: "error $errno") . ')'];
     if ($code >= 200 && $code < 400) return ['st' => 'ok', 'why' => "Page answers (HTTP $code)"];

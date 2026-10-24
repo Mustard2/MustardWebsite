@@ -12,7 +12,8 @@
 //   fol {like code: time last opened} (who follows it, see "Following"),
 //   log [{t: 'c', by, name, at, text, admin} comment | {t: 's', at, status, fixed?, reason?, dup?} status | {t: 'tag', at, add []}]
 // settings.json → bugs: {on, who: any|paying, host (where to upload screenshots), uploads, moderate, per_day, blocked [Patreon ids],
-//   tags [{id, name, color}], notify + webhook (old: read by m3d_notify_settings() until Settings → Notifications is saved)}
+//   tags [{id, name, color}], notify (old: read by m3d_notify_settings() until Settings → Notifications is saved, with the webhook of
+//   private/webhooks.php → bugs)}
 declare(strict_types=1);
 defined('M3D_PRIVATE') or exit;
 
@@ -32,21 +33,29 @@ const BUG_PIC_BYTES = 8 * 1024 * 1024;
 const BUG_PIC_SIZE = 1600;    // longest side of an uploaded picture (and 600 for its small copy)
 const BUG_PER_PAGE = 25;
 const BUG_MAX = ['title' => 140, 'body' => 5000, 'steps' => 3000, 'comment' => 3000, 'short' => 40];
+/** Comments one person may write on bug reports in 24 hours (admins: no limit). A fixed number, not the reports' per_day (a few
+ *  reports a day, too few for a conversation with the creator) nor the comments' one (another feature, which may be off). */
+const BUG_COMMENTS_PER_DAY = 30;
+/** Me Too and Follow presses one visitor may make in an hour, counted in their session (nothing stored about them). */
+const BUG_TOGGLES_PER_HOUR = 30;
 
 function m3d_bug_settings(): array
 {
     $s = m3d_settings()['bugs'] ?? [];
     $s = is_array($s) ? $s : [];
+    if (!empty($s['blocked'])) m3d_bans_move_blocked('bugs', 'bugs', array_map('strval', (array) $s['blocked']));
+    $who = ($s['who'] ?? '') === 'paying' ? 'paying' : 'any';
     return [
         'on'       => !empty($s['on']),
-        'who'      => ($s['who'] ?? '') === 'paying' ? 'paying' : 'any',
+        'who'      => $who,
         'host'     => array_key_exists('host', $s) ? (string) $s['host'] : 'https://catbox.moe',
         'uploads'  => !empty($s['uploads']),
-        'moderate' => !empty($s['moderate']),
+        // never saved: on while anyone may post (free members too), so a brand-new account isn't published at once
+        'moderate' => array_key_exists('moderate', $s) ? !empty($s['moderate']) : $who === 'any',
         'notify'   => !empty($s['notify']),
-        'webhook'  => (string) ($s['webhook'] ?? ''),
+        'webhook'  => m3d_webhook('bugs'),   // private/webhooks.php
         'per_day'  => max(1, min(50, (int) ($s['per_day'] ?? 5))),
-        'blocked'  => array_values(array_filter(array_map('strval', (array) ($s['blocked'] ?? [])))),
+        'blocked'  => m3d_ban_ids('bugs'),   // Admin → Access bans (the old list here moves there once)
         'tags'     => array_values(array_filter((array) ($s['tags'] ?? []), fn($t) => is_array($t) && ($t['id'] ?? '') !== '' && ($t['name'] ?? '') !== '')),
     ];
 }
@@ -139,20 +148,6 @@ function m3d_bug_set_status(array $b, string $st, int $now, string $fixed = '', 
         elseif ($done((string) $was[0])) unset($b['locked']);
     }
     return $b;
-}
-
-/** An item's address changed (a draft replaced by an import): its reports follow it, so they keep its visibility and its page box. */
-function m3d_bugs_rename_item(string $kind, string $old, string $new): void
-{
-    if ($old === $new || !is_file(M3D_PRIVATE . '/data/bugs.json')) return;
-    m3d_bugs_update(function (array $bugs, int $next) use ($kind, $old, $new) {
-        foreach ($bugs as &$b) {
-            if (($b['about'] ?? '') === "$kind:$old") $b['about'] = "$kind:$new";
-            foreach ((array) ($b['log'] ?? []) as $i => $x) if (($x['t'] ?? '') === 'ref' && ($x['item'] ?? '') === "$kind:$old") $b['log'][$i]['item'] = "$kind:$new";   // its "Fixed in" line too
-        }
-        unset($b);
-        return [$bugs, $next, null];
-    });
 }
 
 /** Changes one bug ($fn gets it and returns it, or null to delete it). Returns the bug after the change, or null. */
@@ -258,16 +253,41 @@ function m3d_bug_can_post(?array $p): array
     $s = m3d_bug_settings();
     if (!$p) return ['ok' => false, 'why' => 'login'];
     if (!empty($p['preview'])) return ['ok' => false, 'why' => 'Not while previewing the site as a patron.'];
-    if (in_array((string) ($p['id'] ?? ''), $s['blocked'], true)) return ['ok' => false, 'why' => 'You can’t post bug reports any more.'];
+    if (m3d_banned($p, 'bugs')) return ['ok' => false, 'why' => 'banned'];   // Admin → Access: the page says so with ban_note()
     if ($s['who'] === 'paying' && empty($p['access'])) return ['ok' => false, 'why' => 'Only patrons on a paid tier can post bug reports.'];
     return ['ok' => true, 'why' => ''];
 }
 
-/** Reports this person sent in the last 24 hours (for the daily limit). */
-function m3d_bug_sent_today(string $patronId): int
+/** Reports this person sent in the last 24 hours (for the daily limit). $bugs: the list m3d_bugs_update() hands over, so the check
+ *  and the save happen under one lock (two sessions at once can't both pass); else the one read. */
+function m3d_bug_sent_today(string $patronId, ?array $bugs = null): int
 {
     $from = time() - 86400;
-    return count(array_filter(m3d_bugs(), fn($b) => (string) ($b['by'] ?? '') === $patronId && (int) ($b['at'] ?? 0) > $from));
+    return count(array_filter($bugs ?? m3d_bugs(), fn($b) => (string) ($b['by'] ?? '') === $patronId && (int) ($b['at'] ?? 0) > $from));
+}
+
+/** Comments this person wrote on bug reports in the last 24 hours (BUG_COMMENTS_PER_DAY); $bugs as for m3d_bug_sent_today(). */
+function m3d_bug_comments_today(string $patronId, ?array $bugs = null): int
+{
+    $from = time() - 86400;
+    $n = 0;
+    foreach ($bugs ?? m3d_bugs() as $b) foreach ((array) ($b['log'] ?? []) as $x) {
+        if (($x['t'] ?? '') === 'c' && (string) ($x['by'] ?? '') === $patronId && (int) ($x['at'] ?? 0) > $from) $n++;
+    }
+    return $n;
+}
+
+/** One more Me Too / Follow press of this visitor: false when they made BUG_TOGGLES_PER_HOUR in the last hour. Counted in their
+ *  session (times only), so nothing new is stored about them; without a session (can't happen for a logged-in visitor) it says no. */
+function m3d_bug_toggle_ok(): bool
+{
+    if (session_status() !== PHP_SESSION_ACTIVE) return false;
+    $from = time() - 3600;
+    $list = array_values(array_filter((array) ($_SESSION['bug_toggles'] ?? []), fn($t) => (int) $t > $from));
+    $ok = count($list) < BUG_TOGGLES_PER_HOUR;
+    if ($ok) $list[] = time();
+    $_SESSION['bug_toggles'] = $list;
+    return $ok;
 }
 
 /** Reports the admin hasn't opened yet (the count in the admin menu). */
@@ -527,6 +547,18 @@ function m3d_bug_follow(array $b, array $p, int $now): array
     return $b;
 }
 
+/** A report with this person's new comment at the end of its log (followed by them; a visitor's comment makes it "not seen" again). */
+function m3d_bug_add_comment(array $b, array $p, string $text, int $now, bool $admin): array
+{
+    $b['log'][] = ['t' => 'c', 'by' => (string) $p['id'], 'name' => (string) ($p['name'] ?? ''), 'at' => $now, 'text' => $text] + ($admin ? ['admin' => true] : []);
+    $b['act'] = $now;
+    if (!$admin) {   // a new comment: the report is "not seen" again, and the bell tells new comments from a new report
+        if (!empty($b['seen'])) $b['seen_at'] = $now - 1;
+        unset($b['seen']);
+    }
+    return m3d_bug_follow($b, $p, $now);
+}
+
 /** Log entries of a bug that are new for someone who last opened it at $seen: status changes ("Fixed in" lines while they show, bug_ref_event()) and other people's comments. */
 function m3d_bug_new_entries(array $b, int $seen, string $patronId): array
 {
@@ -600,7 +632,7 @@ function bug_links(mixed $v): array
     foreach ((array) $v as $u) {
         $u = is_string($u) ? trim($u) : '';
         if ($u === '') continue;
-        if (!preg_match('#^https?://[^\s<>"]{3,500}$#i', $u) || !filter_var($u, FILTER_VALIDATE_URL)) continue;
+        if (!preg_match('#^https?://[^\s<>"]{3,500}$#iD', $u) || !filter_var($u, FILTER_VALIDATE_URL)) continue;
         $out[] = $u;
     }
     return array_slice(array_values(array_unique($out)), 0, BUG_LINKS);
@@ -635,13 +667,12 @@ function bug_save_pics(array $files, int $room): array
             $path = img_save($big, $base);
             $sm = img_resized($big, 600);
             img_save($sm, "$base-sm");
-            if ($sm !== $big) imagedestroy($sm);
-            if ($big !== $im) imagedestroy($big);
+            unset($sm, $big);
             $out[] = '/media/bugs/' . basename($path);
         } catch (Throwable $ex) {
             return [$out, 'The picture could not be saved.'];
         } finally {
-            imagedestroy($im);
+            unset($im);
         }
     }
     return [$out, ''];
@@ -668,7 +699,7 @@ function m3d_bug_notify(array $b): void
 {
     $a = m3d_bug_about($b);
     m3d_notify_post('bugs', [['title' => mb_substr('#' . $b['n'] . ' ' . $b['title'], 0, 250), 'url' => abs_url('/bugs/' . $b['n'] . '/'),
-        'description' => mb_substr(trim($a['name'] . ' ' . ($b['ver'] ?? '')) . "\n" . m3d_notify_plain((string) $b['body'], 300), 0, 700),
+        'description' => mb_substr(trim(m3d_notify_plain($a['name'], 120) . ' ' . m3d_notify_plain((string) ($b['ver'] ?? ''), 40)) . "\n" . m3d_notify_plain((string) $b['body'], 300), 0, 700),   // ver: free text for website / other reports
         'color' => hexdec('e8b931'), 'footer' => ['text' => 'New bug report · ' . mb_substr((string) ($b['name'] ?? ''), 0, 60) . (!empty($b['pending']) ? ' · waiting for you' : '')]]]);
 }
 
@@ -680,6 +711,55 @@ function m3d_bug_comment_notify(array $b, string $name, string $text): void
 }
 
 // ── Pieces of pages ──────────────────────────────────────────────────────────
+/** The message of a ?done= / ?err= code on the bug pages (the creator's changes: admin/bug.php, admin/bugs.php, bugs.php): fixed texts,
+ *  never text from the address. A number may follow the code ("deleted-12" = report #12, "changed-3" = 3 reports); '' = unknown code. */
+function bug_result_text(string $code, bool $err = false): string
+{
+    if (!preg_match('/^([a-z]+)(?:-(\d{1,9}))?$/', $code, $m)) return '';
+    $n = (int) ($m[2] ?? 0);
+    if ($err) return match ($m[1]) {
+        'status'   => 'Pick a status.',
+        'dup'      => 'Duplicate of: write the number of another report.',
+        'title'    => 'The report needs a title.',
+        'about'    => 'Pick what the report is about.',
+        'empty'    => 'A comment can’t be empty: delete it instead.',
+        'block'    => 'This person can’t be blocked here.',
+        'unblock'  => 'This person can’t be unblocked here.',
+        'action'   => 'Unknown action.',
+        'write'    => 'Could not save: check that ' . basename(M3D_PRIVATE) . '/data is writable.',
+        'bugsfile' => 'Could not write ' . basename(M3D_PRIVATE) . '/data/bugs.json. Check that the folder is writable.',
+        'settings' => m3d_write_error(),
+        'tagmax'   => '60 tags at most.',
+        'none'     => 'Tick the reports to change first.',
+        'op'       => 'Pick what to do with the ticked reports.',
+        default    => '',
+    };
+    return match ($m[1]) {
+        'saved'     => 'Saved.',
+        'title'     => 'Title changed.',
+        'edited'    => 'Report changed.',
+        'published' => 'Published: everyone can see this report now.',
+        'cdeleted'  => 'Comment deleted.',
+        'cchanged'  => 'Comment changed.',
+        'blocked'   => 'Blocked: they can still read the reports, but not post or comment.',
+        'unblocked' => 'Unblocked: they can post again.',
+        'added'     => "Report #$n added.",
+        'deleted'   => "Report #$n deleted.",
+        'tags'      => 'Tags saved.',
+        'changed'   => m3d_plural($n, 'report') . ' changed.',
+        'removed'   => m3d_plural($n, 'report') . ' deleted.',
+        default     => '',
+    };
+}
+
+/** The ✓ / "Not saved" messages of ?done= / ?err= (bug_result_text()), for the creator only; ?wait=1 (too many Me Too / Follow presses) for anyone. */
+function bug_result_flash(bool $creator): void
+{
+    if ($creator && ($t = bug_result_text(m3d_get_text('done'))) !== '') site_flash('✓ ' . e($t));
+    if ($creator && ($t = bug_result_text(m3d_get_text('err'), true)) !== '') site_flash('<b>Not saved:</b> ' . e($t), 'err');
+    if (!empty($_GET['wait'])) site_flash('You pressed Me Too or Follow many times in the last hour: please wait a little before pressing again.', 'err');
+}
+
 /** A version label as words: "2" → "Version 2"; "Beta 2", "V3" stay. */
 function bug_version_words(string $label): string
 {

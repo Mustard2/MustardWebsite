@@ -25,7 +25,7 @@ if ($do === 'add') {
     if (!isset(COMMENT_KINDS[$kind])) $go('cmerr=off');
     // the page must be one this visitor sees in full, with comments open
     if ($kind === 'posts') {
-        $item = preg_match('/^[0-9a-f]{8}$/', $key) && (m3d_blog_on() || $admin) ? m3d_post($key) : null;
+        $item = preg_match('/^[0-9a-f]{8}$/D', $key) && (m3d_blog_on() || $admin) ? m3d_post($key) : null;
         if (!$item || m3d_post_view($item) !== 'full') not_found();
         $back = m3d_post_url($item);
     } else {
@@ -50,11 +50,13 @@ if ($do === 'add') {
     $can = m3d_comment_can_post($p);
     $S = m3d_comment_settings();
     $why = !m3d_comments_open($kind, $item) ? 'off'
-        : (!$can['ok'] ? (!empty($p['preview']) ? 'preview' : (in_array((string) $p['id'], $S['blocked'], true) ? 'blocked' : 'paying'))
-        : (mb_strlen($text) < 2 ? 'short'
-        : (!$admin && m3d_comments_sent_today((string) $p['id']) >= $S['per_day'] ? 'limit' : '')));
+        : (!$can['ok'] ? (!empty($p['preview']) ? 'preview' : ($can['why'] === 'banned' ? 'blocked' : 'paying'))
+        : (mb_strlen($text) < 2 ? 'short' : ''));
+    if ($why === 'blocked') m3d_redirect(m3d_ban_url('comments'));   // banned in Admin → Access: the page with the reason
     if ($why !== '') { $keep(); $go('cmerr=' . $why); }
     $c = m3d_comments_update(function (array $all) use ($kind, $key, $text, $p, $admin, $S, $re, $to) {
+        // the daily limit, checked under the same lock as the save (two sessions at once can't both pass); admins have none
+        if (!$admin && m3d_comments_sent_today((string) $p['id'], $all) >= $S['per_day']) return [$all, 'limit'];
         $c = ['id' => $all['next'], 'by' => (string) $p['id'], 'name' => (string) ($p['name'] ?? ''), 'at' => time(), 'text' => $text];
         if ($re) $c['re'] = $re;
         if ($to) $c['to'] = $to;
@@ -64,7 +66,7 @@ if ($do === 'add') {
         $all[$kind][$key] = [...(array) ($all[$kind][$key] ?? []), $c];
         return [$all, $c];
     });
-    if (!$c) { $keep(); $go('cmerr=save'); }
+    if (!is_array($c)) { $keep(); $go('cmerr=' . ($c === 'limit' ? 'limit' : 'save')); }
     if (!$admin) m3d_comment_notify($kind, $key, $c);
     $go(!empty($c['pending']) ? 'cm=pending' : 'cm=sent', (int) $c['id']);
 }
@@ -93,9 +95,7 @@ if ($do === 'approve') {
 }
 if ($do === 'block' || $do === 'unblock') {
     $by = (string) ($c['by'] ?? '');
-    $list = m3d_comment_settings()['blocked'];
-    $list = $do === 'block' ? array_values(array_unique([...$list, $by])) : array_values(array_diff($list, [$by]));
     if ($by === '' || in_array($by, array_map('strval', m3d_owner_ids($M3D)), true)) $go('cmerr=save', $id);
-    $go(m3d_comment_settings_save(['blocked' => $list]) ? 'cm=' . $do . 'ed' : 'cmerr=save', $id);
+    $go(m3d_ban_set($by, 'comments', $do === 'block', (string) ($c['name'] ?? '')) ? 'cm=' . $do . 'ed' : 'cmerr=save', $id);   // a ban in Admin → Access
 }
 $go('cmerr=off', $id);

@@ -4,9 +4,14 @@
 //   Tier: Bypass = download with a free Patreon account (or a pledge without a tier, a declined payment); Custom = the same, counting as at least one tier
 //   Requirements: Bypass = minimum tier, months as a patron and total support of models and outfits aren't checked; Custom = they count as at least N months / a total
 //   Unlock Limits: Bypass ("No Limits") = the unlock limit rules below don't apply to them; Custom = their own rules replace them
-// Also the download settings for everyone (settings.json → downloads, see m3d_dl_settings()): the waiting time before a
-// download and the download limit rules (several, each can be turned off without deleting it).
+// and bans (BAN_KINDS: Log In, Downloads, Bug Reports, Comments, Renders) with a reason shown to them on /banned/.
+// The list: one collapsed row per person (name, ID, short tags, date), search `q`, `f` = all | ex | banned, `sort` = name | new | old,
+// EX_PER_PAGE a page (`page`); `ex` = the row opened (also "Edit Exception" on the Patron Log), `new` = the Add User box open.
+// Three tabs (`tab`, ACCESS_TABS; access_menu()): Downloads = the download settings for everyone (settings.json → downloads, see m3d_dl_settings()): the waiting
+// time before a download, the daily cap and the download limit rules (several, each can be turned off without deleting it); Exceptions = the list above
+// (an address with `ex`, `add`, `new`, `f`, `q`, `sort` or `page` and no tab opens it); Temporary Links (admin/_shares.php).
 require __DIR__ . '/_admin.php';
+require __DIR__ . '/_shares.php';   // the Temporary Links tab
 admin_require($M3D);
 
 /** Rules in reading order: "Any Tier" first, then by tier price, each by months as a patron (from, then to; empty = 0 / no end), so the list goes from new patrons to old ones. */
@@ -45,7 +50,11 @@ function ex_post(array $old): array
 {
     $mode = fn(string $f) => in_array($_POST[$f] ?? '', ['bypass', 'custom'], true) ? (string) $_POST[$f] : '';
     $x = ['tier' => $mode('tier'), 'extra' => $mode('extra'), 'limits' => $mode('limits')];
-    if ($x['tier'] === '' && $x['extra'] === '' && $x['limits'] === '') throw new InvalidArgumentException('Pick Bypass or Custom for at least one of Tier, Requirements and Unlock Limits' . ($old ? ', or remove the user.' : '.'));
+    $ban = array_values(array_intersect(array_keys(BAN_KINDS), array_map('strval', (array) ($_POST['ban'] ?? []))));
+    if ($x['tier'] === '' && $x['extra'] === '' && $x['limits'] === '' && !$ban) throw new InvalidArgumentException('Pick Bypass or Custom for at least one of Tier, Requirements and Unlock Limits, or tick a ban' . ($old ? ', or remove the user.' : '.'));
+    $reason = trim((string) preg_replace('/[\p{Cc}\s]+/u', ' ', mb_scrub(is_string($_POST['ban_reason'] ?? null) ? $_POST['ban_reason'] : '', 'UTF-8')));
+    if ($ban) $x['ban'] = $ban;
+    if ($ban && $reason !== '') $x['reason'] = mb_substr($reason, 0, BAN_REASON_MAX);
     if ($x['tier'] === 'custom') {
         $c = trim((string) ($_POST['tier_cents'] ?? ''));
         // a known tier, or the one saved before (a tier whose price changed on Patreon stays until another is picked)
@@ -75,12 +84,43 @@ function ex_post(array $old): array
         if (count($rules) > 10) throw new InvalidArgumentException('Up to 10 rules per person.');
         $x['rules'] = $rules;
     }
-    return array_filter($x, fn($v) => $v !== '');
+    return array_filter($x, fn($v) => $v !== '' && $v !== []);
+}
+
+const EX_PER_PAGE = 25;
+const ACCESS_TABS = ['downloads' => 'Downloads', 'exceptions' => 'Exceptions', 'links' => 'Temporary Links'];
+
+/** The tab bar of Access (the Settings tabs' look): an old address's #users / #links goes to its tab (admin.js, [data-set-tabs]). */
+function access_menu(string $current): string
+{
+    $map = ['wait' => 'downloads', 'cap' => 'downloads', 'downloads' => 'downloads', 'users' => 'exceptions', 'add-user' => 'exceptions', 'links' => 'links'];
+    $h = '<nav class="lib-tabs set-tabs" aria-label="Access" data-set-tabs="' . e(json_encode($map)) . '" data-set-page="/admin/users.php" data-set-default="downloads">';
+    foreach (ACCESS_TABS as $k => $label) $h .= '<a href="/admin/users.php' . ($k === 'downloads' ? '' : '?tab=' . $k) . '"' . ($current === $k ? ' aria-current="page"' : '') . '>' . $label . '</a>';
+    return $h . '</nav>';
+}
+
+/** The short tags of a person's row: [text, tone ('' | 'custom' | 'ban')], bans first. */
+function ex_tags(array $x): array
+{
+    $t = [];
+    if ($b = m3d_ex_bans($x)) $t[] = ['Banned: ' . (in_array('login', $b, true) ? 'Everything' : implode(', ', array_map(fn($k) => BAN_KINDS[$k][0], $b))), 'ban'];
+    $tier = m3d_ex_mode($x['tier'] ?? null);
+    if ($tier === 'bypass') $t[] = ['Any Tier', ''];
+    if ($tier === 'custom') { $c = (int) ($x['tierCents'] ?? 0); $n = m3d_known_tiers()[$c] ?? ''; $t[] = ['As ' . ($n !== '' ? $n : m3d_money($c) . ' Tier'), 'custom']; }
+    $extra = m3d_ex_mode($x['extra'] ?? null);
+    if ($extra === 'bypass') $t[] = ['No Requirements', ''];
+    if ($extra === 'custom') $t[] = ['As ' . implode(' · ', array_filter([isset($x['months']) ? m3d_plural((int) $x['months'], 'Month') : '', isset($x['totalCents']) ? m3d_money((int) $x['totalCents']) . ' Total' : ''])), 'custom'];
+    $limits = m3d_ex_mode($x['limits'] ?? null);
+    if ($limits === 'bypass') $t[] = ['No Limits', ''];
+    if ($limits === 'custom') foreach (m3d_ex_rules($x) as $r) $t[] = [$r['max'] . ' ' . ucfirst(DL_WHAT[$r['what']][$r['max'] === 1 ? 0 : 1]) . ' / ' . ucwords(DL_PERIODS[$r['per']][1]), 'custom'];
+    return $t;
 }
 
 $done = $error = null;
 $posted = admin_form_post();
-if ($posted && str_starts_with((string) ($_POST['do'] ?? ''), 'dl-')) {
+if ($posted && str_starts_with((string) ($_POST['do'] ?? ''), 'share-')) {
+    [$done, $error] = share_post((string) $_POST['do']);
+} elseif ($posted && str_starts_with((string) ($_POST['do'] ?? ''), 'dl-')) {
     $dl = m3d_dl_settings();
     $rules = $dl['rules'];
     $do = (string) $_POST['do'];
@@ -156,8 +196,34 @@ if ($posted && str_starts_with((string) ($_POST['do'] ?? ''), 'dl-')) {
     }
 }
 
+$tab = m3d_get_text('tab');
+if (!isset(ACCESS_TABS[$tab])) $tab = array_intersect(['ex', 'add', 'new', 'f', 'q', 'sort', 'page'], array_keys($_GET)) ? 'exceptions' : 'downloads';
 $people = m3d_exceptions(true);
-usort($people, fn($a, $b) => strcasecmp((string) (($a['name'] ?? '') ?: $a['id']), (string) (($b['name'] ?? '') ?: $b['id'])));
+// the list: filter, search, sort, page (in the address, so a save comes back to the same view)
+$f = in_array($_GET['f'] ?? '', ['ex', 'banned'], true) ? (string) $_GET['f'] : 'all';
+$q = trim(m3d_get_text('q'));
+$sort = in_array($_GET['sort'] ?? '', ['new', 'old'], true) ? (string) $_GET['sort'] : 'name';
+$isEx = fn(array $x) => m3d_ex_mode($x['tier'] ?? null) !== '' || m3d_ex_mode($x['extra'] ?? null) !== '' || m3d_ex_mode($x['limits'] ?? null) !== '';
+$counts = ['all' => count($people), 'ex' => count(array_filter($people, $isEx)), 'banned' => count(array_filter($people, fn($x) => (bool) m3d_ex_bans($x)))];
+$shown = array_values(array_filter($people, function (array $x) use ($f, $q, $isEx) {
+    if ($f === 'ex' && !$isEx($x)) return false;
+    if ($f === 'banned' && !m3d_ex_bans($x)) return false;
+    if ($q === '') return true;
+    $hay = m3d_fold(implode(' ', [$x['id'], $x['name'] ?? '', $x['note'] ?? '', $x['reason'] ?? '']));
+    foreach (preg_split('/\s+/u', m3d_fold($q)) as $w) if ($w !== '' && !str_contains($hay, $w)) return false;
+    return true;
+}));
+$byName = fn($a, $b) => strcasecmp((string) (($a['name'] ?? '') ?: $a['id']), (string) (($b['name'] ?? '') ?: $b['id']));
+usort($shown, $sort === 'name' ? $byName : fn($a, $b) => ($sort === 'old' ? 1 : -1) * (strtotime((string) ($a['added'] ?? '')) <=> strtotime((string) ($b['added'] ?? ''))) ?: $byName($a, $b));
+// the row to open: picked from the Patron Log (?ex=), or the one just saved / not saved; its page comes first
+$openId = $posted && isset($id) && in_array($_POST['do'] ?? '', ['add', 'save'], true) ? (string) $id : m3d_get_text('ex');
+$pages = max(1, (int) ceil(count($shown) / EX_PER_PAGE));
+$page = max(1, min($pages, (int) ($_GET['page'] ?? 1)));
+if ($openId !== '' && !isset($_GET['page'])) foreach ($shown as $i => $x) if ((string) $x['id'] === $openId) $page = intdiv($i, EX_PER_PAGE) + 1;
+$from = ($page - 1) * EX_PER_PAGE;
+$pageRows = array_slice($shown, $from, EX_PER_PAGE);
+$listUrl = fn(array $set) => '/admin/users.php?' . http_build_query(array_filter(array_merge(['tab' => 'exceptions', 'f' => $f === 'all' ? '' : $f, 'q' => $q, 'sort' => $sort === 'name' ? '' : $sort], $set), fn($v) => $v !== '' && $v !== null && $v !== 1));
+$addOpen = isset($_GET['new']) || m3d_get_text('add') !== '' || ($posted && ($_POST['do'] ?? '') === 'add' && $error !== null);
 // patrons the site has met: picked by name in the "Patreon user ID or name" field (m3d_find_patrons())
 $known = m3d_known_patrons();
 $dl = m3d_dl_settings();
@@ -170,8 +236,11 @@ admin_start('Access', 'users');
       <div><h1>Access</h1></div>
     </div>
 
+    <?= access_menu($tab) ?>
+
     <?php admin_result($done, $error) ?>
 
+<?php if ($tab === 'downloads'): ?>
     <div class="users-grid">
     <section class="sec" id="wait">
       <h2 class="small-h">Download Countdown<?= tip('Countdown before every patron download. Free downloads (public links) start at once. 0 = off.') ?></h2>
@@ -243,7 +312,7 @@ admin_start('Access', 'users');
       </form>
     </section>
     </div>
-
+<?php elseif ($tab === 'exceptions'): ?>
     <section class="sec" id="users">
       <?php
         $exHelp = ['tier' => 'Bypass: can download with a free Patreon account. Custom: the same, and counts as at least the tier you pick.',
@@ -287,42 +356,90 @@ admin_start('Access', 'users');
               <button type="button" class="ex-c-add" data-ex-rule-add><span class="rule-add"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg></span>Add Rule</button>
             </div></div>
           </div>
+          <?php $ban = m3d_ex_bans($x); ?>
+          <div class="ban-box">
+            <span class="ex-c-lbl">Ban<?= tip('What they can no longer do. Trying it (or logging in, for Log In) shows them a page that says so, with the reason. A Log In ban also logs them out and counts as every other ban. What they already did stays (their downloads, comments and reports).') ?></span>
+            <div class="ban-picks">
+              <?php foreach (BAN_KINDS as $k => [$lbl]): ?><label><input type="checkbox" name="ban[]" value="<?= $k ?>" <?= in_array($k, $ban, true) ? 'checked' : '' ?> /><?= e($lbl) ?></label><?php endforeach ?>
+            </div>
+            <label class="ban-reason"><span class="ex-lbl">Reason<?= tip('Shown to them on the page they see. Leave empty to give no reason.') ?></span><input class="input input-sm" name="ban_reason" maxlength="<?= BAN_REASON_MAX ?>" value="<?= e((string) ($x['reason'] ?? '')) ?>" placeholder="e.g. Shared patron files outside Patreon" /></label>
+          </div>
         <?php }; ?>
-      <h2 class="small-h">Access Exceptions <span class="muted small">(<?= count($people) ?>)</span></h2>
+      <h2 class="small-h">Access Exceptions <span class="muted small">(<?= count($people) ?>)</span><?= tip('People with their own rules: a tier or requirements they skip, their own unlock limits, or things they are banned from. Changes count at once.') ?></h2>
+      <form method="get" action="/admin/users.php" class="exl-bar" role="search">
+        <input type="hidden" name="tab" value="exceptions" />
+        <?php if ($f !== 'all'): ?><input type="hidden" name="f" value="<?= e($f) ?>" /><?php endif ?>
+        <?php if ($sort !== 'name'): ?><input type="hidden" name="sort" value="<?= e($sort) ?>" /><?php endif ?>
+        <input class="input" type="search" name="q" value="<?= e($q) ?>" placeholder="Search by name, Patreon ID or note" aria-label="Search" />
+        <?php foreach (['all' => 'All', 'ex' => 'Exceptions', 'banned' => 'Banned'] as $k => $lbl): ?>
+          <a class="chip<?= $f === $k ? ' on' : '' ?>" href="<?= e($listUrl(['f' => $k === 'all' ? '' : $k])) ?>"<?= $f === $k ? ' aria-current="true"' : '' ?>><?= $lbl ?> <span class="chip-n"><?= $counts[$k] ?></span></a>
+        <?php endforeach ?>
+        <a class="btn btn-primary btn-sm ex-add-btn" href="<?= e($listUrl(['new' => '1'])) ?>" data-ex-add-open>+ Add User</a>
+      </form>
+
+      <?php $pre = ['id' => preg_match('/^\d{1,20}$/', $a = m3d_get_text('add')) ? $a : '', 'name' => mb_substr(m3d_get_text('name'), 0, 80)];   // "Add Exception" on the Patron Log ?>
+      <div class="ex-add" id="add-user" data-ex-add<?= $addOpen ? '' : ' hidden' ?>>
+        <h3 class="small-h">Add User</h3>
+        <form method="post" class="ex-form" data-ex>
+          <?= form_keys('add') ?>
+          <div class="ex-ids">
+            <label class="field"><span class="lbl">Patreon User ID or Name<?= tip('The ID is shown to each patron on My account (/account/). A name finds people who downloaded something or wrote a bug report.') ?></span><input class="input" name="id" required maxlength="80" placeholder="e.g. 12345678 or Anna" list="known-patrons" data-ex-id autocomplete="off" value="<?= e($pre['id'] !== '' ? $pre['id'] : ($posted && ($_POST['do'] ?? '') === 'add' && $error !== null ? (string) ($_POST['id'] ?? '') : '')) ?>" /></label>
+            <label class="field"><span class="lbl">Name<?= tip('Only for you.') ?></span><input class="input" name="name" maxlength="80" placeholder="e.g. Anna (tester)" data-ex-name value="<?= e($pre['name']) ?>" /></label>
+            <label class="field ex-note"><span class="lbl">Note</span><input class="input" name="note" maxlength="200" placeholder="Why, until when…" /></label>
+          </div>
+          <?php $exFields([], false) ?>
+          <div class="form-actions"><button type="button" class="btn btn-ghost btn-sm" data-ex-add-close>Cancel</button><button class="btn btn-primary btn-sm">Add User</button></div>
+          <datalist id="known-patrons"><?= m3d_patron_options() ?></datalist>
+        </form>
+      </div>
+
       <?php if (!$people): ?>
-        <p class="muted small ex-empty">Nobody yet: add someone below.</p>
+        <p class="muted small ex-empty">Nobody yet: press “+ Add User” to give someone their own rules or ban them.</p>
+      <?php elseif (!$shown): ?>
+        <p class="muted small ex-empty">Nobody matches<?= $q !== '' ? ' “' . e($q) . '”' : '' ?>. <a href="<?= e($listUrl(['f' => '', 'q' => ''])) ?>">Show everyone</a></p>
       <?php else: ?>
-        <div class="ex-list">
-          <?php foreach ($people as $x): ?>
-            <form method="post" class="ex-row<?= m3d_get_text('ex') === (string) $x['id'] ? ' is-picked' : '' ?>" id="ex-<?= e((string) $x['id']) ?>" data-ex>
-              <?= form_keys() ?><input type="hidden" name="id" value="<?= e($x['id']) ?>" />
-              <div class="ex-top">
-                <input class="input input-sm ex-name" name="name" value="<?= e($x['name'] ?? '') ?>" maxlength="80" placeholder="Name" aria-label="Name" />
-                <span><code><?= e($x['id']) ?></code><?php if (isset($known[$x['id']])): ?> <a class="muted small" href="/admin/log.php?patron=<?= e(rawurlencode((string) $x['id'])) ?>#log" title="Their downloads in the log">log</a><?php endif ?></span>
-                <span class="small muted ex-added">Added <?= e($date((string) ($x['added'] ?? ''))) ?></span>
-                <span class="row-btns">
-                  <button class="btn btn-primary btn-sm" name="do" value="save">Save</button>
-                  <button class="btn btn-ghost btn-sm del-btn" name="do" value="remove" onclick="return confirm(<?= e(json_encode('Remove ' . (($x['name'] ?? '') ?: $x['id']) . ' from the users list? They go back to the normal rules.')) ?>)">Remove</button>
-                </span>
-              </div>
-              <?php $exFields($x, true) ?>
-            </form>
+        <div class="exl">
+          <div class="exl-head">
+            <span></span>
+            <a class="exl-sh<?= $sort === 'name' ? ' is-on' : '' ?>" href="<?= e($listUrl(['sort' => ''])) ?>"<?= $sort === 'name' ? ' aria-sort="ascending"' : '' ?>>Name<i aria-hidden="true"><?= $sort === 'name' ? '↓' : '↕' ?></i></a>
+            <span class="exl-h-tags">Exceptions and Bans</span>
+            <a class="exl-sh exl-sh-date<?= $sort !== 'name' ? ' is-on' : '' ?>" href="<?= e($listUrl(['sort' => $sort === 'new' ? 'old' : 'new'])) ?>" title="<?= $sort === 'new' ? 'Newest first: show oldest first' : ($sort === 'old' ? 'Oldest first: show newest first' : 'Sort by the day they were added') ?>"<?= $sort !== 'name' ? ' aria-sort="' . ($sort === 'new' ? 'descending' : 'ascending') . '"' : '' ?>>Added<i aria-hidden="true"><?= $sort === 'new' ? '↓' : ($sort === 'old' ? '↑' : '↕') ?></i></a>
+          </div>
+          <?php foreach ($pageRows as $x): $xid = (string) $x['id']; $nm = ($x['name'] ?? '') !== '' ? (string) $x['name'] : 'ID ' . $xid; ?>
+            <details class="exl-row" id="ex-<?= e($xid) ?>"<?= $openId === $xid ? ' open' : '' ?>>
+              <summary>
+                <svg class="exl-chev" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 6 6 6-6 6"/></svg>
+                <span class="exl-nm"><?= ($x['name'] ?? '') !== '' ? e($nm) : '<span class="muted">No Name</span>' ?> <code><?= e($xid) ?></code></span>
+                <span class="exl-tags"><?php foreach (ex_tags($x) as [$t, $tone]): ?><span class="exl-tg<?= $tone !== '' ? ' is-' . $tone : '' ?>"><?= e($t) ?></span><?php endforeach ?></span>
+                <span class="exl-dt"><?= e($date((string) ($x['added'] ?? ''))) ?></span>
+              </summary>
+              <form method="post" class="ex-row" data-ex>
+                <?= form_keys() ?><input type="hidden" name="id" value="<?= e($xid) ?>" />
+                <div class="ex-top">
+                  <input class="input input-sm ex-name" name="name" value="<?= e($x['name'] ?? '') ?>" maxlength="80" placeholder="Name" aria-label="Name" />
+                  <span><code><?= e($xid) ?></code><?php if (isset($known[$xid])): ?> <a class="muted small" href="/admin/log.php?patron=<?= e(rawurlencode($xid)) ?>#log" title="Their downloads in the log">log</a><?php endif ?> <span class="small muted">· Added <?= e($date((string) ($x['added'] ?? ''))) ?></span></span>
+                  <span class="row-btns">
+                    <button class="btn btn-primary btn-sm" name="do" value="save">Save</button>
+                    <button class="btn btn-ghost btn-sm del-btn" name="do" value="remove" onclick="return confirm(<?= e(json_encode('Remove ' . $nm . ' from the list? They go back to the normal rules, and every ban ends.')) ?>)">Remove</button>
+                  </span>
+                </div>
+                <?php $exFields($x, true) ?>
+              </form>
+            </details>
           <?php endforeach ?>
+        </div>
+        <div class="exl-foot">
+          <?php if ($pages > 1): ?>
+            <nav class="pager" aria-label="Pages">
+              <?php if ($page > 1): ?><a class="chip" href="<?= e($listUrl(['page' => $page - 1])) ?>" aria-label="Previous page">‹</a><?php else: ?><span class="chip is-off" aria-hidden="true">‹</span><?php endif ?>
+              <?php for ($i = 1; $i <= $pages; $i++): ?><a class="chip" href="<?= e($listUrl(['page' => $i])) ?>"<?= $i === $page ? ' aria-current="page"' : '' ?>><?= $i ?></a><?php endfor ?>
+              <?php if ($page < $pages): ?><a class="chip" href="<?= e($listUrl(['page' => $page + 1])) ?>" aria-label="Next page">›</a><?php else: ?><span class="chip is-off" aria-hidden="true">›</span><?php endif ?>
+            </nav>
+          <?php endif ?>
+          <span class="muted small"><?= $from + 1 ?>–<?= $from + count($pageRows) ?> of <?= count($shown) ?></span>
         </div>
       <?php endif ?>
       <template data-ex-rule-tpl><?php $ruleRow(['max' => 1, 'what' => 'models', 'per' => 'week']) ?></template>
-      <?php $pre = ['id' => preg_match('/^\d{1,20}$/', $a = m3d_get_text('add')) ? $a : '', 'name' => mb_substr(m3d_get_text('name'), 0, 80)];   // "Add Exception" on the download log ?>
-      <h3 class="small-h ex-add-h" id="add-user">Add User</h3>
-      <form method="post" class="ex-form" data-ex>
-        <?= form_keys('add') ?>
-        <div class="ex-ids">
-          <label class="field"><span class="lbl">Patreon User ID or Name<?= tip('The ID is shown to each patron on My account (/account/). A name finds people who downloaded something or wrote a bug report.') ?></span><input class="input" name="id" required maxlength="80" placeholder="e.g. 12345678 or Anna" list="known-patrons" data-ex-id autocomplete="off" value="<?= e($pre['id']) ?>" /></label>
-          <label class="field"><span class="lbl">Name<?= tip('Only for you.') ?></span><input class="input" name="name" maxlength="80" placeholder="e.g. Anna (tester)" data-ex-name value="<?= e($pre['name']) ?>" /></label>
-          <label class="field ex-note"><span class="lbl">Note</span><input class="input" name="note" maxlength="200" placeholder="Why, until when…" /></label>
-        </div>
-        <?php $exFields(['tier' => 'bypass', 'extra' => 'bypass'], false) ?>
-        <button class="btn btn-primary btn-sm">Add User</button>
-        <datalist id="known-patrons"><?= m3d_patron_options() ?></datalist>
-      </form>
     </section>
+<?php else: share_section(); endif ?>
 <?php admin_end();

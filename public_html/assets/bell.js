@@ -1,5 +1,6 @@
 // The bell of the admin header and of the creator's public header (notify_bell() in app/notify.php): the panel is filled from
-// /admin/notify.php each time it opens (?list=1 → {html, count}); Mark All as Read and Publish post there and show the list again.
+// /admin/notify.php each time it opens (?list=1 → {html, count}); Mark All as Read, Clear All, a row's ✓ / ✕ and Publish post there and
+// show the list again.
 // Loaded only where the bell is printed (admins), by both headers, so it stays out of site.js and admin.js.
 // Also Quick Add, the "+" printed next to the bell (quick_add() in app/view.php): the second part below.
 (() => {
@@ -94,6 +95,16 @@
     const t = e.target.closest('[data-nt-tab]');
     if (t) { tab = t.dataset.ntTab; showTab(); return; }
     if (e.target.closest('[data-nt-readall]')) { post({ do: 'read-all' }); return; }
+    if (e.target.closest('[data-nt-clear]')) { post({ do: 'clear' }); return; }
+    // a row's ✓ / ✕: shown at once, then the list comes back from the server
+    const row = e.target.closest('[data-nt-code]');
+    const rb = row && e.target.closest('[data-nt-read], [data-nt-remove]');
+    if (rb && !busy) {
+      const gone = rb.matches('[data-nt-remove]');
+      if (gone) row.hidden = true; else { row.classList.remove('is-unread'); rb.hidden = true; }   // hidden, not removed: still inside the bell for the outside-click check
+      post({ do: gone ? 'remove' : 'read', code: row.dataset.ntCode, at: row.dataset.ntAt || '0' });
+      return;
+    }
     const p = e.target.closest('[data-nt-publish]');
     if (p) { p.disabled = true; post({ do: 'publish', id: p.dataset.ntPublish }); }
   });

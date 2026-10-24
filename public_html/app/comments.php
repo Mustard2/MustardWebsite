@@ -7,7 +7,7 @@
 //   for the creator while "Check Before Showing" is on: only its author and the creator see it), edited (unix, the creator edited it),
 //   re (a reply: the id of the comment it is under; replies are one level deep) + to (the reply it answers, when it isn't that comment)
 // settings.json → comments: {on, models, outfits, posts (where they are on), who: any|paying, moderate, per_day, blocked [Patreon ids],
-//   notify + webhook (old: read by m3d_notify_settings() until Settings → Notifications is saved)}. One item or post turns them off with `noComments` (its editor's "Allow Comments" switch): kept, not shown.
+//   notify (old: read by m3d_notify_settings() until Settings → Notifications is saved, with the webhook of private/webhooks.php → comments)}. One item or post turns them off with `noComments` (its editor's "Allow Comments" switch): kept, not shown.
 // Who sees them: whoever sees the page (item_gate(), m3d_post_view() = full); who writes: m3d_comment_can_post().
 declare(strict_types=1);
 defined('M3D_PRIVATE') or exit;
@@ -25,17 +25,20 @@ function m3d_comment_settings(): array
 {
     $s = m3d_settings()['comments'] ?? [];
     $s = is_array($s) ? $s : [];
+    if (!empty($s['blocked'])) m3d_bans_move_blocked('comments', 'comments', array_map('strval', (array) $s['blocked']));
+    $who = ($s['who'] ?? '') === 'paying' ? 'paying' : 'any';
     return [
         'on'       => !empty($s['on']),
         'models'   => (bool) ($s['models'] ?? true),
         'outfits'  => (bool) ($s['outfits'] ?? true),
         'posts'    => (bool) ($s['posts'] ?? true),
-        'who'      => ($s['who'] ?? '') === 'paying' ? 'paying' : 'any',
-        'moderate' => !empty($s['moderate']),
+        'who'      => $who,
+        // never saved: on while anyone may comment (free members too), so a brand-new account isn't published at once
+        'moderate' => array_key_exists('moderate', $s) ? !empty($s['moderate']) : $who === 'any',
         'notify'   => !empty($s['notify']),
-        'webhook'  => (string) ($s['webhook'] ?? ''),
+        'webhook'  => m3d_webhook('comments'),   // private/webhooks.php
         'per_day'  => max(1, min(100, (int) ($s['per_day'] ?? 10))),
-        'blocked'  => array_values(array_filter(array_map('strval', (array) ($s['blocked'] ?? [])))),
+        'blocked'  => m3d_ban_ids('comments'),   // Admin → Access bans (the old list here moves there once)
     ];
 }
 
@@ -158,16 +161,22 @@ function m3d_comment_can_post(?array $p): array
     if (!$p) return ['ok' => false, 'why' => 'login'];
     if (!empty($p['preview'])) return ['ok' => false, 'why' => 'Not while previewing the site as a patron.'];
     if (m3d_is_admin($GLOBALS['M3D'])) return ['ok' => true, 'why' => ''];
-    if (in_array((string) ($p['id'] ?? ''), $s['blocked'], true)) return ['ok' => false, 'why' => 'You can’t comment any more.'];
+    if (m3d_banned($p, 'comments')) return ['ok' => false, 'why' => 'banned'];   // Admin → Access: the page says so with ban_note()
     if ($s['who'] === 'paying' && empty($p['access'])) return ['ok' => false, 'why' => 'Only patrons on a paid tier can comment.'];
     return ['ok' => true, 'why' => ''];
 }
 
-/** Comments this person wrote in the last 24 hours (for the daily limit). */
-function m3d_comments_sent_today(string $patronId): int
+/** Comments this person wrote in the last 24 hours (for the daily limit). $all: the file as m3d_comments_update() hands it over, so the
+ *  check and the save happen under one lock (two sessions at once can't both pass); else the one read. */
+function m3d_comments_sent_today(string $patronId, ?array $all = null): int
 {
+    $all ??= m3d_comments_all();
     $from = time() - 86400;
-    return count(array_filter(m3d_comments_flat(), fn($r) => (string) ($r[2]['by'] ?? '') === $patronId && (int) ($r[2]['at'] ?? 0) > $from));
+    $n = 0;
+    foreach (array_keys(COMMENT_KINDS) as $k) foreach ((array) ($all[$k] ?? []) as $list) foreach ((array) $list as $c) {
+        if (is_array($c) && (string) ($c['by'] ?? '') === $patronId && (int) ($c['at'] ?? 0) > $from) $n++;
+    }
+    return $n;
 }
 
 /** Comments waiting for the creator, as [kind, key, comment], newest first. */
@@ -381,7 +390,7 @@ function comments_block(string $kind, string $key, array $item, string $noun): s
         $h .= '<div class="reply reply-login"><span class="muted">Log in with Patreon to comment.</span><a class="btn btn-patreon btn-sm" rel="nofollow" href="/auth/login.php?return='
             . e(rawurlencode($here . '#comments')) . '">Log In with Patreon</a></div>';
     } else {
-        $h .= '<p class="reply-off muted small">' . e($can['why']) . '</p>';
+        $h .= $can['why'] === 'banned' ? ban_note('comments') : '<p class="reply-off muted small">' . e($can['why']) . '</p>';
     }
     return $h . '</section>';
 }

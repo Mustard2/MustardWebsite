@@ -1,16 +1,23 @@
-# Uploaded images only: never run scripts from this folder
+# Uploaded pictures, 3D previews and videos only: never run scripts from this folder
 Options -Indexes -ExecCGI
 RemoveHandler .php .phtml .php3 .php4 .php5 .php7 .php8 .phar .pl .py .cgi .sh
 RemoveType .php .phtml .php3 .php4 .php5 .php7 .php8 .phar
-<FilesMatch "(?i)\.(php\d?|phtml|phar|pl|py|cgi|sh|htaccess|html?|svg|js)$">
+# Allow-list: only the file types the site stores here (MEDIA_EXT in admin/_backup.php) are served; anything else
+# (scripts, pages, SVG, this file…) answers 403. Mirrored in local-test.php for `php -S`.
+<FilesMatch "(?i)^(?!.+\.(webp|png|jpe?g|gif|glb|mp4|webm)$)">
   Require all denied
 </FilesMatch>
 # 3D previews (app/model3d.php)
 AddType model/gltf-binary .glb
+# videos in blog posts (app/video.php)
+AddType video/mp4 .mp4
+AddType video/webm .webm
 <IfModule mod_php.c>
   php_flag engine off
 </IfModule>
 <IfModule mod_headers.c>
   Header set Cache-Control "public, max-age=2592000"
   Header set X-Content-Type-Options "nosniff"
+  # a file opened on its own can't run scripts or reach the site's cookies (pictures, videos and fetched .glb files aren't affected)
+  Header set Content-Security-Policy "sandbox"
 </IfModule>

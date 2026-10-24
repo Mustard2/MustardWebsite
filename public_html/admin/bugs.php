@@ -2,7 +2,8 @@
 // The creator's changes to several bug reports, made on the public pages (no bug pages in the admin; one list for everyone, like GitHub):
 // POST do=batch from the list /bugs/ (tick reports, then the bar at the bottom: ns[] = report numbers, op = status:<s> | tag:<id> | seen |
 // publish | hide | show | delete), do=tags from the "Edit Tags" window (bug_tags_dialog(): tag_id[], tag_name[], tag_color[]); back = the page
-// it came from (/bugs/ or /bugs/<n>/, CSRF), which it goes back to with ?done= or ?err=. Opening this address goes to the list.
+// it came from (/bugs/ or /bugs/<n>/, CSRF), which it goes back to with ?done= or ?err= (codes of bug_result_text(), never a text).
+// Opening this address goes to the list.
 require __DIR__ . '/_admin.php';
 admin_require($M3D);
 
@@ -13,12 +14,12 @@ if (!admin_form_post() || !in_array($_POST['do'] ?? '', ['batch', 'tags'], true)
 // back to the page as it was (the list's filters and page), without an earlier ?done= / ?err= / ?edit=
 $back = m3d_safe_return($_POST['back'] ?? '', '/bugs/');
 $u = parse_url($back);
-$path = preg_match('#^/bugs/(\d+/)?$#', (string) ($u['path'] ?? '')) ? (string) $u['path'] : '/bugs/';
+$path = preg_match('#^/bugs/(\d+/)?$#D', (string) ($u['path'] ?? '')) ? (string) $u['path'] : '/bugs/';
 parse_str($u['query'] ?? '', $q);
 unset($q['done'], $q['err'], $q['edit']);
 $back = $path . ($q ? '?' . http_build_query($q) : '');
 $anchor = $path === '/bugs/' ? '#list' : '#tools';
-$go = fn(string $key, string $msg) => m3d_redirect($back . (str_contains($back, '?') ? '&' : '?') . $key . '=' . rawurlencode($msg) . $anchor);
+$go = fn(string $key, string $code) => m3d_redirect($back . (str_contains($back, '?') ? '&' : '?') . $key . '=' . rawurlencode($code) . $anchor);
 
 if ($_POST['do'] === 'tags') {
     $old = m3d_bug_tags();
@@ -41,22 +42,22 @@ if ($_POST['do'] === 'tags') {
         $ids[$id] = true;
         $list[] = ['id' => $id, 'name' => $name, 'color' => $color];
     }
-    if (count($list) > 60) $go('err', '60 tags at most.');
-    if (!m3d_bug_settings_save(['tags' => $list])) $go('err', m3d_write_error());
+    if (count($list) > 60) $go('err', 'tagmax');
+    if (!m3d_bug_settings_save(['tags' => $list])) $go('err', 'settings');
     $gone = array_diff(array_map('strval', array_keys($old)), array_keys($ids));
     if ($gone) m3d_bugs_update(function (array $bugs, int $next) use ($gone) {   // a deleted tag leaves the reports too
         foreach ($bugs as $i => $b) if (array_intersect(array_map('strval', (array) ($b['tags'] ?? [])), $gone)) $bugs[$i]['tags'] = array_values(array_diff(array_map('strval', (array) $b['tags']), $gone));
         return [$bugs, $next, true];
     });
-    $go('done', 'Tags saved.');
+    $go('done', 'tags');
 }
 
 $ns = array_values(array_unique(array_filter(array_map('intval', (array) ($_POST['ns'] ?? [])))));
 $op = bug_str($_POST['op'] ?? '');
 $tags = m3d_bug_tags();
-if (!$ns) $go('err', 'Tick the reports to change first.');
+if (!$ns) $go('err', 'none');
 if (!preg_match('/^(status:(' . implode('|', array_keys(BUG_STATUSES)) . ')|tag:[a-z0-9-]{1,40}|seen|publish|hide|show|delete)$/', $op)
-    || (str_starts_with($op, 'tag:') && !isset($tags[substr($op, 4)]))) $go('err', 'Pick what to do with the ticked reports.');
+    || (str_starts_with($op, 'tag:') && !isset($tags[substr($op, 4)]))) $go('err', 'op');
 
 $now = time();
 $pics = [];
@@ -83,6 +84,6 @@ $n = m3d_bugs_update(function (array $bugs, int $next) use ($ns, $op, $now, &$pi
     }
     return [array_values($bugs), $next, $count];
 });
-if ($n === null) $go('err', 'Could not write ' . basename(M3D_PRIVATE) . '/data/bugs.json. Check that the folder is writable.');
+if ($n === null) $go('err', 'bugsfile');
 bug_delete_pics($pics);
-$go('done', m3d_plural((int) $n, 'report') . ' ' . ($op === 'delete' ? 'deleted' : 'changed') . '.');
+$go('done', ($op === 'delete' ? 'removed-' : 'changed-') . (int) $n);

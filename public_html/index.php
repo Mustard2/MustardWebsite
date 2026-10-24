@@ -17,6 +17,8 @@ $featured = $heroable ? (array_values(array_filter($heroable, fn($m) => !empty($
 // generation Other = models without one
 $statuses = array_count_values(array_map('m3d_status', $models));
 $statusChips = ['' => 'All'];
+if ($newCount = count(array_filter($models, 'm3d_is_new'))) $statusChips['new'] = ['label' => 'New', 'count' => $newCount];   // out in the last NEW_DAYS days (data-new on the cards)
+if ($updCount = count(array_filter($models, 'm3d_is_updated'))) $statusChips['updated'] = ['label' => 'Updated', 'count' => $updCount];   // a new version in the last NEW_DAYS days (data-fresh)
 foreach (M3D_STATUSES as $k => [$label]) if (!empty($statuses[$k])) $statusChips[$k] = ['label' => $label, 'count' => $statuses[$k]];
 $franchiseChips = ['' => 'All'];
 foreach (array_count_values(array_map(fn($m) => (string) ($m['franchise'] ?? ''), $models)) as $name => $n) $franchiseChips[$name] = ['label' => (string) $name, 'count' => $n];
@@ -31,7 +33,7 @@ $genChips = ['' => 'All'];
 foreach ($generations as $g => $n) $genChips[$g] = ['label' => 'Gen ' . $g, 'count' => $n];
 if ($noGen) $genChips['~other'] = ['label' => 'Other', 'count' => $noGen];
 
-layout_start('', site_tagline() . '.', 'page-home');
+layout_start('', site_description(), 'page-home');
 ?>
   <?php if ($featured): ?>
   <!-- Hero: featured models slideshow -->
@@ -105,7 +107,7 @@ layout_start('', site_tagline() . '.', 'page-home');
     </div>
     <!-- status, sort, franchise and generation: closed by default, the Filters button opens them -->
     <div class="filter-panel" id="catalog-filters" hidden>
-      <?= chip_row('Sort', 'sort', ['order' => 'Featured', 'updated' => 'Recently Updated', 'name' => 'A–Z', 'gen' => 'Generation', 'likes' => 'Most Liked', 'downloads' => 'Most Downloaded']) ?>
+      <?= chip_row('Sort', 'sort', ['updated' => 'Recently Updated', 'order' => 'Featured', 'name' => 'A–Z', 'gen' => 'Generation', 'likes' => 'Most Liked', 'downloads' => 'Most Downloaded']) ?>
       <?= liked_row('models', $models) ?>
       <?= chip_row('Unlocked', 'owned', ['' => 'All', 'yes' => 'Unlocked', 'no' => 'Not Yet'], '', ' data-owned-row hidden') /* shown by site.js when download limits apply */ ?>
       <?= chip_row('Status', 'status', $statusChips) ?>
@@ -114,7 +116,7 @@ layout_start('', site_tagline() . '.', 'page-home');
     </div>
 
     <div class="grid" data-grid>
-      <?php foreach ($models as $m) echo model_card($m) ?>
+      <?php foreach (cards_by_updated($models) as $m) echo model_card($m) ?>
     </div>
     <nav class="pager" data-pager aria-label="Catalogue pages" hidden></nav>   <!-- site.js: 25 models per page -->
 

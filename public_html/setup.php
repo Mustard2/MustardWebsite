@@ -14,8 +14,8 @@ const SETUP_FEATURES = [
     'bugs'      => ['Bug Reports', 'Visitors report problems with your models at /bugs/, and you mark them fixed.'],
     'comments'  => ['Comments', 'Logged-in patrons comment under model, accessory and blog post pages.'],
     'welcome'   => ['Welcome Page', 'A short tour shown once to new patrons, right after their first login.'],
+    'showcase'  => ['Patron Renders', 'Patrons share renders made with your models; you approve each one before it shows.'],
     'mustardui' => ['MustardUI Page', FEATURE_SWITCHES['mustardui'][1]],
-    'smutbase'  => ['SmutBase Import', FEATURE_SWITCHES['smutbase'][1]],
 ];
 
 $needed = m3d_setup_needed();
@@ -26,7 +26,7 @@ $codeFile = M3D_PRIVATE . '/setup-code.txt';
 $error = null;
 $keys = m3d_patreon_saved();
 $real = fn(string $k) => m3d_cfg_real($keys[$k] ?? '');
-$callback = abs_url('/auth/callback.php');
+$callback = abs_url('/auth/callback.php', true);   // the address this setup is opened on
 
 // ── step 1: the code from the server, so nobody but the site's owner can finish the setup ──
 if ($needed && !is_file($codeFile)) {
@@ -43,6 +43,7 @@ if ($post && ($_POST['do'] ?? '') === 'code' && $needed) {
     $typed = strtoupper(preg_replace('/[^0-9A-Za-z]/', '', (string) ($_POST['code'] ?? '')));
     if (!empty($m[1]) && hash_equals(str_replace('-', '', $m[1]), $typed)) {
         session_regenerate_id(true);
+        unset($_SESSION['csrf']);   // a new form token too
         $_SESSION['setup_ok'] = true;
         m3d_redirect('/setup/');
     }
@@ -102,7 +103,7 @@ if ($post && ($_POST['do'] ?? '') === 'features' && !$needed && m3d_is_admin($M3
     if (m3d_save_settings($changes)) m3d_redirect('/admin/');
     $error = m3d_write_error();
 }
-if (!$post && ($_GET['skip'] ?? '') === '1' && !$needed && m3d_is_admin($M3D)) {
+if (!$post && ($_GET['skip'] ?? '') === '1' && !$needed && m3d_is_admin($M3D) && !m3d_cross_site()) {   // a link on another website skips nothing
     m3d_save_settings(['setup_done' => gmdate('c')]);
     m3d_redirect('/admin/');
 }
@@ -156,7 +157,7 @@ header('Content-Type: text/html; charset=utf-8');
       <form method="post" class="setup-form" autocomplete="off">
         <input type="hidden" name="csrf" value="<?= $csrf ?>" /><input type="hidden" name="do" value="patreon" />
         <label class="field"><span class="lbl">Client ID</span><input class="input" name="client_id" value="<?= e($real('client_id') ? (string) $keys['client_id'] : '') ?>" spellcheck="false" required /></label>
-        <label class="field"><span class="lbl">Client Secret</span><input class="input" type="password" name="client_secret" placeholder="<?= $real('client_secret') ? '•••••••• (leave empty to keep it)' : '' ?>" autocomplete="new-password" spellcheck="false" <?= $real('client_secret') ? '' : 'required' ?> /></label>
+        <label class="field"><span class="lbl">Client Secret</span><?= key_field('Client Secret', $real('client_secret'), null, 'type="password" name="client_secret" autocomplete="new-password" spellcheck="false"' . ($real('client_secret') ? '' : ' required')) ?></label>
         <label class="field"><span class="lbl">Redirect URI</span><input class="input" name="redirect_uri" value="<?= e($real('redirect_uri') ? (string) $keys['redirect_uri'] : $callback) ?>" spellcheck="false" /></label>
         <label class="field"><span class="lbl">Campaign ID<?= tip('Optional: read from your Patreon account when you log in at the next step.') ?></span><input class="input" name="campaign_id" value="<?= e($real('campaign_id') ? (string) $keys['campaign_id'] : '') ?>" inputmode="numeric" /></label>
         <div class="row-btns"><button class="btn btn-primary">Continue</button></div>

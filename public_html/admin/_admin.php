@@ -4,6 +4,7 @@ declare(strict_types=1);
 require dirname(__DIR__) . '/app/_init.php';
 
 header('X-Frame-Options: DENY');
+header("Content-Security-Policy: frame-ancestors 'none'");   // replaces bootstrap's 'self' (browsers read this one before X-Frame-Options)
 header('X-Robots-Tag: noindex, nofollow');
 header('Cache-Control: no-store');
 
@@ -79,7 +80,7 @@ function clean_line(mixed $v, int $max): string
 /** An address starting with https:// that PHP accepts as an URL (links to other websites in the settings). */
 function is_https_url(string $url): bool
 {
-    return preg_match('#^https://[^\s<>"]+$#i', $url) === 1 && filter_var($url, FILTER_VALIDATE_URL) !== false;
+    return preg_match('#^https://[^\s<>"]+$#iD', $url) === 1 && filter_var($url, FILTER_VALIDATE_URL) !== false;
 }
 
 /** True for a POST of an admin form (with that hidden "do" value, when given); a stale CSRF token stops the request. */
@@ -125,8 +126,8 @@ function clean_url(mixed $v, bool $allowLocal = true): string
     $s = clean_text($v, 1000);
     if ($s === '') return '';
     if (str_starts_with($s, '//')) $s = 'https:' . $s;   // "//host/…" is another website, not a page of this one
-    if ($allowLocal && preg_match('#^/[A-Za-z0-9/_\-.%]+$#', $s) && !str_contains($s, '..')) return $s;
-    if (preg_match('#^https?://[^\s"<>]+$#i', $s) && filter_var($s, FILTER_VALIDATE_URL)) return $s;
+    if ($allowLocal && preg_match('#^/[A-Za-z0-9/_\-.%]+$#D', $s) && !str_contains($s, '..')) return $s;
+    if (preg_match('#^https?://[^\s"<>]+$#iD', $s) && filter_var($s, FILTER_VALIDATE_URL)) return $s;
     throw new InvalidArgumentException("Not a valid link or image address: $s");
 }
 
@@ -140,7 +141,7 @@ function clean_dl_url(mixed $v): string
 
 function check_slug(string $slug): void
 {
-    if (!preg_match('/^[a-z0-9][a-z0-9-]{0,63}$/', $slug)) throw new InvalidArgumentException('The address (slug) may only contain lowercase letters, numbers and dashes.');
+    if (!preg_match('/^[a-z0-9][a-z0-9-]{0,63}$/D', $slug)) throw new InvalidArgumentException('The address (slug) may only contain lowercase letters, numbers and dashes.');
     if ($slug === 'outfit') throw new InvalidArgumentException('"outfit" is reserved, pick another address.');
 }
 
@@ -305,7 +306,8 @@ function clean_gallery(mixed $v): array
         $src = clean_url(is_array($g) ? ($g['src'] ?? '') : $g);
         if ($src === '') continue;
         $cap = is_array($g) ? clean_text($g['caption'] ?? '', 200) : '';
-        $out[] = $cap !== '' ? ['src' => $src, 'caption' => $cap] : $src;
+        $link = is_array($g) ? clean_still_link($g['link'] ?? null) : [];   // a full size download, like a Gallery picture's
+        $out[] = $cap !== '' || $link ? array_filter(['src' => $src, 'caption' => $cap, 'link' => $link]) : $src;
     }
     return $out;
 }
@@ -317,6 +319,7 @@ function clean_outfit(array $in, ?array $existing): array
     if ($type !== '' && $type !== 'Outfit') $o['type'] = mb_strtoupper(mb_substr($type, 0, 1)) . mb_substr($type, 1);   // missing = Outfit (m3d_accessory_type)
     $valid = array_column(m3d_models(), 'slug');
     $o['models'] = array_values(array_unique(array_filter(array_map('strval', (array) ($in['models'] ?? [])), fn($s) => in_array($s, $valid, true))));
+    if (!empty($in['allModels'])) $o['allModels'] = true;   // made for every model, future ones too (m3d_fits_all()); the ticks above are kept for when it is turned off
     $o['images'] = clean_gallery($in['images'] ?? []);
     return $o;
 }
@@ -335,7 +338,7 @@ function clean_docs(array $in): array
             $pt = clean_text($p['title'] ?? '', 120);
             if ($pt === '') throw new InvalidArgumentException('Every page needs a title' . ($title !== '' ? ' (one in "' . $title . '" has none).' : '.'));
             $slug = strtolower(clean_text($p['slug'] ?? '', 64));
-            if (!preg_match('/^[a-z0-9][a-z0-9-]{0,63}$/', $slug)) throw new InvalidArgumentException('The address of "' . $pt . '" may only contain lowercase letters, numbers and dashes.');
+            if (!preg_match('/^[a-z0-9][a-z0-9-]{0,63}$/D', $slug)) throw new InvalidArgumentException('The address of "' . $pt . '" may only contain lowercase letters, numbers and dashes.');
             if (isset($seen[$slug])) throw new InvalidArgumentException('Two pages use the address "' . $slug . '": "' . $seen[$slug] . '" and "' . $pt . '". Change one of them.');
             $seen[$slug] = $pt;
             $page = ['slug' => $slug, 'title' => $pt];
@@ -361,7 +364,7 @@ function clean_post(array $in, ?array $old, array $posts): array
     if ($title === '') throw new InvalidArgumentException('The post needs a title.');
     $slug = strtolower(clean_text($in['slug'] ?? '', 80));
     if ($slug === '') $slug = substr(trim((string) preg_replace('/[^a-z0-9]+/', '-', m3d_fold($title)), '-'), 0, 70) ?: 'post';   // like slugify() in admin.js
-    if (!preg_match('/^[a-z0-9][a-z0-9-]{0,79}$/', $slug)) throw new InvalidArgumentException('The address may only contain lowercase letters, numbers and dashes.');
+    if (!preg_match('/^[a-z0-9][a-z0-9-]{0,79}$/D', $slug)) throw new InvalidArgumentException('The address may only contain lowercase letters, numbers and dashes.');
     foreach ($posts as $p) if ($p['slug'] === $slug && $p['id'] !== ($old['id'] ?? '')) throw new InvalidArgumentException('Another post uses the address "' . $slug . '": “' . $p['title'] . '”. Change one of them.');
     $id = $old['id'] ?? '';   // never changes: likes are kept under it
     while ($id === '') { $id = bin2hex(random_bytes(4)); if (in_array($id, array_column($posts, 'id'), true)) $id = ''; }
@@ -400,7 +403,51 @@ function clean_post(array $in, ?array $old, array $posts): array
     if (!empty($in['discord'])) $post['discord'] = true;
     if (array_key_exists('comments', $in) ? empty($in['comments']) : !empty($old['noComments'])) $post['noComments'] = true;   // "Allow Comments" off (app/comments.php)
     foreach (['announced', 'tries'] as $k) if (isset($old[$k])) $post[$k] = $old[$k];   // Discord's own marks (m3d_blog_discord_run())
+    if (($poll = clean_poll($in['poll'] ?? null)) !== null) $post['poll'] = $poll;
     return $post;
+}
+
+/** The post's poll from the editor (app/blog.php → "Polls"), or null for none (switched off, or nothing written). Options keep their ids
+ *  (votes are kept under them); a new one gets a fresh id. Closes: as typed in the editor (site time), empty = open until removed. */
+function clean_poll(mixed $in): ?array
+{
+    if (!is_array($in) || empty($in['on'])) return null;
+    $q = clean_text(preg_replace('/\s+/u', ' ', (string) ($in['q'] ?? '')), 200);
+    $taken = [];
+    $opts = [];
+    foreach (array_slice((array) ($in['opts'] ?? []), 0, POLL_OPTS_MAX + 1) as $o) {
+        if (!is_array($o)) continue;
+        $item = clean_text($o['item'] ?? '', 120);
+        [$kind, $slug] = explode(':', $item, 2) + [1 => ''];
+        $it = in_array($kind, ['models', 'outfits'], true) ? m3d_item($kind, $slug) : null;
+        $text = clean_text(preg_replace('/\s+/u', ' ', (string) ($o['text'] ?? '')), 80);
+        if ($text === '' && $it) $text = $kind === 'models' ? m3d_model_name($it) : (string) $it['name'];
+        if ($text === '') continue;   // an empty row
+        $id = strtolower(clean_text($o['id'] ?? '', 8));
+        if (!preg_match('/^[0-9a-f]{4}$/D', $id) || isset($taken[$id])) $id = '';
+        while ($id === '' || isset($taken[$id])) $id = bin2hex(random_bytes(2));
+        $taken[$id] = true;
+        $opt = ['id' => $id, 'text' => $text];
+        $pic = clean_url($o['pic'] ?? '');
+        if ($pic !== '') $opt['pic'] = $pic;
+        if ($it) $opt['item'] = $kind . ':' . $slug;
+        $opts[] = $opt;
+    }
+    if ($q === '' && !$opts) return null;
+    if ($q === '') throw new InvalidArgumentException('The poll needs a question (or switch the poll off).');
+    if (count($opts) < 2) throw new InvalidArgumentException('The poll needs two choices at least.');
+    if (count($opts) > POLL_OPTS_MAX) throw new InvalidArgumentException(POLL_OPTS_MAX . ' poll choices at most.');
+    $poll = ['q' => $q, 'opts' => $opts, 'max' => max(1, min(count($opts), (int) ($in['max'] ?? 1)))];
+    $when = clean_text($in['closes'] ?? '', 16);
+    if ($when !== '') {
+        $d = DateTimeImmutable::createFromFormat('!Y-m-d\TH:i', $when, m3d_tz());
+        if (!$d || $d->format('Y-m-d\TH:i') !== $when) throw new InvalidArgumentException('The poll’s closing date isn’t a real day and time.');
+        $poll['closes'] = gmdate('Y-m-d\TH:i:s\Z', $d->getTimestamp());
+    }
+    $res = (string) ($in['results'] ?? 'after');
+    $poll['results'] = isset(POLL_RESULTS[$res]) ? $res : 'after';
+    if (!empty($in['change'])) $poll['change'] = true;
+    return $poll;
 }
 
 /** A post's revision for the editor: what the editor shows (not Discord's marks, which change without it). */
@@ -414,6 +461,7 @@ function admin_post_rev(array $p): string
 function admin_blog_posts(): array
 {
     return array_map(fn($p) => $p + ['rev' => admin_post_rev($p), 'local' => m3d_site_time(m3d_post_ts($p), 'Y-m-d\TH:i'), 'state' => m3d_post_state($p),
+        'votes' => m3d_poll($p) ? m3d_poll_tally($p) : null, 'closesLocal' => ($t = m3d_poll_closes((array) ($p['poll'] ?? []))) ? m3d_site_time($t, 'Y-m-d\TH:i') : '',
         'thumb' => str_starts_with((string) ($p['cover'] ?? ''), '/media/') ? img_thumb((string) $p['cover']) : ''], m3d_blog(true)['posts']);
 }
 
@@ -457,7 +505,7 @@ function clean_item_base(array $in, ?array $existing): array
     $it['links'] = clean_links($in['links'] ?? []);
     $m3d = trim((string) ($in['model3d'] ?? ''));   // 3D preview: a .glb uploaded here (app/model3d.php)
     if ($m3d !== '') {
-        if (!preg_match('#^/media/([a-z0-9-]+/)*[a-z0-9-]+\.glb$#', $m3d)) throw new InvalidArgumentException('The 3D preview must be a .glb file uploaded here.');
+        if (!preg_match('#^/media/([a-z0-9-]+/)*[a-z0-9-]+\.glb$#D', $m3d)) throw new InvalidArgumentException('The 3D preview must be a .glb file uploaded here.');
         $it['model3d'] = $m3d;
         $light = (int) round((float) ($in['model3dLight'] ?? 100));   // the viewer's light, % (app/model3d.php)
         if ($light !== 100) $it['model3dLight'] = max(M3D_LIGHT_RANGE[0], min(M3D_LIGHT_RANGE[1], $light));
@@ -531,21 +579,26 @@ function clean_model(array $in, ?array $existing): array
     return $m;
 }
 
-// ── "How to format" help: what you write → what you get (rendered by md_html itself, so it never goes stale) ──
+// ── "How to format" help: only the site's own extras to Markdown (standard Markdown isn't explained); what you write → what you get,
+//    rendered by md_html itself, so it never goes stale ──
 const FORMAT_EXAMPLES = [
-    'para'    => ['Paragraphs', "First paragraph.\n\nAn empty line starts a new one.\nA single line break stays a line break."],
-    'inline'  => ['Bold, Italic, Code, Links', "**bold**, *italic*, `code` and [a link](/docs/)"],
-    'heading' => ['Headings', "## Heading\n\n### Smaller heading"],
-    'small-h' => ['Small Heading', "### Small heading"],
-    'list'    => ['Bullet List', "- First item\n- Second item\n  - indented: a sub-item\n    - indented more: one level deeper"],
-    'paywall' => ['Patrons Only from Here', "Everyone reads this.\n\n--- Patreon ---\n\nOnly patrons read this."],
-    'steps'   => ['Numbered Steps', "1. Open Blender\n2. Press N\n  Two spaces continue the step."],
     'box'     => ['Box', "> [!TIP] Faster posing\n> Use the pose library.\n\n> [!WARNING]\n> Save your file first."],
-    'table'   => ['Table', "| Generation | Blender |\n|---|---|\n| 4 | 4.2 or newer |"],
-    'code'    => ['Code', "```python\nimport bpy\nprint(bpy.app.version)\n```"],
     'image'   => ['Picture', "![Caption](/media/…)"],
+    'card'    => ['Card', "[Get the Pose Library](/accessories/pose-library/)"],
     'tabs'    => ['Tabs', "=== Manual\n1. Open the Outliner\n=== With MustardUI\n1. Press N, open MustardUI\n==="],
+    'paywall' => ['Patrons Only from Here', "Everyone reads this.\n\n--- Patreon ---\n\nOnly patrons read this."],
 ];
+
+/** The Card example made from the site's own content (the first listed model, else accessory, else docs page), so the help shows a real card; '' when there is none. */
+function format_card_src(): string
+{
+    foreach (['models', 'outfits'] as $kind) {
+        $it = m3d_listed_items($kind)[0] ?? null;
+        if ($it) return '[' . str_replace(['[', ']'], '', (string) $it['name']) . '](' . m3d_item_url($kind, (string) $it['slug']) . ')';
+    }
+    $doc = m3d_doc_pages(true)[0] ?? null;
+    return $doc ? '[' . str_replace(['[', ']'], '', (string) $doc['title']) . '](/docs/' . $doc['slug'] . '/)' : '';
+}
 
 /** Collapsible help: one row per example (label · what you type · how it looks). $docs: headings as on docs pages. */
 function format_help(string $title, array $keys, string $intro = '', bool $docs = false): string
@@ -553,13 +606,16 @@ function format_help(string $title, array $keys, string $intro = '', bool $docs 
     $rows = '';
     foreach ($keys as $k) {
         [$label, $src] = FORMAT_EXAMPLES[$k];
-        $out = $k === 'image'
-            ? '<p class="muted small">On its own line. Several lines together make a gallery. Drop or paste a picture into the text to upload it.</p>'
-            : md_html($src, ['docs' => $docs, 'paywall' => true]);
+        if ($k === 'card' && ($real = format_card_src()) !== '') $src = $real;   // a card of the site's own: the real preview
+        $out = match (true) {
+            $k === 'card' && $src === FORMAT_EXAMPLES['card'][1] => '<p class="muted small">A link to a model, accessory or docs page alone on its line shows as a card with its picture and description.</p>',
+            $k === 'image' => '<p class="muted small">On its own line. Several lines together make a gallery. Drop or paste a picture into the text to upload it.</p>',
+            default => md_html($src, ['docs' => $docs, 'paywall' => true]),
+        };
         $rows .= '<div class="fmt-row"><div class="fmt-label">' . e($label) . '</div><pre class="fmt-src"><code>' . e($src) . '</code></pre><div class="fmt-out md">' . $out . '</div></div>';
     }
     return '<details class="sec format-help"><summary><b>' . e($title) . '</b></summary>'
-        . ($intro !== '' ? '<p class="muted small fmt-intro">' . $intro . '</p>' : '')
+        . '<p class="muted small fmt-intro">Standard Markdown works. Below are this site’s own additions.' . ($intro !== '' ? ' ' . $intro : '') . '</p>'
         . '<div class="fmt-head" aria-hidden="true"><span></span><span>You Write</span><span>You Get</span></div>' . $rows . '</details>';
 }
 
@@ -597,14 +653,78 @@ function admin_posted_links(string $p, int $max = 12): array
         $label = mb_substr(trim((string) $label), 0, 40);
         $url = trim((string) ($_POST[$p . '_url'][$i] ?? ''));
         if ($label === '' && $url === '') continue;
-        if ($label === '' || $url === '') throw new InvalidArgumentException('Every link needs a text and an address.');
-        $local = preg_match('#^/[A-Za-z0-9/_\-.%?=&\#]*$#', $url) && !str_starts_with($url, '//');
-        $web = is_https_url($url);
-        if (!$local && !$web) throw new InvalidArgumentException("“{$label}”: the address must be a page of this site (like /faq/) or start with https://");
-        $links[] = ['label' => $label, 'url' => mb_substr($url, 0, 500)];
+        $links[] = ['label' => $label, 'url' => admin_link_url($label, $url)];
     }
     if (count($links) > $max) throw new InvalidArgumentException("$max links at most.");
     return $links;
+}
+
+/** The address of a link typed in a links editor (a page of this site, /…, or https), or an error naming the link. */
+function admin_link_url(string $label, string $url): string
+{
+    if ($label === '' || $url === '') throw new InvalidArgumentException('Every link needs a text and an address.');
+    $local = preg_match('#^/[A-Za-z0-9/_\-.%?=&\#]*$#D', $url) && !str_starts_with($url, '//');
+    if (!$local && !is_https_url($url)) throw new InvalidArgumentException("“{$label}”: the address must be a page of this site (like /faq/) or start with https://");
+    return mb_substr($url, 0, 500);
+}
+
+/** Admin → Settings → Header Menu: the hint after a built-in item that has nothing to show now (its feature is off or empty), else ''. */
+function admin_menu_item_note(string $key): string
+{
+    if (menu_item_ready($key)) return '';
+    return [
+        'gallery' => 'Shown once the Gallery has pictures',
+        'blog' => 'Shown while the blog is on and has posts',
+        'mustardui' => 'Shown while the MustardUI page is on',
+        'docs' => 'Shown once there are docs pages',
+        'faq' => 'Shown once the FAQ has questions',
+        'bugs' => 'Shown while bug reports are on',
+    ][$key] ?? '';
+}
+
+/** One row of the Header Menu editor: a built-in item ($key) or an added link; $t = the row's code, which its Show switch posts. */
+function admin_menu_row(string $t, string $key = '', string $label = '', string $url = '', bool $on = true): string
+{
+    $drag = '<button type="button" class="drag-handle drag-sm" data-row-drag title="Drag to reorder (or focus and use the arrow keys)" aria-label="Drag to reorder">⠿</button>';
+    $show = '<label class="menu-show" title="Show in the menu"><input type="checkbox" class="switch" name="m_on[]" value="' . e($t) . '"' . ($on ? ' checked' : '') . ' aria-label="Show ' . e($label !== '' ? $label : 'this link') . ' in the menu" data-row-token-on /></label>';
+    $keys = '<input type="hidden" name="m_t[]" value="' . e($t) . '" data-row-token /><input type="hidden" name="m_key[]" value="' . e($key) . '" />';
+    if ($key !== '') {
+        $note = admin_menu_item_note($key);
+        return '<div class="menu-row is-builtin" data-row>' . $drag . $keys
+            . '<input type="hidden" name="m_label[]" value="" /><input type="hidden" name="m_url[]" value="" />'
+            . '<span class="menu-name">' . e($label) . ' <span class="badge tone-grey">Built-In</span></span>'
+            . '<span class="menu-note muted small' . ($note !== '' ? '' : ' is-url') . '">' . e($note !== '' ? $note : $url) . '</span>' . $show . '<span></span></div>';
+    }
+    return '<div class="menu-row" data-row>' . $drag . $keys
+        . '<input class="input" name="m_label[]" value="' . e($label) . '" maxlength="' . MENU_LABEL_MAX . '" placeholder="Text" aria-label="Link text" />'
+        . '<input class="input menu-url" name="m_url[]" value="' . e($url) . '" maxlength="500" placeholder="/docs/… or https://…" list="site-pages" aria-label="Address" spellcheck="false" />'
+        . $show . '<button type="button" class="icon-btn del" data-row-del title="Remove" aria-label="Remove">✕</button></div>';
+}
+
+/** The posted Header Menu editor as settings.json → menu: [{key} | {label, url}, + off: true]. */
+function admin_menu_posted(): array
+{
+    $in = fn(string $k, $i): string => is_scalar($v = ((array) ($_POST[$k] ?? []))[$i] ?? '') ? trim((string) $v) : '';
+    $on = array_filter((array) ($_POST['m_on'] ?? []), 'is_string');
+    $menu = [];
+    $seen = [];
+    $added = 0;
+    foreach ((array) ($_POST['m_t'] ?? []) as $i => $t) {
+        $key = $in('m_key', $i);
+        $off = !is_string($t) || !in_array($t, $on, true);
+        if ($key !== '') {
+            if (isset(MENU_ITEMS[$key]) && !isset($seen[$key])) $menu[] = ['key' => $key] + ($off ? ['off' => true] : []);
+            $seen[$key] = true;
+            continue;
+        }
+        $label = mb_substr($in('m_label', $i), 0, MENU_LABEL_MAX);
+        $url = $in('m_url', $i);
+        if ($label === '' && $url === '') continue;
+        $menu[] = ['label' => $label, 'url' => admin_link_url($label, $url)] + ($off ? ['off' => true] : []);
+        $added++;
+    }
+    if ($added > MENU_LINKS_MAX) throw new InvalidArgumentException(MENU_LINKS_MAX . ' added links at most: the menu has to fit in the header.');
+    return $menu;
 }
 
 /** The pages of this site, for the address suggestions of the links editors (<datalist id="site-pages">). */
@@ -630,7 +750,7 @@ function admin_start_box(string $kind, bool $open = false): string
         . '<div class="start-rows" data-rows>' . implode('', array_map(fn($l) => $row($l[0], $l[1]), $box['links'])) . '</div>'
         . '<template data-row-template>' . $row() . '</template>'
         . '<div><button type="button" class="btn btn-ghost btn-sm" data-row-add>+ Add Link</button></div>'
-        . '<label class="field"><span class="lbl">Note' . tip('Line under the links. Supports **bold**, *italic* and [links](https://…).') . '</span><textarea class="input" name="start_note" rows="2" maxlength="400" placeholder="Empty = no line">' . e($box['note']) . '</textarea></label>'
+        . '<label class="field"><span class="lbl">Note' . tip('Line under the links.') . '</span><textarea class="input" name="start_note" rows="2" maxlength="400" placeholder="Empty = no line">' . e($box['note']) . '</textarea></label>'
         . '<label class="toggle"><input type="checkbox" class="switch" name="start_note_on" value="1"' . ($box['note_on'] ? ' checked' : '') . ' /><span>Show Note</span></label>'
         . '<div class="form-actions"><button class="btn btn-primary btn-sm">Save Links</button></div></form>'
         . '</details>';
@@ -640,6 +760,55 @@ function admin_start_box(string $kind, bool $open = false): string
 function tip(string $text): string
 {
     return '<button type="button" class="tip" data-tip="' . e($text) . '" aria-label="' . e('Help: ' . $text) . '">?</button>';
+}
+
+/**
+ * A key field (a webhook, secret, token, or a setting that breaks logins / downloads when mistyped). While a value is saved ($saved) it shows
+ * locked, with Change at its right end (`[data-sf]` in admin.js, keyField() there builds the same for the editors): Change opens the field,
+ * Cancel or Esc locks it again with its saved value. A secret ($value null) is never printed: the box shows dots and the field stays empty
+ * (an empty field keeps the saved one on the server). A plain value shows in the box and stays in the hidden field, so it is posted as it is.
+ * $attrs = the input's other attributes (name, type, maxlength…, a class to add), already escaped; $status = HTML in place of "✓ Saved" (the GitHub key's check).
+ */
+function key_field(string $label, bool $saved, ?string $value, string $attrs, string $status = ''): string
+{
+    $cls = 'input';   // a class="…" in $attrs adds to it
+    if (preg_match('/(?:^|\s)class="([^"]*)"/', $attrs, $m)) { $cls .= ' ' . $m[1]; $attrs = str_replace($m[0], '', $attrs); }
+    $input = '<input class="' . $cls . '" value="' . e($value ?? '') . '" ' . trim($attrs) . ' />';
+    if (!$saved) return $input;
+    $shown = $value === null ? '<span class="sf-dots" aria-label="Hidden">••••••••••</span>' . ($status !== '' ? $status : '<span class="sf-ok">✓ Saved</span>')
+        : '<span class="sf-val">' . e($value) . '</span>' . $status;
+    return '<span class="sf is-locked" data-sf><span class="sf-lock"><svg viewBox="0 0 24 24" aria-hidden="true">' . KEY_LOCK_ICON . '</svg>' . $shown . '</span>'
+        . $input . '<button type="button" class="btn btn-ghost btn-sm sf-btn" data-sf-btn aria-label="' . e('Change ' . $label) . '">Change</button></span>';
+}
+const KEY_LOCK_ICON = '<rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/>';
+
+/**
+ * What Discord announcements know about one item, for the editor's pill in the header of that version (discordPill() in admin.js): null while
+ * they are off; else the version out as stored (`stored`), its labels already marked as sent or waiting for another try, and the settings link.
+ */
+function admin_discord_state(string $kind, ?array $item): ?array
+{
+    if (!m3d_discord_on()) return null;
+    $d = m3d_discord();
+    $pre = $kind . ':' . ($item['slug'] ?? '') . '@';
+    $mine = fn(array $codes) => array_values(array_map(fn($c) => substr($c, strlen($pre)), array_filter($codes, fn($c) => ($item['slug'] ?? '') !== '' && str_starts_with($c, $pre))));
+    return [
+        'stored' => $item && ($item['slug'] ?? '') !== '' ? m3d_version_label(m3d_current_version($item)) : '',
+        'open'   => $item && ($item['slug'] ?? '') !== '' && m3d_is_open($item),   // visible when stored: a new version is news; a hidden item published now posts its version
+        'dev'    => $kind === 'models' && $item && m3d_status($item) === 'in-development',   // leaving development posts the version out (m3d_discord_after_save())
+        'now'    => m3d_site_time(time(), 'Y-m-d\TH:i'),   // site time, to compare with the release date fields
+        'sent'   => $mine($d['sent']),
+        'retry'  => $mine($d['retry']),
+        'url'    => settings_url('discord'),
+    ];
+}
+
+/** After a save: what Discord did, when the save posted something ({ok, error, what}); null when nothing was posted. */
+function admin_discord_result(?array $before): ?array
+{
+    $last = m3d_settings(true)['discord']['last'] ?? null;
+    if (!is_array($last) || ($last['at'] ?? '') === ($before['at'] ?? null) || !empty($last['stills'])) return null;
+    return ['ok' => !empty($last['ok']), 'error' => (string) ($last['error'] ?? ''), 'what' => (string) ($last['what'] ?? '')];
 }
 
 /** Embed of the newest version on the site (Settings → Discord: test message and preview); a plain line when there is none. */
@@ -811,6 +980,8 @@ function admin_forget_items(string $kind, array $gone, array $vis = []): void
     }
     foreach ($slugs as $s) m3d_blog_rename_item($kind, $s, '');   // posts showing it leave it out
     m3d_comments_forget($kind, $slugs);
+    m3d_showcase_forget($kind, $slugs);   // patrons' renders of them (and their stills in the Gallery)
+    m3d_shares_forget($kind, $slugs);     // their temporary links end (a new item at that address doesn't take them over)
     $dc = m3d_settings(true)['discord'] ?? null;
     if (is_array($dc)) {
         $mine = fn($c) => is_string($c) && in_array(preg_replace('/@.*$/s', '', $c), array_map(fn($s) => "$kind:$s", $slugs), true);
@@ -822,6 +993,7 @@ function admin_forget_items(string $kind, array $gone, array $vis = []): void
     m3d_json_update('stats', function ($d) use ($kind, $slugs) {
         if (!is_array($d)) return [$d, null];   // no file yet: the counters are worked out from the log, rewritten below
         foreach ($slugs as $s) unset($d['downloads'][$kind][$s]);
+        foreach (array_keys($d['downloads']['pics'] ?? []) as $key) if (in_array(explode(':', (string) $key)[1] ?? '', $slugs, true) && str_starts_with((string) $key, "$kind:")) unset($d['downloads']['pics'][$key]);   // its pictures' full size downloads
         return [$d, null];
     });
     m3d_json_update('likes', function ($d) use ($kind, $slugs) {
@@ -868,11 +1040,16 @@ function media_walk(): array
 function media_library(): array
 {
     $items = [];
-    foreach (media_walk() as $url => $f) {
+    $walk = media_walk();
+    $videos = [];   // a video's cover (name.mp4 → name.webp) belongs to the video: listed, deleted and kept with it (Media → Videos)
+    foreach ($walk as $url => $f) if (m3d_is_video_url($url)) $videos[substr($url, 0, strrpos($url, '.'))] = true;
+    foreach ($walk as $url => $f) {
         if (!preg_match('/\.(webp|jpe?g|png|gif)$/i', $f->getFilename())) continue;
         if (img_large($url) !== $url) continue;   // another version of a picture: listed with it
+        if (isset($videos[substr($url, 0, strrpos($url, '.'))])) continue;   // a video's cover
         if (str_starts_with($url, '/media/site/')) continue;   // the site logo and icons (Settings → Site identity)
         if (str_starts_with($url, '/media/bugs/')) continue;   // pictures of bug reports (Admin → Bugs)
+        if (str_starts_with($url, '/media/showcase/')) continue;   // renders patrons shared (Admin → Gallery → From Patrons)
         $small = img_small($url);
         $versions = img_versions($url);
         $dim = img_dims($url) ?: [0, 0];
@@ -897,10 +1074,35 @@ function media_3d_files(): array
     $items = [];
     foreach (media_walk() as $url => $f) {
         if (strtolower($f->getExtension()) !== 'glb') continue;
-        if (!m3d_glb_path($url) || preg_match('#^/media/(site|bugs)/#', $url)) continue;
+        if (!m3d_glb_path($url) || preg_match('#^/media/(site|bugs|showcase)/#', $url)) continue;
         $items[] = ['url' => $url, 'folder' => basename(dirname($url)), 'name' => $f->getFilename(), 'bytes' => $f->getSize(), 'time' => $f->getMTime()];
     }
     return $items;
+}
+
+/** The videos in media/ (app/video.php): Media → Videos. Their covers are counted with them (bytes) and left out of media_library(). */
+function media_videos(): array
+{
+    $items = [];
+    foreach (media_walk() as $url => $f) {
+        if (!m3d_video_path($url)) continue;
+        $cover = m3d_video_cover($url);
+        $coverBytes = array_sum(array_map(fn($u) => (int) @filesize((string) media_path($u)), m3d_video_cover_files($url)));
+        $items[] = ['url' => $url, 'folder' => basename(dirname($url)), 'name' => $f->getFilename(), 'bytes' => $f->getSize() + $coverBytes, 'time' => $f->getMTime(),
+            'cover' => $cover, 'info' => m3d_video_info($f->getPathname())];
+    }
+    return $items;
+}
+
+/** Deletes a video and its cover: the bytes freed, null when it isn't a video file of this site. */
+function media_video_delete(string $url): ?int
+{
+    $p = m3d_video_path($url);
+    if (!$p) return null;
+    $freed = 0;
+    foreach (m3d_video_cover_files($url) as $c) if (($f = media_path($c)) && is_file($f)) { $size = (int) filesize($f); if (@unlink($f)) $freed += $size; }
+    $size = (int) filesize($p);
+    return @unlink($p) ? $freed + $size : $freed;
 }
 
 /** An item's name in the admin's lists and menus: "Alice (Gen 4)", "Summer dress (outfit)". */
@@ -922,10 +1124,11 @@ function media_in(mixed $v): array
     return preg_match_all('/\]\((?:' . preg_quote($self, '/') . ')?(\/media\/[^\s)]+)\)/', $v, $mm) ? $mm[1] : [];
 }
 
-/** The file of a library picture (or 3D preview file, .glb) that may be deleted, or null: never the site logo / icons (media/site/) or bug report pictures (media/bugs/). */
+/** The file of a library picture (or 3D preview file, .glb, or video) that may be deleted, or null: never the site logo / icons (media/site/), bug report
+ *  pictures (media/bugs/) or patrons' renders (media/showcase/: they go with their render, app/showcase.php). */
 function media_deletable(string $url): ?string
 {
-    if (!preg_match('/\.(webp|jpe?g|png|gif|glb)$/i', $url) || preg_match('#^/media/(site|bugs)/#', $url)) return null;
+    if (!preg_match('/\.(webp|jpe?g|png|gif|glb|mp4|webm)$/i', $url) || preg_match('#^/media/(site|bugs|showcase)/#', $url)) return null;
     $p = media_path($url);
     return $p && is_file($p) ? $p : null;
 }
@@ -942,7 +1145,10 @@ function usage_map(array $models, ?array $outfits = null): array
     foreach (m3d_texts() as $t) {   // FAQ answers, docs pages, blog posts
         foreach (media_in($t['text']) as $u) $use[$u][$t['key']] = $t['name'];
     }
-    foreach (m3d_blog()['posts'] as $p) foreach (media_in((string) ($p['cover'] ?? '')) as $u) $use[$u]['blog:' . $p['id']] = 'Blog: ' . $p['title'];
+    foreach (m3d_blog()['posts'] as $p) {   // covers and the pictures of poll choices
+        foreach ([(string) ($p['cover'] ?? ''), ...array_map(fn($o) => (string) ($o['pic'] ?? ''), (array) ($p['poll']['opts'] ?? []))] as $src)
+            foreach (media_in($src) as $u) $use[$u]['blog:' . $p['id']] = 'Blog: ' . $p['title'];
+    }
     foreach ($outfits ?? m3d_outfits() as $o) {
         array_walk_recursive($o, function ($v) use (&$use, $o) {
             foreach (media_in($v) as $u) $use[$u]['outfits:' . $o['slug']] = admin_item_label('outfits', $o);
@@ -983,14 +1189,23 @@ function unused_3d(array $use): array
     return array_values(array_filter(media_3d_files(), fn($g) => empty($use[$g['url']]) && !isset(media_mentioned()[$g['url']])));
 }
 
-/** "3 images and 1 3D file" (the parts that aren't 0). */
-function unused_words(int $images, int $files3d): string
+/** Videos that no text uses (uploaded in a post never saved, or taken out of it). */
+function unused_videos(array $use): array
 {
-    return implode(' and ', array_filter([$images ? m3d_plural($images, 'image') : '', $files3d ? m3d_plural($files3d, '3D file') : ''])) ?: '0 images';
+    return array_values(array_filter(media_videos(), fn($v) => empty($use[$v['url']]) && !isset(media_mentioned()[$v['url']])));
 }
 
-/** Deletes every unused image (its large file and versions) and 3D file: [images deleted, bytes freed, 3D files deleted]. Images → "Delete all
- *  unused" and Settings → Tools → Delete Unused Images. */
+/** "3 images, 1 3D file and 2 videos" (the parts that aren't 0). */
+function unused_words(int $images, int $files3d, int $videos = 0): string
+{
+    $parts = array_values(array_filter([$images ? m3d_plural($images, 'image') : '', $files3d ? m3d_plural($files3d, '3D file') : '', $videos ? m3d_plural($videos, 'video') : '']));
+    if (!$parts) return '0 images';
+    $last = array_pop($parts);
+    return $parts ? implode(', ', $parts) . ' and ' . $last : $last;
+}
+
+/** Deletes every unused image (its large file and versions), 3D file and video (with its cover): [images deleted, bytes freed, 3D files deleted,
+ *  videos deleted]. Media → "Delete all unused" and Settings → Tools → Delete Unused Media. */
 function media_purge_unused(): array
 {
     $n = 0; $freed = 0;
@@ -1005,7 +1220,9 @@ function media_purge_unused(): array
     }
     $n3 = 0;
     foreach (unused_3d($use) as $g) if (($f = media_deletable($g['url'])) && @unlink($f)) { $freed += $g['bytes']; $n3++; }
-    return [$n, $freed, $n3];
+    $nv = 0;
+    foreach (unused_videos($use) as $v) if (($b = media_video_delete($v['url'])) !== null && !m3d_video_path($v['url'])) { $freed += $b; $nv++; }
+    return [$n, $freed, $n3, $nv];
 }
 
 /**
@@ -1066,6 +1283,7 @@ function clean_still(array $in, array $old): array
     if ($v !== 'public') $s['visibility'] = $v;
     $link = clean_still_link($in['link'] ?? null);
     if ($link) $s['link'] = $link;
+    if (!empty($old['from'])) $s['from'] = (string) $old['from'];   // a patron's render (app/showcase.php): never set from the editor
     return $s;
 }
 
@@ -1079,6 +1297,16 @@ function clean_still_link(mixed $l): array
     $size = clean_text($l['size'] ?? '', 40);
     if ($size !== '') $link['size'] = $size;
     return $link;
+}
+
+/** The tabs over Admin → Gallery: Renders (the Gallery's pictures) · From Patrons (admin/showcase.php), only while patron renders are on or stored. */
+function admin_gallery_tabs(string $current): string
+{
+    if (!m3d_showcase_on() && !m3d_showcase_stored()) return '';
+    $wait = count(m3d_showcase_summary()['waiting']);
+    $cur = fn(string $k) => $current === $k ? ' aria-current="page"' : '';
+    return '<nav class="lib-tabs g-tabs" aria-label="Sections"><a href="/admin/gallery.php"' . $cur('gallery') . '>Renders <span>' . count(m3d_gallery()['stills']) . '</span></a>'
+        . '<a href="/admin/showcase.php"' . $cur('patrons') . '>From Patrons' . ($wait ? ' <span class="g-tab-wait">' . $wait . ' waiting</span>' : '') . '</a></nav>';
 }
 
 /** Everything Admin → Gallery shows: the stills (with their pictures' sizes and characters), the characters, the models to pick. */
@@ -1109,10 +1337,6 @@ const FEATURE_SWITCHES = [
         'Enable MustardUI Page',
         ['/mustardui/', 'View the Page ↗', true],
         'The MustardUI page is on: it is in the menu and the footer.', 'The MustardUI page is off: no menu item, and /mustardui/ shows “not found”.'],
-    'smutbase'  => ['SmutBase Import', 'Imports the models of a SmutBase profile as draft models (texts, changelog, pictures). Only useful if you publish on SmutBase.',
-        'Enable SmutBase Import',
-        ['/admin/import.php', 'Open the Import', false],
-        'SmutBase import is on: the button is on Admin → Models.', 'SmutBase import is off.'],
 ];
 
 /**
@@ -1120,10 +1344,10 @@ const FEATURE_SWITCHES = [
  * Section ids that aren't on this site yet are harmless: they only send old #addresses to the right tab (admin.js).
  */
 const SETTINGS_TABS = [
-    'site' => ['Site', ['identity', 'social', 'homepage', 'notice', 'timezone']],
-    'notify' => ['Notifications', ['notify']],
-    'features' => ['Features', ['blog', 'bugs', 'comments', 'discord', 'welcome', 's4', 'mustardui', 'smutbase']],
+    'site' => ['Site', ['identity', 'social', 'menu', 'homepage', 'notice', 'timezone']],
+    'features' => ['Features', ['blog', 'bugs', 'comments', 'showcase', 'discord', 'welcome', 's4', 'mustardui']],
     'patreon' => ['Patreon', ['patreon', 'logins']],
+    'notify' => ['Notifications', ['notify']],
     'maintenance' => ['Maintenance', ['maintenance', 'problems', 'tools', 'system']],
     'privacy' => ['Privacy', ['legal', 'personal-data']],   // last, after Update: rarely used
 ];
@@ -1171,7 +1395,8 @@ function settings_menu(string $current = ''): string
     foreach (SETTINGS_TABS as $k => [, $ids]) foreach ($ids as $id) $map[$id] = $k;
     $h = '<nav class="lib-tabs set-tabs" aria-label="Settings" data-set-tabs="' . e(json_encode($map)) . '">';
     foreach (SETTINGS_TABS as $k => [$label]) {
-        if ($k === 'privacy') $h .= '<a href="/admin/update.php"' . ($current === 'update' ? ' aria-current="page"' : '') . '>Update</a>';
+        if ($k === 'privacy') $h .= '<a href="/admin/backups.php"' . ($current === 'backups' ? ' aria-current="page"' : '') . '>Backups</a>'   // own pages, shown as tabs
+            . '<a href="/admin/update.php"' . ($current === 'update' ? ' aria-current="page"' : '') . '>Update</a>';
         $h .= '<a href="/admin/settings.php' . ($k === 'site' ? '' : '?tab=' . $k) . '"' . ($current === $k ? ' aria-current="page"' : '') . '>' . $label . '</a>';
     }
     return $h . '</nav>'
@@ -1250,12 +1475,10 @@ function admin_start(string $title, string $active = ''): void
 <?php if (m3d_blog_on() || $active === 'blog'): ?>        <a href="/admin/blog.php" <?= $active === 'blog' ? 'aria-current="page"' : '' ?>>Blog</a>
 <?php endif ?>        <a href="/admin/docs.php" <?= $active === 'docs' ? 'aria-current="page"' : '' ?>>Docs</a>
         <a href="/admin/faq.php" <?= $active === 'faq' ? 'aria-current="page"' : '' ?>>FAQ</a>
-        <a href="/admin/log.php" <?= $active === 'log' ? 'aria-current="page"' : '' ?>>Downloads</a>
         <a href="/admin/users.php" <?= $active === 'users' ? 'aria-current="page"' : '' ?>>Access</a>
-        <a href="/admin/images.php" <?= $active === 'images' ? 'aria-current="page"' : '' ?>>Images</a>
-        <a href="/admin/backups.php" <?= $active === 'backups' ? 'aria-current="page"' : '' ?>>Backups</a>
+        <a href="/admin/images.php" <?= $active === 'images' ? 'aria-current="page"' : '' ?>>Media</a>
         <a href="/admin/stats.php" <?= $active === 'stats' ? 'aria-current="page"' : '' ?>>Stats</a>
-        <a href="/admin/settings.php" <?= $active === 'settings' || $active === 'update' ? 'aria-current="page"' : '' ?>>Settings</a>
+        <a href="/admin/settings.php" <?= in_array($active, ['settings', 'update', 'backups'], true) ? 'aria-current="page"' : '' ?>>Settings</a>
       </nav>
 <?php $icon = '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>' ?>
       <div class="hsearch" data-jump><?php /* "Jump to…": the public header's search bar (header_search() in view.php), filled by admin.js */ ?>

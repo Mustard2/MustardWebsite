@@ -1,14 +1,14 @@
 <?php
 // /sitemap.xml  (rewritten here by .htaccess): the public pages for search engines. Models and accessories that are public or
-// blurred (never password or draft ones), the docs pages that aren't drafts, blog posts that are out, and the fixed pages. The same for every visitor,
-// so it never depends on the login. lastmod = the date of the latest changelog version, when it can be read.
+// blurred (never password or draft ones), the docs pages that aren't drafts, blog posts that are out, and the fixed pages. Items and docs are the same for
+// every visitor; the Gallery and blog lines follow the login. lastmod = the date of the latest changelog version, when it can be read.
 require __DIR__ . '/app/_init.php';
 header('Content-Type: application/xml; charset=utf-8');
-header('Cache-Control: public, max-age=3600');
+header('Cache-Control: private, no-cache');   // never stored by the CDN: the Gallery and blog lines differ (m3d_has_gallery(), m3d_has_blog())
 header('X-Robots-Tag: noindex');
 
 $urls = [];
-foreach (array_merge(['/', '/accessories/', '/whats-new/'], m3d_mustardui_on() ? ['/mustardui/'] : [], m3d_has_docs() ? ['/docs/'] : [], m3d_has_faq() ? ['/faq/'] : [], m3d_bugs_on() ? ['/bugs/'] : [], ['/contacts/', '/privacy/']) as $path) $urls[$path] = null;
+foreach (array_merge(['/', '/accessories/', '/whats-new/'], m3d_mustardui_on() ? ['/mustardui/'] : [], m3d_has_docs() ? ['/docs/'] : [], m3d_has_faq() ? ['/faq/'] : [], m3d_bugs_on() ? ['/bugs/'] : [], m3d_unlocks_on() ? ['/unlocks/'] : [], ['/contacts/', '/privacy/']) as $path) $urls[$path] = null;
 foreach (['models' => '/models/', 'outfits' => '/accessories/'] as $kind => $base) {
     foreach (m3d_items($kind) as $it) {
         if (!in_array(m3d_visibility($it), ['public', 'blurred', 'blurred-patrons'], true) || m3d_release_hidden($it)) continue;   // "Coming Soon" pages too, like teasers

@@ -177,7 +177,8 @@ const siteToast = (text, kind = 'info', act = null) => {
         if (!own) return;
         const b = document.createElement('span'); b.className = 'owned-check'; b.innerHTML = check;
         b.title = free ? 'Free: doesn’t use any of your unlocks, download it any time' : 'Unlocked: you downloaded it, downloading it again is free';
-        (c.querySelector(holder) || c).append(b);
+        const corner = c.querySelector('.cover-corner');   // New / Updated: the check goes on its left, same row
+        if (corner) corner.prepend(b); else (c.querySelector(holder) || c).append(b);
       });
       mark('[data-card]', 'models', '.cover, .ocard-img');
       mark('[data-ocard]', 'outfits', '.ocard-img');
@@ -337,14 +338,15 @@ const siteToast = (text, kind = 'info', act = null) => {
 })();
 
 // "See how to join" after "Likes are for patrons": the address from the header (data-join), none when the site has none
-const joinLink = () => {
+const joinAnchor = () => {
   const u = document.querySelector('[data-account]')?.dataset.join;
-  if (!u) return '';
+  if (!u) return null;
   const a = document.createElement('a');
   a.href = u;
   a.textContent = 'See how to join';
-  return ' ' + a.outerHTML + '.';
+  return a;
 };
+const joinLink = () => { const a = joinAnchor(); return a ? ' ' + a.outerHTML + '.' : ''; };
 
 // ── Catalog pages (homepage, Accessories): 25 cards per page after search, filters and sort; ‹ 1 2 … 9 › under the grid,
 // ?page= in the address so a link or Back keeps the page. onPage() re-runs the catalog's apply(true) ──
@@ -395,6 +397,35 @@ function catalogPager(pager, top, onPage, PER = 25) {
   };
 }
 
+// Infinite scroll instead of a pager (the Gallery): every item is in the page already, hidden; the first PER matches show and the next PER
+// once the sentinel (an empty box under the list) comes within ~2 screens of the screen. No request to the server: pictures load as they near
+// the screen (loading="lazy"). Same interface as catalogPager(); nothing in the address (the page always starts at the top).
+function catalogMore(sentinel, PER = 40) {
+  let n = PER, match = [];
+  const more = () => {
+    if (n >= match.length) return;
+    match.slice(n, n + PER).forEach((c) => (c.hidden = false));
+    n += PER;
+    sentinel.hidden = n >= match.length;
+    io.unobserve(sentinel);   // observed again: answers at once if it is still near the screen (a tall screen, a short batch)
+    io.observe(sentinel);
+  };
+  const io = new IntersectionObserver((es) => { if (es.some((e) => e.isIntersecting)) more(); }, { rootMargin: '0px 0px 1800px 0px' });
+  io.observe(sentinel);
+  return {
+    reset() { n = PER; },
+    show(all, m) {
+      match = m;
+      const on = new Set(m.slice(0, n));
+      all.forEach((c) => (c.hidden = !on.has(c)));
+      sentinel.hidden = n >= m.length;
+      io.unobserve(sentinel);
+      io.observe(sentinel);
+    },
+    url(u) { u.searchParams.delete('page'); },
+  };
+}
+
 // ── The Filters button (filter_toggle() in view.php: catalogs, Gallery, bug reports) opens the panel its aria-controls names ──
 document.querySelectorAll('[data-filter-toggle]').forEach((toggle) => toggle.addEventListener('click', () => {
   const panel = document.getElementById(toggle.getAttribute('aria-controls'));
@@ -408,7 +439,8 @@ document.querySelectorAll('[data-filter-toggle]').forEach((toggle) => toggle.add
 // picks the first ones, e.g. from the address), the badge, [data-cat-count], [data-cat-empty] with its [data-cat-reset] button and
 // the pager. o: items (cards or tiles), box (they are put back in it in the sorted order), sorts {value: compare}, text(item) = what
 // the search looks in, test(item, sel) = the chip rows' filters, count(shown, all) = the count line, params {sel key: address
-// parameter} kept in the address, per (items per page), top (where a page change scrolls to), after(match) once the page is shown ──
+// parameter} kept in the address, per (items per page), more (infinite scroll: catalogMore() on [data-more] instead of the pager),
+// top (where a page change scrolls to), after(match) once the page is shown ──
 function catalogFilters(o) {
   const q = (s) => o.root.querySelector(s);
   const search = q('[data-cat-search]');
@@ -428,7 +460,7 @@ function catalogFilters(o) {
     if (c.getAttribute('aria-pressed') === 'true') { if (!m) sel[k] = c.dataset.value; else if (!def) sel[k].push(c.dataset.value); }
   });
   const order = new Map(o.items.map((c, i) => [c, i]));   // the page's order breaks ties
-  const pages = catalogPager(q('[data-pager]'), o.top || o.root, () => apply(true), o.per);
+  const pages = o.more ? catalogMore(q('[data-more]'), o.per) : catalogPager(q('[data-pager]'), o.top || o.root, () => apply(true), o.per);
   // a row the page keeps hidden (Unlocked, while no limits apply to this visitor) filters nothing: not in the badge or the address
   const same = (k) => String(sel[k]) === String(defaults[k]) || picks.some((c) => c.dataset.pick === k && c.closest('.chips')?.hidden);
 
@@ -524,7 +556,7 @@ const likedOk = (root) => {
     text: (c) => c.dataset.name + ' ' + c.dataset.franchise,
     test: (c, sel) => (!sel.franchise || c.dataset.franchise === sel.franchise)
       && (!sel.generation?.length || sel.generation.includes((c.dataset.generation || '').trim() || '~other'))   // no Generation row: none
-      && (!sel.status || c.dataset.status === sel.status) && ownedOk(c, sel) && liked(c, sel),
+      && (!sel.status || (sel.status === 'new' ? 'new' in c.dataset : sel.status === 'updated' ? 'fresh' in c.dataset : c.dataset.status === sel.status)) && ownedOk(c, sel) && liked(c, sel),
     count: (n, all) => `${n} of ${all} ${all === 1 ? 'model' : 'models'}`,
     params: { sort: 'sort', status: 'status', franchise: 'franchise', generation: 'gen', liked: 'liked', owned: 'owned' },   // ?page= stays a page of the same list
   });
@@ -552,6 +584,16 @@ const likedOk = (root) => {
     addEventListener('load', update);   // pictures that came in late can make the row wider
     row.addEventListener('load', update, true);   // and lazy ones that load after the page did
     update();
+    // data-strip-auto (My Account → My Renders): turns by itself every AUTO_MS while it doesn't fit, not while pointed at or focused,
+    // nor in a hidden tab, nor for visitors who asked for less motion
+    if (strip.hasAttribute('data-strip-auto') && !matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      let held = false;
+      strip.addEventListener('pointerenter', () => { held = true; });
+      strip.addEventListener('pointerleave', () => { held = false; });
+      setInterval(() => {
+        if (!held && !next.hidden && !document.hidden && !strip.contains(document.activeElement)) go(1);
+      }, 5000);
+    }
   });
 })();
 
@@ -568,10 +610,37 @@ const likedOk = (root) => {
   const dlNote = dlg.querySelector('[data-lightbox-dl-note]');
   const dlBtn = dlg.querySelector('[data-lightbox-dl-btn]');
   const likeBtn = dlg.querySelector('[data-lightbox-like]');   // gallery pictures (slides with like: id); the Gallery script paints and handles it
+  const shareBtn = dlg.querySelector('[data-lightbox-share]');
   const DL_ICON = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v11m0 0-4.5-4.5M12 15l4.5-4.5M5 20h14"/></svg>';
   const LOCK = '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>';
   let slides = [];
   let cur = 0;
+  // ── slideshow: ▶ shows the next picture every PLAY_MS, counted from when the picture has loaded; ‹ › and swipes keep it going
+  // (the count starts again), zooming in, ❚❚, Space or closing stop it ──
+  const playBtn = dlg.querySelector('[data-lightbox-play]');
+  const bar = dlg.querySelector('[data-lightbox-progress]');
+  const PLAY_MS = 5000;
+  let playing = false;
+  let timer = 0;
+  const wait = () => {   // the count for the picture on screen, with the line across the top
+    clearTimeout(timer);
+    bar?.classList.remove('is-run');
+    if (!playing || !img.complete) return;   // not loaded yet: 'load' starts it
+    void bar?.offsetWidth;   // so the line starts again from 0
+    bar?.classList.add('is-run');
+    timer = setTimeout(() => show(cur + 1), PLAY_MS);
+  };
+  const play = (on) => {
+    if (on === playing) return;
+    playing = on;
+    playBtn?.setAttribute('aria-pressed', String(on));
+    playBtn?.setAttribute('aria-label', on ? 'Pause slideshow' : 'Play slideshow');
+    wait();
+  };
+  bar?.style.setProperty('--lb-ms', PLAY_MS + 'ms');
+  img.addEventListener('load', wait);
+  img.addEventListener('error', wait);
+  playBtn?.addEventListener('click', (e) => { e.stopPropagation(); play(!playing); });
   // ── zoom: click (mouse) or double-tap (touch) toggles, the wheel and a pinch zoom around the pointer, drag moves;
   // the picture keeps its fitted layout and gets transform: translate(tx, ty) scale(z) (origin top left) ──
   const zoomBtn = dlg.querySelector('[data-lightbox-zoom]');
@@ -582,6 +651,7 @@ const likedOk = (root) => {
   };
   const fullZoom = () => Math.min(6, Math.max(2, (img.naturalWidth || 0) / (img.offsetWidth || 1)));   // 1:1 pixels, 2× at least
   const apply = (anim) => {
+    if (z > 1) play(false);   // zooming in stops the slideshow
     img.classList.toggle('lb-anim', !!anim);
     img.style.transform = z > 1 ? `translate(${tx}px, ${ty}px) scale(${z})` : '';
     dlg.classList.toggle('is-zoomed', z > 1);
@@ -661,7 +731,7 @@ const likedOk = (root) => {
   img.addEventListener('pointerup', up);
   img.addEventListener('pointercancel', up);
   dlg.addEventListener('cancel', (e) => { if (z > 1) { e.preventDefault(); unzoom(true); } });   // Esc: zoom out first, then close
-  dlg.addEventListener('close', () => unzoom());
+  dlg.addEventListener('close', () => { unzoom(); play(false); });
   addEventListener('resize', () => { if (dlg.open && z > 1) unzoom(); });
 
   const show = (i) => {
@@ -669,6 +739,27 @@ const likedOk = (root) => {
     cur = (i + slides.length) % slides.length;
     img.src = slides[cur].src;
     cap.textContent = slides[cur].caption || '';
+    const by = slides[cur].by;   // a patron render whose author linked their X / Patreon profile: "By <name>" as a link with its icon
+    if (by && by.url) {
+      cap.append((cap.textContent ? ' · ' : '') + 'By ');
+      const a = document.createElement('a');
+      a.href = by.url;
+      a.target = '_blank';
+      a.rel = 'nofollow ugc noopener';
+      a.className = 'lb-char lb-by';
+      a.title = by.title || '';
+      a.textContent = by.name;
+      if (by.icon) {
+        const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+        svg.setAttribute('viewBox', '0 0 24 24');
+        svg.setAttribute('aria-hidden', 'true');
+        const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+        path.setAttribute('d', by.icon);
+        svg.append(path);
+        a.append(svg);
+      }
+      cap.append(a);
+    }
     (slides[cur].chars || []).forEach((c, k) => {   // gallery pictures: the characters, linked to their model pages
       cap.append(k ? ', ' : (cap.textContent ? ' · ' : ''));
       if (!c.url) { cap.append(c.name); return; }
@@ -685,15 +776,19 @@ const likedOk = (root) => {
       dl.hidden = !d && !like;
       dlg.classList.toggle('has-dl', !!(d || like));
       if (likeBtn) likeBtn.hidden = !like;
+      if (shareBtn) shareBtn.hidden = !like;   // gallery pictures: a link to this one picture (the Gallery script handles it)
       dlNote.hidden = dlBtn.hidden = !d;
       if (d) {
         dlNote.textContent = d.note || '';
         dlBtn.href = d.href;
+        dlBtn.target = d.ext ? '_blank' : '';   // a patron render's full-quality link: their own address on another website
+        dlBtn.rel = d.ext ? 'nofollow ugc noopener' : '';
         dlBtn.className = 'btn btn-sm ' + (d.locked ? 'btn-ghost' : 'btn-primary');
         dlBtn.innerHTML = (d.locked ? LOCK + ' Log In to Download' : DL_ICON + ' Download Full Size');
       }
     }
     [cur + 1, cur - 1].forEach((n) => { const s = slides[(n + slides.length) % slides.length]; if (s) new Image().src = s.src; });
+    wait();   // the slideshow counts again for this picture
     dlg.dispatchEvent(new CustomEvent('lb-show', { detail: slides[cur] }));
   };
   document.addEventListener('click', (e) => {
@@ -704,6 +799,7 @@ const likedOk = (root) => {
     slides = JSON.parse(set.dataset.slides || '[]');
     if (!slides.length) return;
     navs.forEach((n) => (n.hidden = slides.length < 2));
+    if (playBtn) playBtn.hidden = slides.length < 2;
     show(+t.dataset.slide || 0);
     dlg.showModal();
   });
@@ -720,6 +816,8 @@ const likedOk = (root) => {
     if (e.target.closest?.('input, textarea, select')) return;
     if (e.key === 'ArrowLeft') show(cur - 1);
     if (e.key === 'ArrowRight') show(cur + 1);
+    // Space: the slideshow on / off (not on a button or a link, where Space presses it)
+    if (e.key === ' ' && playBtn && !playBtn.hidden && !e.target.closest?.('button, a')) { e.preventDefault(); play(!playing); }
   });
   let x0 = null;
   dlg.addEventListener('touchstart', (e) => { x0 = e.touches.length === 1 && z === 1 ? e.touches[0].clientX : null; }, { passive: true });   // zoomed or pinching: no swipe
@@ -731,7 +829,8 @@ const likedOk = (root) => {
   });
 })();
 
-// ── Gallery (/gallery/): search + Filters button like the catalogue (sort, franchise, character; one at a time per row); the viewer follows what is shown ──
+// ── Gallery (/gallery/): search + Filters button like the catalogue (sort, franchise, character; one at a time per row), 40 pictures more each time
+// the visitor scrolls near the end (catalogMore()); the viewer goes through every match, shown or not yet ──
 (() => {
   const wall = document.querySelector('[data-gwall]');
   if (!wall) return;
@@ -804,7 +903,27 @@ const likedOk = (root) => {
     e.stopPropagation();
     toggleLike(b.dataset.glike, b);
   });
-  lb?.addEventListener('lb-show', (e) => { lbId = e.detail?.like || ''; if (lbId) paint(lbId); });
+  // one picture's address (?p=<id>): kept in the address while it is open (a reload or a copied address comes back to it), Share copies it
+  const pAddr = (id) => {
+    const u = new URL(location.href);
+    if (id) u.searchParams.set('p', id); else u.searchParams.delete('p');
+    if (u.href !== location.href) history.replaceState(null, '', u);
+  };
+  lb?.addEventListener('lb-show', (e) => { lbId = e.detail?.like || ''; if (lbId) paint(lbId); pAddr(lbId); });
+  lb?.addEventListener('close', () => { lbId = ''; pAddr(''); });
+  const lbShare = lb?.querySelector('[data-lightbox-share]');
+  lbShare?.addEventListener('click', async () => {
+    if (!lbId) return;
+    const url = location.origin + '/gallery/?p=' + encodeURIComponent(lbId);
+    const label = lbShare.querySelector('span');
+    if (navigator.share && matchMedia('(pointer: coarse)').matches) {   // phones: the system's share sheet
+      try { await navigator.share({ url }); } catch { /* closed */ }
+      return;
+    }
+    try { await navigator.clipboard.writeText(url); label.textContent = 'Link Copied ✓'; }
+    catch { say('Copy this link: ' + url.replace(/[<>&"]/g, '')); return; }
+    setTimeout(() => (label.textContent = 'Share'), 1600);
+  });
   lbLike?.addEventListener('click', () => { if (lbId) toggleLike(lbId, lbLike); });
   // not logged in (no data-session in the header): nothing to ask, the counts are already in the page
   if (!('session' in (document.querySelector('[data-account]')?.dataset || {}))) me = { liked: new Set(), can: false, reason: 'login' };
@@ -815,23 +934,31 @@ const likedOk = (root) => {
   }
 
   const root = document.querySelector('[data-gallery]') || wall.parentNode;
-  const place = new Map(tiles.map((t, i) => [t, i]));   // the gallery's order (Admin → Gallery), newest on top
   const charChips = [...root.querySelectorAll('.chip[data-pick="char"]')].filter((b) => b.dataset.value);
+  // a page that came in another order (?sort=new…) shuffles here once, the first time Random is picked
+  const served = root.querySelector('.chip[data-pick="sort"][aria-pressed="true"]')?.dataset.value || 'random';
+  let rank = null;
+  const random = (a, b) => {
+    if (served === 'random') return 0;
+    rank ??= new Map(tiles.map((t) => [t, Math.random()]));
+    return rank.get(a) - rank.get(b);
+  };
   catalogFilters({
-    root, box: wall, per: 40,
+    root, box: wall, per: 40, more: true,
     items: tiles,
-    sorts: {
-      new: () => 0,
-      old: (a, b) => place.get(b) - place.get(a),
+    sorts: {   // Random = the page's order (shuffled by the server on each visit, so it stays the same while filtering and scrolling)
+      random,
+      new: (a, b) => a.dataset.n - b.dataset.n,   // data-n = the gallery's order (Admin → Gallery), newest on top
+      old: (a, b) => b.dataset.n - a.dataset.n,
       liked: (a, b) => (counts[b.dataset.gid] || 0) - (counts[a.dataset.gid] || 0),
     },
     text: (t) => t.dataset.search,
     test: (t, sel) => (!sel.char || t.dataset.chars.split(' ').includes(sel.char))
       && (!sel.franchise || t.dataset.franchises.includes('|' + sel.franchise + '|')),
-    params: { char: 'c', sort: 'sort', franchise: 'franchise' },   // a reload or a shared link comes back to the character (and ?page= to the same list)
+    params: { char: 'c', sort: 'sort', franchise: 'franchise' },   // a reload or a shared link comes back to the character
     after: (match, sel) => {
-      // the viewer opens the pictures shown, in their order
-      const shown = match.filter((t) => !t.hidden && t.dataset.k !== undefined);
+      // the viewer opens the matching pictures in their order, also those further down not shown yet (blurred ones never)
+      const shown = match.filter((t) => t.dataset.k !== undefined);
       wall.dataset.slides = JSON.stringify(shown.map((t) => master[+t.dataset.k]));
       tiles.forEach((t) => t.removeAttribute('data-slide'));
       shown.forEach((t, i) => (t.dataset.slide = i));
@@ -839,7 +966,24 @@ const likedOk = (root) => {
       charChips.forEach((b) => (b.hidden = !!sel.franchise && b.dataset.franchise !== sel.franchise && b.dataset.value !== sel.char));
     },
   });
+  // a link to one picture (?p=<id>) opens it in the viewer; one this visitor can't open (blurred, hidden, filtered out) leaves the address
+  const p = new URLSearchParams(location.search).get('p');
+  if (p) {
+    const t = tiles.find((x) => x.dataset.gid === p && x.dataset.slide !== undefined);
+    if (t) { t.querySelector('.g-open')?.click(); document.activeElement?.blur?.(); }   // no focus ring on the caption's first link (no click happened)
+    else pAddr('');
+  }
 })();
+
+// ── ↑ Back to the top (Gallery: a long wall that keeps growing): shown once the page is scrolled 1½ screens down ──
+document.querySelectorAll('[data-to-top]').forEach((btn) => {
+  const show = () => { btn.hidden = window.scrollY < window.innerHeight * 1.5; };
+  window.addEventListener('scroll', show, { passive: true });
+  show();
+  btn.addEventListener('click', () => {
+    window.scrollTo({ top: 0, behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' });
+  });
+});
 
 // ── Accessories catalog (the address keeps the model, the type and the order) ──
 (() => {
@@ -853,7 +997,7 @@ const likedOk = (root) => {
     items: [...grid.querySelectorAll('[data-ocard]')],
     sorts: cardSorts,
     text: (c) => c.dataset.name,
-    test: (c, sel) => (!sel.model || c.dataset.models.split(' ').includes(sel.model)) && (!sel.type || c.dataset.type === sel.type) && ownedOk(c, sel) && liked(c, sel),
+    test: (c, sel) => (!sel.model || c.dataset.models === '*' || c.dataset.models.split(' ').includes(sel.model)) && (!sel.type || c.dataset.type === sel.type) && ownedOk(c, sel) && liked(c, sel),
     count: (n, all) => (n === all ? `${all} ${word(all)}` : `${n} of ${all} ${word(all)}`),
     params: { model: 'model', type: 'type', sort: 'sort', liked: 'liked', owned: 'owned' },
   });
@@ -1006,6 +1150,30 @@ document.addEventListener('click', async (e) => {
   setTimeout(() => (b.textContent = 'Copy'), 1500);
 });
 
+// ── Videos in texts (md_video() in app/video.php): the cover with a play button and the length; the browser's own controls only once it
+// plays (without this script they are there from the start). Nothing of the file loads before Play. One video plays at a time. ──
+(() => {
+  const frames = document.querySelectorAll('[data-mv]');
+  if (!frames.length) return;
+  const all = [];
+  frames.forEach((f) => {
+    const v = f.querySelector('video'), b = f.querySelector('[data-mv-play]');
+    if (!v || !b) return;
+    all.push(v);
+    v.controls = false;
+    b.hidden = false;
+    f.classList.add('is-ready');
+    b.addEventListener('click', () => {
+      f.classList.add('is-playing');
+      b.hidden = true;
+      v.controls = true;
+      v.focus({ preventScroll: true });
+      v.play().catch(() => {});   // refused (a power-saving mode): the controls are there to try again
+    });
+    v.addEventListener('play', () => all.forEach((o) => { if (o !== v && !o.paused) o.pause(); }));
+  });
+})();
+
 // ── Tabs in texts ("=== Manual" / "=== With MustardUI", md_tabs() in view.php): groups with the same tab names switch together,
 // and this browser remembers the last choices (localStorage m3d_tabs, only after a click; listed in privacy.php) ──
 (() => {
@@ -1113,17 +1281,24 @@ document.addEventListener('click', async (e) => {
     btn.setAttribute('aria-pressed', state.liked ? 'true' : 'false');
     btn.title = state.liked ? `You like this ${what} (click to remove)` : state.can ? `Like this ${what}` : 'Likes are for patrons';
   };
-  const say = (html) => { msg.innerHTML = html; msg.hidden = !html; };
+  // the message as text and elements built here, never as HTML (an error can quote the server's answer)
+  const say = (...parts) => { msg.replaceChildren(...parts); msg.hidden = !msg.textContent; };
   // not logged in (no data-session in the header): nothing to ask, the count is already in the page
   if (!('session' in (document.querySelector('[data-account]')?.dataset || {}))) show({ count: +countEl.textContent || 0, liked: false, can: false, reason: 'login' });
   else if (btn.dataset.likeState) show(JSON.parse(btn.dataset.likeState));   // a logged-in visitor's own state, in the page
   btn.addEventListener('click', async () => {
     if (!state) return;
     if (!state.can) {
-      const back = encodeURIComponent(location.pathname);
-      say(state.reason === 'login'
-        ? `Likes are for patrons. <a rel="nofollow" href="/auth/login.php?return=${back}">Log in with Patreon</a> to like this ${what}.`
-        : 'Likes are for patrons on any paid tier.' + joinLink());
+      if (state.reason === 'login') {
+        const a = document.createElement('a');
+        a.rel = 'nofollow';
+        a.href = '/auth/login.php?return=' + encodeURIComponent(location.pathname);
+        a.textContent = 'Log in with Patreon';
+        say('Likes are for patrons. ', a, ` to like this ${what}.`);
+      } else {
+        const join = joinAnchor();
+        say('Likes are for patrons on any paid tier.', ...(join ? [' ', join, '.'] : []));
+      }
       return;
     }
     const want = !state.liked;
@@ -1334,6 +1509,37 @@ document.addEventListener('click', (ev) => {
   document.querySelectorAll('input[type=number]').forEach(numStepper);
 })();
 
+// ── Header menu: on wide screens the links that don't fit on the row go into "More" (Settings → Header Menu can add many); phones swipe the row ──
+(() => {
+  const more = document.querySelector('[data-nav-more]');
+  const nav = more && more.previousElementSibling;
+  if (!nav || !nav.matches('.nav')) return;
+  const btn = more.querySelector('button');
+  const list = more.querySelector('.nav-more-list');
+  const wide = matchMedia('(min-width: 721px)');
+  const show = (on) => { list.hidden = !on; btn.setAttribute('aria-expanded', on ? 'true' : 'false'); };
+  const fit = () => {
+    show(false);
+    nav.append(...list.children);   // back on the row, in their order
+    more.hidden = true;
+    if (!wide.matches || nav.scrollWidth <= nav.clientWidth + 1) return;
+    more.hidden = false;
+    const links = [...nav.children];
+    while (links.length > 1 && nav.scrollWidth > nav.clientWidth + 1) list.prepend(links.pop());
+    btn.classList.toggle('is-current', !!list.querySelector('[aria-current]'));
+    btn.classList.toggle('has-new', !!list.querySelector('.nav-new'));
+  };
+  let raf = 0;
+  const later = () => { cancelAnimationFrame(raf); raf = requestAnimationFrame(fit); };
+  new ResizeObserver(later).observe(nav.parentElement);
+  if (document.fonts) document.fonts.ready.then(later);
+  fit();
+  btn.addEventListener('click', () => show(list.hidden));
+  document.addEventListener('click', (e) => { if (!list.hidden && !more.contains(e.target)) show(false); });
+  more.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !list.hidden) { show(false); btn.focus(); } });
+  more.addEventListener('focusout', (e) => { if (!more.contains(e.relatedTarget)) show(false); });
+})();
+
 // ── Header search: the magnifier opens a search bar that grows over the menu (✕ or Esc closes it) ──
 // It searches models, accessories, docs and FAQ as you type. The list comes once from /search/?index=1; matching =
 // search_run() in search.php (accents ignored, every word must be found). Enter opens the highlighted result, or the
@@ -1357,6 +1563,7 @@ document.addEventListener('click', (ev) => {
   // a list that couldn't be loaded says so (not "Nothing found") and is asked for again at the next opening
   const load = () => loading || (loading = fetch('/search/?index=1').then((r) => { if (!r.ok) throw new Error(r.status); return r.json(); }).then((d) => {
     index = (Array.isArray(d) ? d : []).map((en, i) => ({ ...en, i, ft: searchFold(en.t), hay: searchFold(`${en.t} ${en.s} ${en.k} ${en.x}`) }));
+    vocab = null;
     failed = false;
     render();
   }).catch(() => { failed = true; loading = null; render(); }));
@@ -1426,15 +1633,76 @@ document.addEventListener('click', (ev) => {
       .sort((a, b) => a[0] - b[0] || a[1].i - b[1].i)
       .map((x) => x[1]);
   }
+  // A search that finds nothing, corrected for typos: search_fix() / search_near() / search_dist() in app/search.php, keep them the same.
+  // Each word found nowhere becomes the closest word of the index (1 typo from 4 letters, 2 from 8; two swapped letters = 1; the start
+  // of a longer word counts half a typo more), title words first, then the most used; '' when that finds nothing either.
+  const typoDist = (a, b) => {
+    const d = [];
+    for (let i = 0; i <= a.length; i++) d[i] = [i];
+    for (let j = 0; j <= b.length; j++) d[0][j] = j;
+    for (let i = 1; i <= a.length; i++) for (let j = 1; j <= b.length; j++) {
+      d[i][j] = Math.min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+      if (i > 1 && j > 1 && a[i - 1] === b[j - 2] && a[i - 2] === b[j - 1]) d[i][j] = Math.min(d[i][j], d[i - 2][j - 2] + 1);
+    }
+    return d[a.length][b.length];
+  };
+  const typoNear = (w, v) => {
+    const n = w.length;
+    if (n < 4) return null;
+    const max = n >= 8 ? 2 : 1;
+    let best = Math.abs(n - v.length) <= max ? typoDist(w, v) : 9;
+    for (let l = n - 1; l <= n + 1; l++) if (l < v.length) best = Math.min(best, typoDist(w, v.slice(0, l)) + 0.5);
+    return best <= max + 0.5 ? best : null;
+  };
+  let vocab = null;   // [[folded word as letters, spelling, in a title, entries using it]]
+  const typoFix = (q) => {
+    const typed = q.trim().split(/\s+/).filter(Boolean);
+    if (!typed.length || typed.length > 6) return '';
+    if (!vocab) {
+      const m = new Map();
+      for (const en of index) {
+        const title = new Map(en.t.split(/[^\p{L}\p{N}]+/u).map((t) => [searchFold(t), t]));
+        for (const v of new Set(en.hay.split(/[^\p{L}\p{N}]+/u))) {
+          if (Array.from(v).length < 3 || /^\d+$/.test(v)) continue;
+          const x = m.get(v) || [Array.from(v), v, false, 0];
+          x[3]++;
+          if (title.has(v) && !x[2]) { x[1] = title.get(v); x[2] = true; }
+          m.set(v, x);
+        }
+      }
+      vocab = [...m.values()];
+    }
+    let fixed = false;
+    const out = [];
+    for (const word of typed) {
+      const w = searchFold(word);
+      if (index.some((en) => en.hay.includes(w))) { out.push(word); continue; }
+      const wc = Array.from(w);
+      let best = null;
+      for (const [vc, spell, inTitle, uses] of vocab) {
+        const sc = typoNear(wc, vc);
+        if (sc === null) continue;
+        const key = [sc, inTitle ? 0 : 1, -uses];
+        if (!best || (key[0] - best[0][0] || key[1] - best[0][1] || key[2] - best[0][2]) < 0) best = [key, spell];
+      }
+      if (!best) return '';
+      out.push(best[1]);
+      fixed = true;
+    }
+    const fix = out.join(' ');
+    return fixed && search(fix).length ? fix : '';
+  };
   function render() {
     const q = input.value.trim();
     active = -1;
     if (!q) { list.innerHTML = ''; return; }
     if (!index) { list.innerHTML = `<li class="hs-none">${failed ? 'Search isn’t available right now. Try again in a moment.' : 'Searching…'}</li>`; return; }
-    const hits = search(q);
-    const all = `<li class="hs-all"><a href="/search/?q=${encodeURIComponent(q)}">See all results for “${esc(q)}” →</a></li>`;
+    let hits = search(q);
+    const fix = hits.length ? '' : typoFix(q);
+    if (fix) hits = search(fix);
+    const all = `<li class="hs-all"><a href="/search/?q=${encodeURIComponent(q)}">See all results for “${esc(fix || q)}” →</a></li>`;
     if (!hits.length) { list.innerHTML = `<li class="hs-none">Nothing found for “${esc(q)}”.</li>`; return; }
-    list.innerHTML = hits.slice(0, MAX).map((en) => `<li><a href="${esc(en.u)}">${en.p
+    list.innerHTML = (fix ? `<li class="hs-fix">Nothing found for “${esc(q)}”. Showing results for <b>“${esc(fix)}”</b>.</li>` : '') + hits.slice(0, MAX).map((en) => `<li><a href="${esc(en.u)}">${en.p
       ? `<img class="hs-pic" src="${esc(en.p)}" alt="" loading="lazy" />`
       : `<span class="hs-pic" aria-hidden="true">${esc(en.t.slice(0, 1).toUpperCase())}</span>`}<span class="hs-t">${esc(en.t)}</span><span class="hs-s"><span class="hs-k">${esc(en.k)}</span>${en.s ? ' · ' + esc(en.s) : ''}</span></a></li>`).join('')
       + (hits.length > MAX ? all : '');
@@ -1931,6 +2199,103 @@ document.querySelectorAll('[data-toasts] .toast').forEach(toastWire);
   show.querySelector('[data-title-edit]').addEventListener('click', (e) => { e.preventDefault(); open(true); });
   form.querySelector('[data-title-cancel]').addEventListener('click', (e) => { e.preventDefault(); open(false); });
   input.addEventListener('keydown', (e) => { if (e.key === 'Escape') { e.preventDefault(); open(false); } });
+})();
+
+// ── Polls under blog posts (blog_poll() in app/blog.php): "Up to N" picks: once N are picked the others wait, the line under them counts,
+// and Vote waits for a first pick (the server checks the same) ──
+document.querySelectorAll('form[data-poll]').forEach((f) => {
+  const max = +f.dataset.poll || 1;
+  const boxes = [...f.querySelectorAll('input[name="opt[]"]')];
+  const note = f.querySelector('[data-poll-count]');
+  const btn = f.querySelector('button[type=submit]');
+  const sync = () => {
+    const n = boxes.filter((b) => b.checked).length;
+    if (max > 1) boxes.forEach((b) => (b.disabled = !b.checked && n >= max));
+    if (note && max > 1) note.textContent = n ? `${n} of ${max} picked` : `Pick up to ${max}.`;
+    btn.disabled = !n;
+  };
+  f.addEventListener('change', sync);
+  window.addEventListener('pageshow', sync);   // Back: the browser may bring the ticks back
+  sync();
+});
+
+// ── Patron renders: the box's "N patron renders in the gallery →" and "… waiting for approval →" bring the gallery row into view
+// with that render at its start, instead of the plain jump that hides it under the header ──
+(() => {
+  document.addEventListener('click', (e) => {
+    const a = e.target.closest('.sc-box a[href^="#r-"]');
+    const tile = a && document.getElementById(a.getAttribute('href').slice(1));
+    const row = tile && tile.closest('[data-strip-row]');
+    if (!row) return;
+    e.preventDefault();
+    const smooth = matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth';
+    row.closest('[data-strip]').scrollIntoView({ block: 'center', behavior: smooth });
+    row.scrollTo({ left: row.scrollLeft + tile.getBoundingClientRect().left - row.getBoundingClientRect().left, behavior: smooth });
+  });
+})();
+
+// ── Patron renders (showcase_box() in app/showcase.php): the Share window; the chosen picture shows before it is sent (nothing leaves
+// the browser until Send), a file over the limit is refused here as on the server ──
+(() => {
+  const dlg = document.querySelector('dialog[data-sc-dlg]');
+  const open = document.querySelector('[data-sc-open]');
+  if (!dlg || !open || !dlg.showModal) return;
+  const form = dlg.querySelector('form');
+  const file = dlg.querySelector('[data-sc-file]');
+  const drop = dlg.querySelector('[data-sc-drop]');
+  const img = dlg.querySelector('[data-sc-img]');
+  const name = dlg.querySelector('[data-sc-name]');
+  const meta = dlg.querySelector('[data-sc-meta]');
+  const hint = meta.textContent;
+  const MAX = Number(dlg.dataset.max) || 25 * 1024 * 1024;   // m3d_showcase_max(): less when the host's PHP accepts less
+  const top = (Math.floor(MAX / 104857.6) / 10) + ' MB';
+  let url = '';
+  const pick = () => {
+    const f = file.files && file.files[0];
+    if (url) { URL.revokeObjectURL(url); url = ''; }
+    file.setCustomValidity('');
+    if (!f) { img.hidden = true; name.textContent = 'Choose a Picture…'; meta.textContent = hint; return; }
+    name.textContent = f.name;
+    const mb = f.size < 1048576 ? Math.max(1, Math.round(f.size / 1024)) + ' KB' : (f.size / 1048576).toFixed(1) + ' MB';
+    if (!/^image\/(jpeg|png|webp)$/.test(f.type)) { file.setCustomValidity('Pictures must be JPG, PNG or WebP.'); meta.textContent = 'Pictures must be JPG, PNG or WebP.'; img.hidden = true; return; }
+    if (f.size > MAX) { file.setCustomValidity('At most ' + top + '.'); meta.textContent = mb + ': too big, at most ' + top + '.'; img.hidden = true; return; }
+    url = URL.createObjectURL(f);
+    img.onload = () => { meta.textContent = img.naturalWidth + ' × ' + img.naturalHeight + ' · ' + mb; };
+    img.src = url;
+    img.hidden = false;
+    meta.textContent = mb;
+  };
+  file.addEventListener('change', pick);
+  // "Link on My Name": only with the name shown; the field opens once X or Patreon is picked. A typed username is checked here like on the
+  // server (m3d_render_link_clean()); a pasted address is left to the server, which reads its website
+  const named = dlg.querySelector('[data-sc-named]');
+  const linkRow = dlg.querySelector('[data-sc-link]');
+  const linkT = dlg.querySelector('[data-sc-link-t]');
+  const linkH = dlg.querySelector('[data-sc-link-h]');
+  const linkSync = () => {
+    if (!linkRow) return;
+    linkRow.hidden = !named.checked;
+    linkH.disabled = !named.checked || !linkT.value;
+    const v = linkH.value.trim().replace(/^@/, '');
+    const bad = !linkH.disabled && v !== '' && !/[./]/.test(v)
+      && !(linkT.value === 'x' ? /^[A-Za-z0-9_]{1,15}$/ : /^[A-Za-z0-9_-]{1,64}$/).test(v);
+    linkH.setCustomValidity(bad ? (linkT.value === 'x' ? 'X usernames have up to 15 letters, numbers or _.' : 'Use the name in your Patreon address, or paste the address.') : '');
+  };
+  if (linkRow) {
+    [named, linkT, linkH].forEach((el) => el.addEventListener(el === linkH ? 'input' : 'change', linkSync));
+    linkT.addEventListener('change', () => { if (linkT.value) linkH.focus(); });
+    linkSync();
+  }
+  ['dragenter', 'dragover'].forEach((t) => drop.addEventListener(t, () => drop.classList.add('is-over')));
+  ['dragleave', 'drop'].forEach((t) => drop.addEventListener(t, () => drop.classList.remove('is-over')));
+  open.addEventListener('click', () => { dlg.showModal(); });
+  dlg.querySelector('[data-sc-close]').addEventListener('click', () => dlg.close());
+  dlg.addEventListener('click', (e) => { if (e.target === dlg) dlg.close(); });   // a click on the dark backdrop
+  form.addEventListener('submit', () => {
+    const b = form.querySelector('button[type=submit]');
+    if (b) b.textContent = 'Sending…';
+  });
+  window.addEventListener('pageshow', () => { const b = form.querySelector('button[type=submit]'); if (b) b.textContent = 'Send for Approval'; pick(); linkSync(); });
 })();
 
 // Forms that send something (a bug report, a comment, Me Too, Follow…): one click only. A second click while the first is on its
