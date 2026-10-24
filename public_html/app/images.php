@@ -453,7 +453,7 @@ function copy_external(string $url, string $folder): string
         $fh = fopen($tmp, 'wb');
         // m3d_fetch(): http / https only, never this server or a private network, each of the 3 redirects checked again
         ['body' => $ok, 'code' => $code, 'errno' => $errno, 'err' => $err] = m3d_fetch($url, [CURLOPT_FILE => $fh, CURLOPT_CONNECTTIMEOUT => 15, CURLOPT_TIMEOUT => 120,
-            CURLOPT_USERAGENT => 'Mozilla/5.0 (catalog site)', CURLOPT_MAXFILESIZE => $maxBytes], 3);
+            CURLOPT_USERAGENT => 'Mozilla/5.0 (MustardWebsite)', CURLOPT_MAXFILESIZE => $maxBytes], 3);
         fclose($fh);
         if ($ok && $code === 200) break;
         @unlink($tmp);

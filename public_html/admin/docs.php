@@ -16,7 +16,8 @@ if (admin_form_post('docs_links')) {
 }
 
 $docs = m3d_docs();
-$payload = ['kind' => 'docs', 'docs' => ['sections' => $docs['sections'] ?? []], 'page' => m3d_get_text('page'), 'rev' => admin_text_rev('docs')];
+$payload = ['kind' => 'docs', 'docs' => ['sections' => $docs['sections'] ?? []], 'page' => m3d_get_text('page'), 'rev' => admin_text_rev('docs'),
+    'video' => m3d_video_max()];
 
 admin_start('Docs', 'docs');
 ?>

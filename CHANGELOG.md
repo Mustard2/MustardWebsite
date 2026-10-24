@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026.10.24-4 · 24 Oct 2026
+
+- Change: The project is now called MustardWebsite.
+- New: Docs pages can hold videos: the Docs editor has the same Video button and video drag and drop as blog posts.
+
 ## 2026.10.24-2 · 24 Oct 2026
 
 - Change: the model catalogue and the Accessories page open sorted by Recently Updated.

@@ -2,8 +2,8 @@
 declare(strict_types=1);
 defined('M3D_PRIVATE') || exit;
 
-// Videos in texts (blog posts): an .mp4 / .webm file in media/ written like a picture, "![caption](/media/blog/name.mp4)" alone on a line
-// (md_html() → md_video()). Uploaded by the blog editor's "Add a Video" window (admin/upload-video.php), which checks the file in the
+// Videos in texts (blog posts, docs pages): an .mp4 / .webm file in media/ written like a picture, "![caption](/media/blog/name.mp4)" alone on a line
+// (md_html() → md_video()). Uploaded by the blog and docs editors' "Add a Video" window (admin/upload-video.php), which checks the file in the
 // browser before sending it (admin.js videoInfo(): the same rules as m3d_video_info() here). The cover is a picture next to the video
 // with the same name (name.mp4 → name.webp + its smaller versions, m3d_video_cover()): it belongs to the video (listed, deleted and
 // backed up with it, never on its own in the picture library). Nothing of a video loads until the visitor presses Play (preload="none").

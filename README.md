@@ -1,4 +1,4 @@
-# Model Catalog Website
+# MustardWebsite
 
 **A self-hosted website for 3D creators who share their work on Patreon.**
 Show your characters and accessories in a clean catalogue, keep a changelog for every release, and let your patrons

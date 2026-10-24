@@ -453,7 +453,7 @@ if ($tab === '3d' || $tab === 'videos') {   // listed under the item / post usin
 }
 $folders = array_values(array_unique(array_merge(...array_column($items, 'groups') ?: [[]])));
 $uploadDefault = ['gallery' => 'gallery', 'blog' => 'blog', 'docs' => 'docs', 'faq' => 'faq', 'other' => 'misc'][$tab] ?? null;
-$whatName = ['models' => 'model', 'outfits' => 'accessory', 'blog' => 'post', 'docs' => 'page', 'faq' => 'question', '3d' => 'item', 'videos' => 'post'][$tab] ?? 'folder';
+$whatName = ['models' => 'model', 'outfits' => 'accessory', 'blog' => 'post', 'docs' => 'page', 'faq' => 'question', '3d' => 'item', 'videos' => 'post or page'][$tab] ?? 'folder';
 $fileTab = $tab === '3d' || $tab === 'videos';   // files, not pictures: no upload button here, no picture window
 // what the folder pickers show for each folder (admin.js turns the two menus into a search picker: one row per character, its generations as buttons)
 [$pick, $names] = admin_folder_picks($models);
@@ -533,13 +533,13 @@ admin_start('Media', 'images');
 
     <?php if (!$items): ?>
       <?php if ($tab === '3d'): ?><p class="muted">No 3D files yet. Upload one in a model or accessory editor (Images → 3D Preview).</p>
-      <?php elseif ($tab === 'videos'): ?><p class="muted">No videos yet. Add one to a blog post with the editor’s Video button.</p>
+      <?php elseif ($tab === 'videos'): ?><p class="muted">No videos yet. Add one to a blog post or a docs page with the editor’s Video button.</p>
       <?php else: ?><p class="muted">No <?= e(strtolower(IMG_TABS[$tab])) ?> images yet. Upload some with the button above<?= ['models' => ', or from the editor', 'outfits' => ', or from the editor', 'gallery' => ', or with Add Pictures in Admin → Gallery', 'blog' => ', or from the Blog editor', 'docs' => ', or with Image in the Docs editor', 'faq' => ', or with Add Image in the FAQ editor'][$tab] ?? '' ?>.</p><?php endif ?>
     <?php else: ?>
       <div class="lib-filters">
-        <input class="input" type="search" placeholder="Search file name or <?= $whatName ?>…" data-lib-search aria-label="Search <?= ['3d' => '3D files', 'videos' => 'videos'][$tab] ?? 'images' ?>" />
-        <select class="input" data-lib-folder data-folder-pick="filter" data-search-ph="Search <?= ['outfits' => 'accessories', 'blog' => 'posts', 'docs' => 'pages', 'faq' => 'questions', 'models' => 'models', '3d' => 'items', 'videos' => 'posts'][$tab] ?? 'folders' ?>…" aria-label="<?= e(ucfirst($whatName)) ?>" <?= count($folders) < 2 ? 'hidden' : '' ?>>
-          <option value=""><?= ['models' => 'All Models', 'outfits' => 'All Accessories', 'blog' => 'All Posts', 'docs' => 'All Pages', 'faq' => 'All Questions', '3d' => 'All Items', 'videos' => 'All Posts'][$tab] ?? 'All Folders' ?></option>
+        <input class="input" type="search" placeholder="Search <?= $tab === 'videos' ? 'file name, post or page' : 'file name or ' . $whatName ?>…" data-lib-search aria-label="Search <?= ['3d' => '3D files', 'videos' => 'videos'][$tab] ?? 'images' ?>" />
+        <select class="input" data-lib-folder data-folder-pick="filter" data-search-ph="Search <?= ['outfits' => 'accessories', 'blog' => 'posts', 'docs' => 'pages', 'faq' => 'questions', 'models' => 'models', '3d' => 'items', 'videos' => 'posts and pages'][$tab] ?? 'folders' ?>…" aria-label="<?= e(ucfirst($whatName)) ?>" <?= count($folders) < 2 ? 'hidden' : '' ?>>
+          <option value=""><?= ['models' => 'All Models', 'outfits' => 'All Accessories', 'blog' => 'All Posts', 'docs' => 'All Pages', 'faq' => 'All Questions', '3d' => 'All Items', 'videos' => 'All Posts and Pages'][$tab] ?? 'All Folders' ?></option>
           <?php foreach ($folders as $f) echo folder_option($f, $pick, $names) ?>
         </select>
         <label class="toggle lib-unused"><input type="checkbox" class="switch" data-lib-unused <?= $onlyUnused ? 'checked' : '' ?> /><span>Unused Only</span></label>

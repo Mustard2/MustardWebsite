@@ -204,7 +204,7 @@ function uploadProgress() {
 // every change it makes (the editors mark themselves unsaved; the textarea also gets an input event).
 const DROP_IMG_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];   // what upload.php takes
 let dropQueue = Promise.resolve();   // one upload at a time, across every text of the page
-// video(file, i): a video dropped at caret index i (texts that take videos: blog posts); without it a video is refused with a toast.
+// video(file, i): a video dropped at caret index i (texts that take videos: blog posts, docs pages); without it a video is refused with a toast.
 function imageDrop(ta, folder = 'misc', onEdit = () => {}, { video = null } = {}) {
   itemMention(ta);   // every text in the md_html() format comes here: "@" lists the models, accessories and docs pages too
   const changed = () => { ta.dispatchEvent(new Event('input', { bubbles: true })); onEdit(); };
@@ -2141,7 +2141,7 @@ if (form) {
 
 // ── A long text in the md_html() format (Docs pages, blog posts): Write / Preview tabs, the formatting toolbar, Ctrl+B / I / K ──
 // body = its textarea; folder = where the toolbar's Image button uploads; onEdit = called after the toolbar changed the text
-// video: {bytes, why} (m3d_video_max()) = the text takes videos (blog posts): a Video button, and videos dropped on the text open "Add a Video"
+// video: {bytes, why} (m3d_video_max()) = the text takes videos (blog posts, docs pages): a Video button, and videos dropped on the text open "Add a Video"
 function mdTools(body, { folder = 'misc', imgTitle = 'Pictures', onEdit = () => {}, paywall = false, video = null } = {}) {
   const replaceSel = (ta, fn) => {
     const a = ta.selectionStart, b = ta.selectionEnd;
@@ -2350,7 +2350,7 @@ function initDocsEditor(data) {
     const body = el('textarea', { class: 'input dp-body', spellcheck: 'true', maxlength: 200000, placeholder: 'Write the page here. See "How to format pages" above.' });
     body.value = page.body || '';
     body.addEventListener('input', () => (page.body = body.value));
-    const { tabs, toolbar, preview } = mdTools(body, { folder: 'docs', imgTitle: 'Pictures for This Page', onEdit: mark });
+    const { tabs, toolbar, preview } = mdTools(body, { folder: 'docs', imgTitle: 'Pictures for This Page', onEdit: mark, video: data.video });
 
     const isHome = homePage() === page;
     pane.replaceChildren(
