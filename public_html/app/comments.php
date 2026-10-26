@@ -6,7 +6,7 @@
 //   id (int, never reused), by (Patreon id), name (Patreon name then), at (unix), text, admin (the creator wrote it), pending (waits
 //   for the creator while "Check Before Showing" is on: only its author and the creator see it), edited (unix, the creator edited it),
 //   re (a reply: the id of the comment it is under; replies are one level deep) + to (the reply it answers, when it isn't that comment)
-// settings.json → comments: {on, models, outfits, posts (where they are on), who: any|paying, moderate, per_day, blocked [Patreon ids],
+// settings.json → comments: {on, models, outfits, posts (where they are on), who: any|paying, moderate, paid_skip (patrons on a paid tier skip the check), per_day, blocked [Patreon ids],
 //   notify (old: read by m3d_notify_settings() until Settings → Notifications is saved, with the webhook of private/webhooks.php → comments)}. One item or post turns them off with `noComments` (its editor's "Allow Comments" switch): kept, not shown.
 // Who sees them: whoever sees the page (item_gate(), m3d_post_view() = full); who writes: m3d_comment_can_post().
 declare(strict_types=1);
@@ -35,6 +35,7 @@ function m3d_comment_settings(): array
         'who'      => $who,
         // never saved: on while anyone may comment (free members too), so a brand-new account isn't published at once
         'moderate' => array_key_exists('moderate', $s) ? !empty($s['moderate']) : $who === 'any',
+        'paid_skip' => !empty($s['paid_skip']),   // "Skip for Paying Patrons": their comments show at once, others still wait
         'notify'   => !empty($s['notify']),
         'webhook'  => m3d_webhook('comments'),   // private/webhooks.php
         'per_day'  => max(1, min(100, (int) ($s['per_day'] ?? 10))),
@@ -140,7 +141,7 @@ function m3d_comment_change(int $id, callable $fn): bool
 function m3d_comment_page(string $kind, string $key): array
 {
     if ($kind === 'posts') {
-        $p = function_exists('m3d_post') ? m3d_post($key) : null;
+        $p = m3d_post($key);
         return $p ? [(string) $p['title'], m3d_post_url($p), $p] : ['Blog post ' . $key, '', null];
     }
     $it = m3d_item($kind, $key);
@@ -164,6 +165,14 @@ function m3d_comment_can_post(?array $p): array
     if (m3d_banned($p, 'comments')) return ['ok' => false, 'why' => 'banned'];   // Admin → Access: the page says so with ban_note()
     if ($s['who'] === 'paying' && empty($p['access'])) return ['ok' => false, 'why' => 'Only patrons on a paid tier can comment.'];
     return ['ok' => true, 'why' => ''];
+}
+
+/** A new comment by $p waits for the creator: "Check Before Showing" is on, unless "Skip for Paying Patrons" is too and $p can download
+ *  (a paid tier, or an Access exception that gives the tier, like "Paying Patrons" in Who Can Comment). The creator's never wait. */
+function m3d_comment_needs_check(array $p, array $s): bool
+{
+    if (!$s['moderate'] || m3d_is_admin($GLOBALS['M3D'])) return false;
+    return !($s['paid_skip'] && !empty($p['access']));
 }
 
 /** Comments this person wrote in the last 24 hours (for the daily limit). $all: the file as m3d_comments_update() hands it over, so the
@@ -209,20 +218,34 @@ function m3d_comment_counts(): array
     return m3d_comment_summary()['n'];
 }
 
-/** The comments file in short (m3d_data_summary()): n (see m3d_comment_counts()), recent = visitors' newest comments [[id, at, waiting]], for the bell's number. */
+/** The comments file in short (m3d_data_summary()): n (see m3d_comment_counts()), recent = visitors' newest comments [[id, at, waiting]], for the
+ *  creator's bell's number; replies = {like code of a comment's author: [[reply id, at, kind, key]…]} (published replies by someone else, the
+ *  newest 20 each), for the visitors' bell (app/bell.php). */
 function m3d_comment_summary(): array
 {
-    $make = function () {
-        $n = $recent = [];
-        foreach (m3d_comments_flat() as [$k, $key, $c]) {
-            if (empty($c['pending'])) $n["$k:$key"] = ($n["$k:$key"] ?? 0) + 1;
-            if (empty($c['admin']) && (count($recent) < 200 || !empty($c['pending']))) $recent[] = [(int) ($c['id'] ?? 0), (int) ($c['at'] ?? 0), !empty($c['pending']) ? 1 : 0];
+    $s = m3d_data_summary('comments', 'm3d_comment_summary_make');
+    if (!array_key_exists('replies', $s)) $s = m3d_data_summary('comments', 'm3d_comment_summary_make', true);   // saved before `replies` existed
+    return $s + ['n' => [], 'recent' => [], 'replies' => []];
+}
+
+function m3d_comment_summary_make(): array
+{
+    $n = $recent = $replies = $by = [];
+    $flat = m3d_comments_flat();
+    foreach ($flat as [, , $c]) $by[(int) ($c['id'] ?? 0)] = (string) ($c['by'] ?? '');
+    $codeOf = [];   // Patreon id => its like code, worked out once per author
+    foreach ($flat as [$k, $key, $c]) {
+        if (empty($c['pending'])) $n["$k:$key"] = ($n["$k:$key"] ?? 0) + 1;
+        if (empty($c['admin']) && (count($recent) < 200 || !empty($c['pending']))) $recent[] = [(int) ($c['id'] ?? 0), (int) ($c['at'] ?? 0), !empty($c['pending']) ? 1 : 0];
+        $to = (int) ($c['to'] ?? 0) ?: (int) ($c['re'] ?? 0);
+        $author = $by[$to] ?? '';
+        if ($to && $author !== '' && empty($c['pending']) && $author !== (string) ($c['by'] ?? '')) {
+            $replies[$codeOf[$author] ??= m3d_like_code($author)][] = [(int) ($c['id'] ?? 0), (int) ($c['at'] ?? 0), $k, (string) $key];
         }
-        return ['n' => $n, 'recent' => $recent];
-    };
-    $s = m3d_data_summary('comments', $make);
-    if (!array_key_exists('recent', $s)) $s = m3d_data_summary('comments', $make, true);   // saved before `recent` existed
-    return $s + ['n' => [], 'recent' => []];
+    }
+    foreach ($replies as &$list) { usort($list, fn($a, $b) => $a[1] <=> $b[1]); $list = array_slice($list, -20); }
+    unset($list);
+    return ['n' => $n, 'recent' => $recent, 'replies' => $replies];
 }
 
 /** The comment count on a card (bubble + number), '' when there are none or comments are off for it. */
@@ -241,18 +264,6 @@ function m3d_comment_admin_counts(): array
 }
 
 // ── Upkeep ───────────────────────────────────────────────────────────────────
-/** An item's address changed (m3d_rename_counts()): its comments move along. */
-function m3d_comments_rename(string $kind, string $old, string $new): void
-{
-    if ($old === $new || !is_file(M3D_PRIVATE . '/data/comments.json')) return;
-    m3d_comments_update(function (array $all) use ($kind, $old, $new) {
-        if (!isset($all[$kind][$old])) return [$all, null];
-        $all[$kind][$new] = array_merge((array) ($all[$kind][$new] ?? []), (array) $all[$kind][$old]);
-        unset($all[$kind][$old]);
-        return [$all, null];
-    });
-}
-
 /** Items or posts deleted: their comments go too. */
 function m3d_comments_forget(string $kind, array $keys): void
 {

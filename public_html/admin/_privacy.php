@@ -4,7 +4,7 @@
 //   By Patreon ID: the download log, an access exception, bans (with their reason; the bug-report and comment blocks are bans),
 //   bug reports and comments, comments on pages (models, accessories, blog posts).
 //   By the scrambled code (m3d_like_code() of the ID; the site holds the key, so it finds them from the ID): likes, ignored
-//   updates, the welcome page, poll votes, Me Too and following bug reports.
+//   updates, the welcome page, the notifications bell (data/bell/<code>.json), poll votes, Me Too and following bug reports.
 // pd_collect() gathers it; pd_html() is the readable file (one page, opens in any browser, prints); the JSON is the same data.
 declare(strict_types=1);
 defined('M3D_PRIVATE') or exit;
@@ -21,7 +21,7 @@ function pd_collect(string $id): array
 {
     $code = m3d_like_code($id);
     $d = ['id' => $id, 'name' => '', 'names' => [], 'made' => time(), 'downloads' => [], 'exception' => null,
-          'likes' => ['models' => [], 'outfits' => [], 'stills' => [], 'posts' => []], 'ignored' => [], 'welcome' => null, 'votes' => [], 'renders' => [],
+          'likes' => ['models' => [], 'outfits' => [], 'stills' => [], 'posts' => []], 'ignored' => [], 'welcome' => null, 'bell' => null, 'votes' => [], 'renders' => [],
           'reports' => [], 'comments' => [], 'metoo' => [], 'following' => [], 'blocked' => false, 'page_comments' => [], 'cm_blocked' => false, 'bans' => [], 'ban_reason' => ''];
     $names = [];
 
@@ -42,7 +42,7 @@ function pd_collect(string $id): array
     if ($x = m3d_exception($id)) {
         // the exception, unless the record holds only bans (made by a Block button): those are below
         $only = m3d_ex_mode($x['tier'] ?? null) === '' && m3d_ex_mode($x['extra'] ?? null) === '' && m3d_ex_mode($x['limits'] ?? null) === '' && trim((string) ($x['note'] ?? '')) === '' && trim((string) ($x['name'] ?? '')) === '';
-        if (!$only || !m3d_ex_bans($x)) $d['exception'] = array_intersect_key($x, array_flip(['name', 'note', 'tier', 'extra', 'limits', 'tierCents', 'months', 'totalCents', 'rules', 'added']));
+        if (!$only || !m3d_ex_bans($x)) $d['exception'] = array_intersect_key($x, array_flip(['name', 'note', 'tier', 'extra', 'limits', 'tierCents', 'months', 'totalCents', 'rules', 'paused', 'added']));
         $d['bans'] = m3d_bans($id);
         $d['ban_reason'] = $d['bans'] ? trim((string) ($x['reason'] ?? '')) : '';
     }
@@ -81,6 +81,7 @@ function pd_collect(string $id): array
 
     $seen = (m3d_read_json('welcomed') ?? [])['seen'][$code] ?? null;
     if ($seen !== null) $d['welcome'] = (int) $seen;
+    $d['bell'] = m3d_ubell_person($id);   // the visitors' bell: how many rows they opened and removed
 
     foreach (m3d_bugs() as $b) {
         $n = (int) ($b['n'] ?? 0);
@@ -119,7 +120,7 @@ function pd_collect(string $id): array
 /** Whether anything was found ($block false: anything Delete removes; bans stay). */
 function pd_found(array $d, bool $block = true): bool
 {
-    return $d['downloads'] || $d['exception'] || array_filter($d['likes']) || $d['ignored'] || $d['welcome'] !== null || $d['votes'] || $d['renders']
+    return $d['downloads'] || $d['exception'] || array_filter($d['likes']) || $d['ignored'] || $d['welcome'] !== null || $d['bell'] !== null || $d['votes'] || $d['renders']
         || $d['reports'] || $d['comments'] || $d['metoo'] || $d['following'] || $d['page_comments'] || ($block && ($d['bans'] || $d['blocked'] || $d['cm_blocked']));
 }
 
@@ -139,6 +140,7 @@ function pd_exception_lines(array $x): array
     $lim = $mode($x['limits'] ?? null);
     if (m3d_ex_mode($x['limits'] ?? null) === 'custom' && ($rules = m3d_ex_rules($x))) $lim .= ': ' . implode('; ', array_map(fn($r) => m3d_rule_text($r, true), $rules));
     $out = ['Name Written by the Site' => (string) ($x['name'] ?? ''), 'Note' => (string) ($x['note'] ?? ''), 'Tier' => $tier, 'Requirements' => $req, 'Unlock Limits' => $lim];
+    if (!empty($x['paused'])) $out['Switched Off'] = 'Yes: kept, but not applied';
     if (($x['added'] ?? '') !== '') $out['Added'] = m3d_site_time((string) $x['added'], 'j M Y');
     return array_filter($out, fn($v) => $v !== '');
 }
@@ -171,6 +173,7 @@ function pd_summary(array $d): array
         'Likes' => implode(', ', $likes),
         'Ignored Updates' => $d['ignored'] ? (string) count($d['ignored']) : '',
         'Welcome Page' => $d['welcome'] !== null ? 'Seen ' . m3d_site_time($d['welcome'], 'j M Y') : '',
+        'Notifications' => $d['bell'] !== null ? m3d_plural($d['bell']['read'], 'notification') . ' opened, ' . $d['bell']['removed'] . ' removed' : '',
         'Poll Votes' => $d['votes'] ? m3d_plural(count($d['votes']), 'poll') : '',
         'Renders Shared' => $d['renders'] ? m3d_plural(count($d['renders']), 'render') . (($w = count(array_filter($d['renders'], fn($r) => !$r['approved']))) ? " ($w waiting)" : '') : '',
         'Bug Reports' => implode(', ', $bugs),
@@ -197,6 +200,7 @@ function pd_json(array $d): array
         'likes' => ['models' => $d['likes']['models'], 'accessories' => $d['likes']['outfits'], 'gallery_pictures' => $d['likes']['stills'], 'blog_posts' => $d['likes']['posts']],
         'ignored_updates' => array_map(fn($r) => ['item' => $r['item'], 'version' => $r['version']], $d['ignored']),
         'welcome_page_seen' => $iso($d['welcome']),
+        'notifications_bell' => $d['bell'] !== null ? ['notifications_opened' => $d['bell']['read'], 'notifications_removed' => $d['bell']['removed']] : null,
         'poll_votes' => array_map(fn($r) => ['post' => $r['post'], 'question' => $r['question'], 'choices' => $r['choices']], $d['votes']),
         'renders_shared' => array_map(fn($r) => ['date' => $iso($r['at']), 'on' => $r['kind'] === 'outfits' ? 'accessory' : 'model', 'item' => $r['item'], 'picture' => $r['picture'],
             'caption' => $r['caption'], 'shown_as' => $r['shown_as'], 'profile_link' => $r['link'], 'full_quality_link' => $r['full'], 'approved' => $r['approved'], 'in_gallery' => $r['in_gallery']], $d['renders']),
@@ -266,6 +270,9 @@ function pd_html(array $d): string
 
     $h .= $sec('Ignored Updates', 'Updates you chose to ignore, so the “Update” mark stays hidden (scrambled code, like likes).',
         $list(array_map(fn($r) => $r['item'] . ($r['version'] !== '' ? ' · ' . $r['version'] : ''), $d['ignored'])));
+
+    $h .= $sec('Notifications', 'Which notifications of the bell you opened (so its number shows only the ones you haven’t) and which you removed (scrambled code, like likes).',
+        $d['bell'] !== null ? $list(['Notifications opened: ' . $d['bell']['read'], 'Notifications removed: ' . $d['bell']['removed']]) : $none);
 
     $h .= $sec('Poll Votes', 'Your choices in polls under blog posts, so each patron votes once (scrambled code, like likes); only the totals are shown.',
         $list(array_map(fn($r) => $r['post'] . ($r['question'] !== '' ? ': ' . $r['question'] : '') . ' → ' . implode(', ', $r['choices']), $d['votes'])));
@@ -392,6 +399,9 @@ function pd_delete(string $id): array
     if ($d['renders']) {
         $n = m3d_renders_delete(fn($r) => (string) ($r['by'] ?? '') === $id);   // with their pictures and their stills in the Gallery
         if ($n !== null) $done[] = m3d_plural($n, 'shared render'); else $fail[] = 'shared renders';
+    }
+    if ($d['bell'] !== null) {
+        if (m3d_ubell_forget($id)) $done[] = 'the notifications bell marks'; else $fail[] = 'notifications bell marks';
     }
     if ($d['welcome'] !== null) {
         $ok = m3d_json_update('welcomed', function ($x) use ($code) {

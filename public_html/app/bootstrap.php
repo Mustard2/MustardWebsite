@@ -75,31 +75,44 @@ function m3d_support_email(): string
 }
 
 /**
- * The Patreon keys of Admin → Settings → Patreon: private/patreon.php (a PHP file, so its secret is never readable over the web,
- * outside data/ so it is never in backups or the change history, like config.php). client_id, client_secret, redirect_uri, campaign_id,
+ * Key files: private/<name>.php returning an array (patreon.php, webhooks.php, s4.php, github.php). A PHP file, so a secret in it is
+ * never readable over the web, and outside data/, so it is never in backups or the change history (like config.php).
+ */
+function m3d_key_file(string $name): array
+{
+    $f = M3D_PRIVATE . "/$name.php";
+    $d = is_file($f) ? (include $f) : [];
+    return is_array($d) ? $d : [];
+}
+
+/** Writes a key file returning $data, readable by the owner only ($note = its comment line); [] deletes it. */
+function m3d_key_file_save(string $name, array $data, string $note): bool
+{
+    $f = M3D_PRIVATE . "/$name.php";
+    if (!$data) return !is_file($f) || @unlink($f);
+    $tmp = $f . '.tmp-' . bin2hex(random_bytes(4));
+    if (@file_put_contents($tmp, "<?php\n// $note\nreturn " . var_export($data, true) . ";\n", LOCK_EX) === false) return false;
+    @chmod($tmp, 0600);
+    if (!@rename($tmp, $f)) { @unlink($tmp); return false; }
+    if (function_exists('opcache_invalidate')) @opcache_invalidate($f, true);
+    return true;
+}
+
+/**
+ * The Patreon keys of Admin → Settings → Patreon (key file private/patreon.php): client_id, client_secret, redirect_uri, campaign_id,
  * and creator_token / creator_refresh: the creator's access and refresh tokens of the same client, renewed by m3d_creator_get().
  * Runs before the rest of this file is read (bootstrap's first lines), so the key list is written out here and in m3d_patreon_save().
  */
 function m3d_patreon_saved(): array
 {
-    $f = M3D_PRIVATE . '/patreon.php';
-    $d = is_file($f) ? (include $f) : [];
-    return is_array($d) ? array_filter(array_intersect_key($d, array_flip(['client_id', 'client_secret', 'redirect_uri', 'campaign_id', 'creator_token', 'creator_refresh'])), fn($v) => is_string($v) && $v !== '') : [];
+    return array_filter(array_intersect_key(m3d_key_file('patreon'), array_flip(['client_id', 'client_secret', 'redirect_uri', 'campaign_id', 'creator_token', 'creator_refresh'])), fn($v) => is_string($v) && $v !== '');
 }
 
 /** Writes private/patreon.php (only the non-empty keys); an empty list deletes it. */
 function m3d_patreon_save(array $keys): bool
 {
-    $f = M3D_PRIVATE . '/patreon.php';
     $keys = array_filter(array_intersect_key($keys, array_flip(['client_id', 'client_secret', 'redirect_uri', 'campaign_id', 'creator_token', 'creator_refresh'])), fn($v) => is_string($v) && $v !== '');
-    if (!$keys) return !is_file($f) || @unlink($f);
-    $php = "<?php\n// Patreon keys of Admin → Settings → Patreon.\nreturn " . var_export($keys, true) . ";\n";
-    $tmp = $f . '.tmp-' . bin2hex(random_bytes(4));
-    if (@file_put_contents($tmp, $php, LOCK_EX) === false) return false;
-    @chmod($tmp, 0600);
-    if (!@rename($tmp, $f)) { @unlink($tmp); return false; }
-    if (function_exists('opcache_invalidate')) @opcache_invalidate($f, true);
-    return true;
+    return m3d_key_file_save('patreon', $keys, 'Patreon keys of Admin → Settings → Patreon.');
 }
 
 /**
@@ -116,9 +129,7 @@ function m3d_webhooks(bool $fresh = false): array
 {
     static $cache = null;
     if ($cache !== null && !$fresh) return $cache;
-    $f = M3D_PRIVATE . '/webhooks.php';
-    $d = is_file($f) ? (include $f) : [];
-    return $cache = is_array($d) ? array_filter(array_intersect_key($d, array_flip(M3D_WEBHOOK_KEYS)), fn($v) => is_string($v) && $v !== '') : [];
+    return $cache = array_filter(array_intersect_key(m3d_key_file('webhooks'), array_flip(M3D_WEBHOOK_KEYS)), fn($v) => is_string($v) && $v !== '');
 }
 
 /** One section's webhook address, '' when none (still in settings.json while it couldn't be moved). */
@@ -130,17 +141,10 @@ function m3d_webhook(string $key): string
 /** Changes some webhooks ('' or null removes one) in private/webhooks.php; none left = the file is deleted. */
 function m3d_webhooks_save(array $changes): bool
 {
-    $f = M3D_PRIVATE . '/webhooks.php';
     $all = array_filter(array_intersect_key(array_merge(m3d_webhooks(true), $changes), array_flip(M3D_WEBHOOK_KEYS)), fn($v) => is_string($v) && $v !== '');
-    if (!$all) { $ok = !is_file($f) || @unlink($f); m3d_webhooks(true); return $ok; }
-    $php = "<?php\n// Discord webhook addresses of Admin → Settings (Discord Announcements, Notifications). Never in backups.\nreturn " . var_export($all, true) . ";\n";
-    $tmp = $f . '.tmp-' . bin2hex(random_bytes(4));
-    if (@file_put_contents($tmp, $php, LOCK_EX) === false) return false;
-    @chmod($tmp, 0600);
-    if (!@rename($tmp, $f)) { @unlink($tmp); return false; }
-    if (function_exists('opcache_invalidate')) @opcache_invalidate($f, true);
+    $ok = m3d_key_file_save('webhooks', $all, 'Discord webhook addresses of Admin → Settings (Discord Announcements, Notifications). Never in backups.');
     m3d_webhooks(true);
-    return true;
+    return $ok;
 }
 
 /** [section => address] of the webhooks a settings array holds ('' too: the key is there). */
@@ -562,13 +566,16 @@ function m3d_member_pledge_events(string $memberId): ?array
 }
 
 /**
- * When a patron stopped paying and later pledged again, the date of that new pledge (ISO), else null. Patreon's
- * pledge_relationship_start doesn't always move when someone comes back (a patron who paid in 2024 and pledged again in 2026 kept
- * the 2024 date), so the history is read too: a removed pledge ("pledge_delete") or a move to a free membership (a pledge event of
- * 0) ends a run of paying, and the next paid pledge event starts a new one. Monthly charges ("subscription") are ignored, so months
- * without a charge (the creator paused billing, a declined payment) never restart the count.
+ * The start of a patron's current run of paying: Patreon's pledge_relationship_start ($since), corrected by the pledge history.
+ * Patreon's date doesn't always move when someone comes back (a patron who paid in 2024 and pledged again in 2026 kept the 2024
+ * date), so a removed pledge ("pledge_delete") or a move to a free membership (a pledge event of 0) ends a run of paying, and the
+ * next paid pledge event starts a new one: its date wins when it is later than Patreon's. Monthly charges ("subscription") are
+ * ignored, so months without a charge (the creator paused billing, a declined payment) never restart the count.
+ * Grace period (Access → Downloads, downloads.grace, $graceDays): a pledge removed and made again within that many calendar days
+ * (site time: removed 21 Oct, back 22 Oct = 1 day) doesn't end the run; when Patreon's own date moved to that new pledge, the run's
+ * first pledge in the history counts instead.
  */
-function m3d_pledge_restart(array $events): ?string
+function m3d_pledge_since(?string $since, array $events, int $graceDays = 0): ?string
 {
     $ev = [];
     foreach ($events as $e) {
@@ -579,13 +586,32 @@ function m3d_pledge_restart(array $events): ?string
         $ev[] = [$ts, $t, isset($a['amount_cents']) ? (int) $a['amount_cents'] : null, (string) $a['date']];
     }
     usort($ev, fn($x, $y) => $x[0] <=> $y[0]);
-    $ended = false;
-    $restart = null;
-    foreach ($ev as [, $t, $cents, $date]) {
-        if ($t === 'pledge_delete' || ($cents !== null && $cents <= 0)) $ended = true;
-        elseif ($ended) { $restart = $date; $ended = false; }   // pledge_start / pledge_upgrade / pledge_downgrade with a paid amount
+    // calendar days in site time between two moments: removed on 21 Oct, back on 22 Oct = 1 day, whatever the hours
+    $days = fn(int $a, int $b): int => (int) round(((new DateTimeImmutable('@' . $b))->setTimezone(m3d_tz())->setTime(0, 0)->getTimestamp()
+        - (new DateTimeImmutable('@' . $a))->setTimezone(m3d_tz())->setTime(0, 0)->getTimestamp()) / 86400);
+    $run = null;          // [ts, date] of the pledge that started the current run
+    $restarted = false;   // the run started after an end (else it is the history's first pledge)
+    $ended = null;        // ts the run ended (removed / free), null while paying
+    $kept = null;         // ts of the first end inside the run that the grace period skipped
+    $s = is_string($since) ? strtotime($since) : false;
+    foreach ($ev as [$ts, $t, $cents, $date]) {
+        if ($t === 'pledge_delete' || ($cents !== null && $cents <= 0)) { $ended ??= $ts; continue; }
+        // pledge_start / pledge_upgrade / pledge_downgrade with a paid amount
+        if ($ended !== null) {
+            // the history starts with an end (its first pledge is older than the history): paying since Patreon's date, when that is before the end
+            if ($run === null && $s !== false && $s < $ended) $run = [$s, (string) $since];
+            if ($run !== null && $graceDays > 0 && $days($ended, $ts) <= $graceDays) $kept ??= $ended;
+            else { $run = [$ts, $date]; $restarted = true; $kept = null; }
+            $ended = null;
+        } elseif ($run === null) {
+            $run = [$ts, $date];
+        }
     }
-    return $restart;
+    if ($run === null) return $since;
+    if ($restarted && ($s === false || $run[0] > $s)) return $run[1];
+    // Patreon restarted its date at (or after) the gap the grace period skipped: the run's start in the history counts
+    if ($kept !== null && $s !== false && $s >= $kept - 3600 && $run[0] < $s) return $run[1];
+    return $since;
 }
 
 /** A Patreon display name as the site keeps it: no control or text-direction characters (a name can't flip the text around it),
@@ -645,10 +671,9 @@ function m3d_evaluate_identity(array $identity, array $cfg, ?array $events = nul
             if ($tier && $cents > 0) $paidTiers[] = $title;
         }
         $out['tiers'] = $paidTiers;
-        // the start of the current run of paying: Patreon's date, or a later new pledge found in the history (m3d_pledge_restart())
-        $since = $a['pledge_relationship_start'] ?? null;
-        $restart = m3d_pledge_restart($events ?? []);   // the history read with the creator's token (m3d_member_pledge_events())
-        if ($restart !== null && (!is_string($since) || strtotime($restart) > (int) strtotime($since))) $since = $restart;
+        // the start of the current run of paying: Patreon's date, corrected by the history read with the creator's token
+        // (m3d_member_pledge_events(), m3d_pledge_since())
+        $since = m3d_pledge_since(is_string($a['pledge_relationship_start'] ?? null) ? $a['pledge_relationship_start'] : null, $events ?? [], m3d_dl_settings()['grace']);
         $out = array_merge($out, [
             'member' => true,
             'status' => $status,
@@ -784,7 +809,7 @@ function m3d_patron_counts(?array $p): array
     return ['months' => $months, 'total' => $total, 'tier' => $tier];
 }
 
-/** Tiers seen at patron logins (settings.json → tiers: {cents: title}), cheapest first: the editor offers them for the minimum tier. */
+/** The campaign's paid tiers (settings.json → tiers: {cents: title}, read from Patreon by m3d_tiers_sync(), else seen at patron logins), cheapest first: the editor offers them for the minimum tier. */
 function m3d_known_tiers(): array
 {
     $out = [];
@@ -802,6 +827,74 @@ function m3d_learn_tiers(array $tierList): void
     if ($new === $known || count($new) > 30) return;
     ksort($new);
     m3d_save_settings(['tiers' => $new]);
+}
+
+// ── The campaign's tiers read from Patreon (with the creator token of Settings → Patreon), so a new, renamed, repriced or deleted tier
+// shows in the admin and on /unlocks/ without waiting for a patron on it to log in. Once a day after a page (m3d_tiers_tick()), and from
+// Settings → Patreon's "Read Tiers Now" / a creator token just saved. Tier names and prices only: no member data. The last read's
+// result is private/cache/tiers-sync.json {at, ok, err?}. Without a creator token, logins keep teaching the tiers (m3d_learn_tiers()). ──
+const TIERS_SYNC_EVERY = 86400;     // after a good read
+const TIERS_SYNC_RETRY = 6 * 3600;  // after a failed one
+
+/** The campaign's paid tiers on Patreon [cents => title] (published ones, and unpublished ones patrons are still on); null = couldn't ask ($why). */
+function m3d_patreon_tiers(?string &$why = null): ?array
+{
+    $cid = (string) ($GLOBALS['M3D']['campaign_id'] ?? '');
+    if (!m3d_cfg_real($cid) || empty(m3d_patreon_saved()['creator_token'])) { $why = 'No creator token or campaign ID saved.'; return null; }
+    $r = m3d_creator_get(M3D_PATREON . '/api/oauth2/v2/campaigns/' . rawurlencode($cid) . '?' . http_build_query([
+        'include' => 'tiers', 'fields[tier]' => 'title,amount_cents,published,patron_count',
+    ]));
+    if ($r['status'] !== 200 || !is_array($r['json'])) {
+        $why = rtrim('Patreon answered HTTP ' . $r['status'] . ' ' . ($r['status'] === 401 ? '(it refused the creator token)' : (string) ($r['json']['errors'][0]['detail'] ?? $r['error'])));
+        return null;
+    }
+    $out = [];
+    foreach ($r['json']['included'] ?? [] as $t) {
+        if (($t['type'] ?? '') !== 'tier' || !is_array($a = $t['attributes'] ?? null)) continue;
+        $cents = (int) ($a['amount_cents'] ?? 0);
+        $title = trim((string) preg_replace('/[\p{Cc}\s]+/u', ' ', mb_scrub((string) ($a['title'] ?? ''), 'UTF-8')));
+        if ($cents <= 0 || $title === '') continue;   // the free tier
+        if (empty($a['published']) && (int) ($a['patron_count'] ?? 0) <= 0) continue;   // unpublished and nobody on it any more
+        $out[$cents] = mb_substr($title, 0, 60);
+    }
+    ksort($out);
+    return array_slice($out, 0, 30, true);
+}
+
+/** The last read of the tiers: {at, ok, err?} ([] = never). */
+function m3d_tiers_state(): array
+{
+    $d = json_decode((string) @file_get_contents(M3D_PRIVATE . '/cache/tiers-sync.json'), true);
+    return is_array($d) ? $d : [];
+}
+
+/** Reads the tiers from Patreon and, when it worked, makes them the known tiers (settings.json → tiers). Returns the new state. */
+function m3d_tiers_sync(): array
+{
+    $tiers = m3d_patreon_tiers($why);
+    if ($tiers === []) $why = 'Patreon listed no paid tiers, so the tiers learned so far are kept.';
+    $state = ['at' => time(), 'ok' => (bool) $tiers];
+    if ($tiers) {
+        if ($tiers !== m3d_known_tiers() && !m3d_save_settings(['tiers' => $tiers])) { $state['ok'] = false; $why = 'The tiers could not be saved.'; }
+    }
+    if (!$state['ok']) {
+        $state['err'] = mb_substr((string) $why, 0, 300);
+        if (!empty(m3d_tiers_state()['ok'])) m3d_problem('Patreon', 'Tiers not read: ' . $state['err']);   // once, not every retry
+    }
+    $f = M3D_PRIVATE . '/cache/tiers-sync.json';
+    if (!is_dir(dirname($f))) @mkdir(dirname($f), 0755, true);
+    m3d_atomic_write($f, (string) json_encode($state));
+    return $state;
+}
+
+/** Called on every page (public and admin): once a day, the tiers are read again after the page is sent (only with a creator token). */
+function m3d_tiers_tick(): void
+{
+    $due = fn(array $s) => time() - (int) ($s['at'] ?? 0) >= (!empty($s['ok']) ? TIERS_SYNC_EVERY : TIERS_SYNC_RETRY);
+    if (!$due(m3d_tiers_state()) || empty(m3d_patreon_saved()['creator_token'])) return;
+    m3d_after_response(fn() => m3d_with_lock('.tiers-lock', function () use ($due) {
+        if ($due(m3d_tiers_state())) m3d_tiers_sync();   // read again under the lock: another request may have just done it
+    }));
 }
 
 /** "Fan tier (€10)" when that price is a known tier, else "€10 tier". */
@@ -1097,17 +1190,21 @@ function m3d_is_unlocked(string $kind, array $item): bool
     return in_array(m3d_unlock_sig($kind, $item), $have, true);
 }
 
-/** Password tries one item takes in PW_TRIES_SECS (rolling); past that, item_gate() answers "Too many tries" without checking. */
+/** Wrong password tries one item takes from one patron (or from all visitors not logged in) in PW_TRIES_SECS (rolling); past that, item_gate() answers "Too many tries" without checking. */
 const PW_TRIES_MAX = 30;
 const PW_TRIES_SECS = 600;
 
 /**
  * Counts a password try for one item, before it is checked (so tries sent side by side are counted too): false, counting nothing,
- * when the item had PW_TRIES_MAX tries in the last PW_TRIES_SECS. $undo takes this request's try back (the password was right).
- * private/cache/pw-tries.json = {"m:slug" | "o:slug": [unix…]}: items and times only, nothing about the visitor. Can't count = true.
+ * when this visitor had PW_TRIES_MAX tries on the item in the last PW_TRIES_SECS. $undo takes this request's try back (the password was right).
+ * Counted per patron (Pi): a logged-in visitor by their like code, so someone guessing never locks a patron out; visitors not logged in
+ * share one count per item. private/cache/pw-tries.json = {"m:slug" | "o:slug" | "m:slug:<like code>": [unix…]}: times only, gone after
+ * PW_TRIES_SECS (privacy.php section 6). Can't count = true.
  */
 function m3d_pw_try(string $kind, string $slug, bool $undo = false): bool
 {
+    $id = (string) (m3d_patron($GLOBALS['M3D'])['id'] ?? '');
+    $who = $id !== '' ? ':' . m3d_like_code($id) : '';
     $dir = M3D_PRIVATE . '/cache';
     if (!is_dir($dir)) @mkdir($dir, 0755, true);
     $lock = @fopen("$dir/.pw-tries.lock", 'c');
@@ -1122,7 +1219,7 @@ function m3d_pw_try(string $kind, string $slug, bool $undo = false): bool
             $times = array_values(array_filter((array) $times, fn($t) => is_int($t) && $t > $cut));
             if ($times) $new[(string) $k] = $times;
         }
-        $key = ($kind === 'outfits' ? 'o:' : 'm:') . $slug;
+        $key = ($kind === 'outfits' ? 'o:' : 'm:') . $slug . $who;
         $ok = count($new[$key] ?? []) < PW_TRIES_MAX;
         if ($undo) { if (!empty($new[$key])) array_pop($new[$key]); }
         elseif ($ok) $new[$key][] = time();
@@ -1274,6 +1371,7 @@ function m3d_preview_patron(array $real, array $pv): array
 //           the months also pick the unlock rules by months (m3d_patron_counts())
 //   limits: bypass = the unlock limits (Admin → Access → Unlock Limits) don't apply; custom = their own `rules` [{max, what, per}]
 //           replace the general ones (m3d_rules_for())
+//   paused: true = the switch of the person's row in Access is off: tier / extra / limits are kept but not applied (bans still are)
 // Applied every time the session is read (m3d_patron), so changes count at once, without logging in again.
 function m3d_exceptions(bool $fresh = false): array
 {
@@ -1322,6 +1420,7 @@ function m3d_apply_exception(array $p): array
     $x = m3d_exception((string) ($p['id'] ?? ''));
     if (!$x || ($p['reason'] ?? '') === 'owner') return $p;
     if ($b = m3d_ex_bans($x)) $p['ban'] = $b;
+    if (!empty($x['paused'])) return $p;   // switched off in Access: kept, not applied
     $num = fn($v) => is_int($v) || (is_string($v) && ctype_digit($v)) ? (int) $v : null;
     $p['exception'] = ['tier' => m3d_ex_mode($x['tier'] ?? null), 'extra' => m3d_ex_mode($x['extra'] ?? null), 'limits' => m3d_ex_mode($x['limits'] ?? null),
                        'tier_cents' => (int) ($x['tierCents'] ?? 0), 'months' => $num($x['months'] ?? null), 'total_cents' => $num($x['totalCents'] ?? null),
@@ -1432,7 +1531,7 @@ function m3d_is_admin(array $cfg): bool
 {
     $p = $_SESSION['patron'] ?? null;   // the real login, also while previewing as a patron
     if (!is_array($p)) return false;
-    return $p !== null && ($p['id'] ?? '') !== ''
+    return ($p['id'] ?? '') !== ''
         && in_array((string) $p['id'], m3d_owner_ids($cfg), true);
 }
 
@@ -1479,7 +1578,10 @@ function m3d_log_download(array $cfg, array $patron, string $model, string $labe
 //          again too) can't download for 24 hours after the last of them (m3d_dl_capped()); keeps file hosting traffic in check.
 //   updates: true = a newer version of an item already unlocked is unlocked again (Admin → Access → "Updates Use an Unlock"; off
 //          by default): its download asks like a new item and is logged with "update" (7th column), which counts it like a first download.
+//   grace: days (0 = off, at most DL_GRACE_MAX): a pledge removed and made again within them keeps its months as a patron (m3d_pledge_since(),
+//          worked out at login).
 const DL_PERIODS = ['day' => [86400, '24 hours'], 'week' => [604800, '7 days'], 'month' => [2592000, '30 days']];   // rolling: "per 7 days", never "this week"
+const DL_GRACE_MAX = 30;   // days: the longest grace period between a removed pledge and a new one (m3d_pledge_since())
 const DL_WHAT = ['models' => ['model', 'models'], 'outfits' => ['accessory', 'accessories'], 'all' => ['download', 'downloads']];
 
 /** The kinds a limit rule counts ('all' = both). */
@@ -1522,7 +1624,7 @@ function m3d_dl_settings(): array
 {
     $d = m3d_settings()['downloads'] ?? [];
     return ['wait' => max(0, min(60, (int) ($d['wait'] ?? 10))), 'rules' => array_values(array_filter((array) ($d['rules'] ?? []), 'is_array')),
-            'updates' => !empty($d['updates']), 'cap' => max(0, min(999, (int) ($d['cap'] ?? 0)))];
+            'updates' => !empty($d['updates']), 'cap' => max(0, min(999, (int) ($d['cap'] ?? 0))), 'grace' => max(0, min(DL_GRACE_MAX, (int) ($d['grace'] ?? 0)))];
 }
 
 /** Daily download cap (downloads.cap): when this patron is blocked, the time downloads open again (24 hours after the download that
@@ -1736,12 +1838,12 @@ function m3d_known_patrons(bool $all = false): array
         }
         fclose($fh);
     }
-    if (function_exists('m3d_bugs')) foreach (m3d_bugs() as $b) {
+    foreach (m3d_bugs() as $b) {
         if (($b['by'] ?? '') !== '') $add((string) $b['by'], (string) ($b['name'] ?? ''));
         foreach ((array) ($b['log'] ?? []) as $x) if (($x['t'] ?? '') === 'c' && ($x['by'] ?? '') !== '' && empty($x['admin'])) $add((string) $x['by'], (string) ($x['name'] ?? ''));
     }
-    if (function_exists('m3d_comments_flat')) foreach (m3d_comments_flat() as [, , $c]) if (($c['by'] ?? '') !== '' && empty($c['admin'])) $add((string) $c['by'], (string) ($c['name'] ?? ''));
-    if (function_exists('m3d_renders')) foreach (m3d_renders() as $r) if (($r['by'] ?? '') !== '') $add((string) $r['by'], (string) ($r['name'] ?? ''));
+    foreach (m3d_comments_flat() as [, , $c]) if (($c['by'] ?? '') !== '' && empty($c['admin'])) $add((string) $c['by'], (string) ($c['name'] ?? ''));
+    foreach (m3d_renders() as $r) if (($r['by'] ?? '') !== '') $add((string) $r['by'], (string) ($r['name'] ?? ''));
     foreach (m3d_exceptions() as $x) $add((string) $x['id'], (string) ($x['name'] ?? ''));
     return $all ? $seen : $known;
 }
@@ -2108,7 +2210,7 @@ function m3d_version_ids(array $log): array
 function m3d_version_url(string $kind, array $item, string $label): string
 {
     $log = (array) ($item['changelog'] ?? []);
-    $i = function_exists('m3d_changelog_find') ? m3d_changelog_find($log, $label) : null;
+    $i = m3d_changelog_find($log, $label);
     $id = $i !== null ? (m3d_version_ids($log)[$i] ?? '') : '';
     return m3d_item_url($kind, (string) ($item['slug'] ?? '')) . '#' . ($id !== '' ? $id : 'changelog');
 }
@@ -2170,6 +2272,7 @@ function m3d_update_codes(array $updates): array
 function m3d_ignored_updates(?array $patron): array
 {
     if (!$patron || ($patron['id'] ?? '') === '') return [];
+    if (!empty($patron['preview'])) return array_filter((array) ($_SESSION['preview']['ignored'] ?? []), 'is_string');   // a preview's own, see m3d_ignore_update()
     static $all = null;
     $all ??= m3d_read_json('ignored')['ignored'] ?? [];
     $mine = $all[m3d_like_code((string) $patron['id'])] ?? null;
@@ -2187,13 +2290,21 @@ function m3d_updates_shown(?array $patron): array
 
 /**
  * Ignores (or shows again) the current update of one item for a patron. Returns false when that item has no update for them
- * now, null when it couldn't be saved. Drops their entries that no longer match an update.
+ * now, null when it couldn't be saved. Drops their entries that no longer match an update. Previewing as a patron: kept in the
+ * preview ($_SESSION['preview']['ignored'], same shape; the session must still be open), never in the file.
  */
 function m3d_ignore_update(array $patron, string $kind, string $slug, bool $ignore): ?bool
 {
     $updates = m3d_updates_for($patron);
     $version = $updates[$kind][$slug] ?? null;
     if ($version === null) return false;
+    if (!empty($patron['preview'])) {
+        if (session_status() !== PHP_SESSION_ACTIVE || !isset($_SESSION['preview'])) return null;
+        $mine = (array) ($_SESSION['preview']['ignored'] ?? []);
+        if ($ignore) $mine["$kind:$slug"] = $version; else unset($mine["$kind:$slug"]);
+        $_SESSION['preview']['ignored'] = $mine;
+        return true;
+    }
     $code = m3d_like_code((string) $patron['id']);
     return m3d_json_update('ignored', function ($d) use ($updates, $code, $kind, $slug, $version, $ignore) {
         $d = is_array($d) ? $d : [];
@@ -2209,23 +2320,21 @@ function m3d_ignore_update(array $patron, string $kind, string $slug, bool $igno
     });
 }
 
-/** An item got a new address ($new) or was deleted (null): every patron's ignored entry for it moves or goes. */
-function m3d_ignored_move(string $kind, string $old, ?string $new): void
+/** Items deleted in the admin (admin_forget_items()): every patron's ignored entries for them go. */
+function m3d_ignored_forget(string $kind, array $slugs): void
 {
-    if (!is_file(M3D_PRIVATE . '/data/ignored.json')) return;
-    m3d_json_update('ignored', function ($d) use ($kind, $old, $new) {
+    if (!$slugs || !is_file(M3D_PRIVATE . '/data/ignored.json')) return;
+    m3d_json_update('ignored', function ($d) use ($kind, $slugs) {
         if (!is_array($d) || !is_array($d['ignored'] ?? null)) return [$d, null];
         foreach ($d['ignored'] as $code => $mine) {
-            if (!is_array($mine) || !isset($mine["$kind:$old"])) continue;
-            if ($new !== null) $mine["$kind:$new"] = $mine["$kind:$old"];
-            unset($mine["$kind:$old"]);
+            if (!is_array($mine)) continue;
+            foreach ($slugs as $s) unset($mine["$kind:$s"]);
             if ($mine) $d['ignored'][$code] = $mine; else unset($d['ignored'][$code]);
         }
         $d['ignored'] = (object) $d['ignored'];
         return [$d, null];
     });
 }
-
 
 /** Release stage of a changelog version: 'alpha' | 'beta' | 'standard' (absent = standard). */
 const M3D_STAGES = ['standard' => 'Standard', 'alpha' => 'Alpha', 'beta' => 'Beta'];
@@ -2425,43 +2534,6 @@ function m3d_logins_daily(): array
     $n = [];
     foreach ((array) ($d['n'] ?? []) as $day => $v) if (is_array($v)) $n[(string) $day] = [(int) ($v[0] ?? 0), (int) ($v[1] ?? 0)];
     return [$n, is_string($d['since'] ?? null) ? $d['since'] : ''];
-}
-
-/** A model or outfit got a new address: its download counts and likes move with it. */
-function m3d_rename_counts(string $kind, string $old, string $new): void
-{
-    if ($old === $new) return;
-    m3d_json_update('stats', function ($d) use ($kind, $old, $new) {
-        $d = is_array($d) ? $d : m3d_stats_from_log();
-        if (isset($d['downloads'][$kind][$old])) {
-            foreach ($d['downloads'][$kind][$old] as $k => $n) $d['downloads'][$kind][$new][$k] = ($d['downloads'][$kind][$new][$k] ?? 0) + $n;
-            unset($d['downloads'][$kind][$old]);
-        }
-        foreach ($d['downloads']['pics'] ?? [] as $key => $c) {   // its pictures' full size downloads ("kind:slug:code")
-            if (!str_starts_with((string) $key, "$kind:$old:")) continue;
-            $d['downloads']['pics']["$kind:$new:" . substr((string) $key, strlen("$kind:$old:"))] = $c;
-            unset($d['downloads']['pics'][$key]);
-        }
-        return [$d, null];
-    });
-    m3d_json_update('likes', function ($d) use ($kind, $old, $new) {
-        if (!is_array($d) || !isset($d[$kind][$old])) return [$d, null];
-        $d[$kind][$new] = array_values(array_unique(array_merge($d[$kind][$new] ?? [], $d[$kind][$old])));
-        unset($d[$kind][$old]);
-        if (isset($d['fresh']["$kind:$old"])) {   // the bell's new likes
-            $d['fresh']["$kind:$new"] = array_merge($d['fresh']["$kind:$new"] ?? [], (array) $d['fresh']["$kind:$old"]);
-            sort($d['fresh']["$kind:$new"]);
-            unset($d['fresh']["$kind:$old"]);
-        }
-        return [$d, null];
-    });
-    m3d_ignored_move($kind, $old, $new);   // an ignored update stays ignored
-    m3d_blog_rename_item($kind, $old, $new);   // posts showing it
-    m3d_comments_rename($kind, $old, $new);   // its comments
-    m3d_shares_rename($kind, $old, $new);   // its temporary links
-    m3d_showcase_rename($kind, $old, $new);   // its patrons' renders
-    // the log too: what patrons unlocked, their My Models and updates are read from it by the item's address
-    m3d_log_rename_items([m3d_log_item($kind, $old) => m3d_log_item($kind, $new)]);
 }
 
 /**

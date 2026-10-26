@@ -23,23 +23,15 @@ const UPDATE_MAX = 25 * 1024 * 1024;   // largest update zip (the same limit as 
 /** private/github.php: ['channel' => stable|dev, 'token' => key or '']. */
 function gh_saved(): array
 {
-    $f = M3D_PRIVATE . '/github.php';
-    $d = is_file($f) ? (include $f) : [];
-    $d = is_array($d) ? $d : [];
+    $d = m3d_key_file('github');
     $ch = (string) ($d['channel'] ?? '');
     return ['channel' => isset(UPDATE_CHANNELS[$ch]) ? $ch : 'stable', 'token' => is_string($d['token'] ?? null) ? $d['token'] : ''];
 }
 
 function gh_save(string $channel, string $token): bool
 {
-    $f = M3D_PRIVATE . '/github.php';
-    $php = "<?php\n// Admin → Settings → Update: the update channel and the GitHub key of the Development channel. Delete this file to go back to Stable.\nreturn "
-        . var_export(['channel' => $channel, 'token' => $token], true) . ";\n";
-    $tmp = $f . '.tmp-' . bin2hex(random_bytes(4));
-    if (@file_put_contents($tmp, $php, LOCK_EX) === false) return false;
-    @chmod($tmp, 0600);
-    if (!@rename($tmp, $f)) { @unlink($tmp); return false; }
-    if (function_exists('opcache_invalidate')) @opcache_invalidate($f, true);
+    if (!m3d_key_file_save('github', ['channel' => $channel, 'token' => $token],
+        'Admin → Settings → Update: the update channel and the GitHub key of the Development channel. Delete this file to go back to Stable.')) return false;
     foreach (array_keys(UPDATE_CHANNELS) as $c) @unlink(gh_cache_file($c));   // a new channel or key: check again
     return true;
 }

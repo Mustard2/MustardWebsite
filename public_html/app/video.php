@@ -10,7 +10,6 @@ defined('M3D_PRIVATE') || exit;
 // Media → Videos lists them (media_videos() in _admin.php). Cloudflare caches .mp4 / .webm by itself (default cached extensions).
 
 const M3D_VIDEO_MAX = 50 * 1024 * 1024;   // Pi's limit (2026-10-22): small clips; Cloudflare's terms frown on sites serving mostly video
-const VIDEO_EXT = ['mp4', 'webm'];
 const VIDEO_CODECS = [   // video codec (MP4 sample entry / WebM CodecID) => [name, plays in every current browser]
     'avc1' => ['H.264', true], 'avc3' => ['H.264', true],
     'hvc1' => ['H.265 (HEVC)', false], 'hev1' => ['H.265 (HEVC)', false],

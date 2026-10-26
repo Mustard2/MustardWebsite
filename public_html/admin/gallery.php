@@ -15,11 +15,11 @@ admin_start('Gallery', 'gallery');
         <h1>Gallery</h1>
       </div>
       <div class="head-actions">
+        <a class="btn btn-ghost" href="/admin/duplicates.php?in=gallery">Find Duplicates</a>
         <a class="btn btn-ghost" href="/gallery/">View Page</a>
         <button type="button" class="btn btn-primary" data-g-add>+ Add Pictures</button>
       </div>
     </div>
-    <?= admin_gallery_tabs('gallery') ?>
 
     <div data-gadmin></div>
 

@@ -53,7 +53,7 @@ if ($slug !== '') {
       <div class="title-row bl-title">
         <p class="bl-meta"><?= blog_pills($p, false) ?><?php foreach ((array) ($p['topics'] ?? []) as $t) echo blog_topic((string) $t, '/blog/?topic=' . rawurlencode((string) $t)) ?><?= blog_meta($p) ?></p>
         <?= like_button($p['id'], 'posts') ?>
-        <h1><?= e($p['title']) ?></h1>
+        <h1><?= blog_title($p) ?></h1>
       </div>
       <?php if ($sum !== ''): ?><p class="lead bl-lead-text"><?= e($sum) ?></p><?php endif ?>
       <?= admin_edit_button('/admin/blog.php?post=' . rawurlencode($p['id']), 'Edit Post') ?>
@@ -100,8 +100,8 @@ if ($slug !== '') {
 
       <?php if ($older || $newer): ?>
         <nav class="bl-nav" aria-label="Other posts">
-          <?php if ($older): ?><a class="prev" href="<?= e(m3d_post_url($older)) ?>"><span class="muted small">← Older</span><b><?= e($older['title']) ?></b></a><?php else: ?><span></span><?php endif ?>
-          <?php if ($newer): ?><a class="next" href="<?= e(m3d_post_url($newer)) ?>"><span class="muted small">Newer →</span><b><?= e($newer['title']) ?></b></a><?php endif ?>
+          <?php if ($older): ?><a class="prev" href="<?= e(m3d_post_url($older)) ?>"><span class="muted small">← Older</span><b><?= blog_title($older) ?></b></a><?php else: ?><span></span><?php endif ?>
+          <?php if ($newer): ?><a class="next" href="<?= e(m3d_post_url($newer)) ?>"><span class="muted small">Newer →</span><b><?= blog_title($newer) ?></b></a><?php endif ?>
         </nav>
       <?php endif ?>
 

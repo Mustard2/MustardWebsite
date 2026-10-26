@@ -312,13 +312,24 @@ function m3d_discord_still_embed(array $s): array
     $names = array_map(fn($c) => $c['model'] && m3d_visibility($c['model']) === 'public' ? '[' . $c['name'] . '](' . abs_url(m3d_item_url('models', (string) $c['model']['slug'])) . ')' : $c['name'], $chars);
     $caption = trim((string) ($s['caption'] ?? ''));
     $plain = implode(', ', array_column($chars, 'name'));
+    // a patron render whose author linked their profile: "By Name" leaves the title (no links there) for a line linking it, as on the site (still_slide())
+    $by = '';
+    $render = !empty($s['from']) ? m3d_render((string) $s['from']) : null;
+    if ($render && ($link = m3d_render_link($render))) {
+        $tail = 'By ' . $link['name'];
+        if ($caption === $tail || str_ends_with($caption, ' · ' . $tail)) {
+            $caption = $caption === $tail ? '' : substr($caption, 0, -strlen(' · ' . $tail));
+            $by = 'By [' . preg_replace('/([\\\[\]()*_~`|<>])/', '\\\\$1', $link['name']) . '](' . $link['url'] . ') on ' . ($link['net'] === 'x' ? 'X' : 'Patreon');
+            if ($caption === '') $caption = 'New patron render';
+        }
+    }
     $e = [
         'title'  => mb_substr($caption !== '' ? $caption : 'New render' . ($plain !== '' ? ' · ' . $plain : ''), 0, 250),
         // the picture itself (?p=, opened in the viewer); a blurred one also picks its character, so visitors land on that character's pictures
         'url'    => abs_url('/gallery/?' . (m3d_still_public_view($s) !== 'clear' && $chars ? 'c=' . rawurlencode((string) $chars[0]['key']) . '&' : '') . 'p=' . rawurlencode((string) $s['id'])),
         'footer' => ['text' => mb_substr('Gallery · ' . site_name(), 0, 200)],
     ];
-    $lines = [];
+    $lines = $by !== '' ? [$by] : [];
     if ($caption !== '' && $names) $lines[] = implode(', ', $names);
     if (m3d_still_public_view($s) === 'clear') $e['image'] = ['url' => abs_url(img_small((string) $s['src']))];
     else {

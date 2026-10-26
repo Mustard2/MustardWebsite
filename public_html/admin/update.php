@@ -169,7 +169,7 @@ $keyText = $keyState === 'ok' ? 'Key works' . ($expires !== '' ? ' · expires ' 
     </section>
 
     <details style="margin-top:20px" class="sec fold"<?= $fromFile && $error ? ' open' : '' ?>>
-      <summary><h2 class="small-h">Update from File<?= tip('For an update zip you received by hand. It is installed the same way: the current code is saved first.') ?></h2></summary>
+      <summary><h2 class="small-h">Update from File</h2></summary>
       <div class="fold-body">
         <form method="post" enctype="multipart/form-data" class="update-form" data-busy="Installing… don’t close this page">
           <?= form_keys('upload') ?>

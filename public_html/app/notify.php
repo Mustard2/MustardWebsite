@@ -23,16 +23,16 @@
 declare(strict_types=1);
 defined('M3D_PRIVATE') or exit;
 
-/** event => [label, help] */
+/** event => label */
 const NOTIFY_EVENTS = [
-    'bugs'     => ['New Bug Reports', 'Reports you haven’t opened yet.'],
-    'bugc'     => ['Comments on Bug Reports', 'Other people’s comments on reports you had already opened.'],
-    'comments' => ['New Comments', 'Comments under models, accessories and blog posts, and the ones waiting for approval.'],
-    'renders'  => ['Patron Renders', 'Renders patrons shared from model and accessory pages, until you approve or reject them.'],
-    'likes'    => ['New Likes', 'Models, accessories, blog posts and gallery pictures that got likes: how many, never who. Discord: one post an hour at most.'],
-    'links'    => ['Dead Links', 'Download links the last check found dead. Discord: only those found by the automatic check (Assets → Link Check).'],
-    'problems' => ['Site Problems', 'Errors in Settings → Site Problems and failed Discord announcements. Discord: one post an hour at most.'],
-    'updates'  => ['Updates', 'A new version on your update channel. Discord: once per version.'],
+    'bugs'     => 'New Bug Reports',
+    'bugc'     => 'Comments on Bug Reports',
+    'comments' => 'New Comments',
+    'renders'  => 'Patron Renders',
+    'likes'    => 'New Likes',
+    'links'    => 'Dead Links',
+    'problems' => 'Site Problems',
+    'updates'  => 'Updates',
 ];
 const NOTIFY_RECENT = 3 * 86400;      // read items stay in the list, greyed, this long
 const NOTIFY_LIST_MAX = 30;           // rows in the New part
@@ -188,7 +188,7 @@ function m3d_notify_site(bool $bell = true): array
     }
     if ($on('links') && ($dead = lc_dead())) {   // from the last check (Link Check, or its automatic check)
         if (array_diff(array_column($dead, 'h'), (array) ($gone['s:links'] ?? []))) {   // removed: until a link not dead then is
-            $names = array_values(array_unique(array_column($dead, 'name')));
+            $names = array_values(array_unique(array_map(fn($l) => $l['kind'] === 'render' ? $l['name'] . ' (' . lcfirst($l['label']) . ')' : $l['name'], $dead)));   // "Tifa (render by Anna)"
             $out[] = ['links', 'warn', 'link', m3d_plural(count($dead), 'download link is', 'download links are') . ' dead: ' . implode(', ', array_slice($names, 0, 3)) . (count($names) > 3 ? '…' : ''), '/admin/links.php', 'Link Check', 's:links'];
         }
     }
@@ -241,7 +241,8 @@ function m3d_notify_items(): array
     $rows = [];
     $recent = time() - NOTIFY_RECENT;
     $state = m3d_notify_state();
-    $clip = fn(string $t, int $w = 140) => mb_strimwidth(preg_replace('/\s+/u', ' ', $t) ?? '', 0, $w, '…');
+    // a quote on one line, without the text format's marks ("**great**" reads "great")
+    $clip = fn(string $t, int $w = 140) => mb_strimwidth(preg_replace('/\s+/u', ' ', trim(html_entity_decode(strip_tags(md_inline($t)), ENT_QUOTES | ENT_HTML5, 'UTF-8'))) ?? '', 0, $w, '…');
     if (m3d_notify_bell_on('comments')) {
         foreach (m3d_comments_flat() as [$k, $key, $c]) {
             if (!empty($c['admin'])) continue;
@@ -299,7 +300,7 @@ function m3d_notify_items(): array
             if (!empty($r['ok'])) continue;   // only waiting ones: approving or rejecting is what reads them
             $it = m3d_item($r['kind'], $r['slug']);
             $rows[] = ['r' . $r['id'], 'renders', 'renders', true, trim((string) ($r['name'] ?? '')) ?: 'A patron', 'shared a render of', $it ? $it['name'] : $r['slug'],
-                ($c = trim((string) ($r['caption'] ?? ''))) !== '' ? '“' . $clip($c) . '”' : '', (int) ($r['at'] ?? 0), '/admin/showcase.php#r-' . $r['id'], true, 0];
+                ($c = trim((string) ($r['caption'] ?? ''))) !== '' ? '“' . $clip($c) . '”' : '', (int) ($r['at'] ?? 0), m3d_showcase_admin_url($r['id']), true, 0];
         }
     }
     $rows = array_filter($rows, fn($r) => !m3d_notify_gone($r[0], $r[8], $r[3], $state));

@@ -174,7 +174,6 @@ if ($n > 0) {
     $mine = $p ? in_array(m3d_like_code((string) $p['id']), $metoo, true) : false;
     $own = $p && (string) ($b['by'] ?? '') === (string) ($p['id'] ?? '');
     $log = (array) ($b['log'] ?? []);
-    $comments = count(array_filter($log, fn($x) => ($x['t'] ?? '') === 'c'));
     $more = $a['kindKey'] !== 'other' ? count(array_filter(m3d_bugs(), fn($x) => (int) $x['n'] !== $n && ($x['about'] ?? '') === ($b['about'] ?? '') && in_array($x['status'] ?? 'new', BUG_OPEN, true) && empty($x['hidden']) && empty($x['pending']) && m3d_bug_visible($x, $p))) : 0;
     $status = (string) ($b['status'] ?? 'new');
     // following: what is new since this visitor last opened it (the line "New since your last visit"), then mark it seen
@@ -291,7 +290,7 @@ if ($n > 0) {
             <?php endif ?>
             <?php if (!empty($b['links'])): ?>
               <h4>Screenshots and Videos</h4>
-              <div class="ext-links"><?php foreach ((array) $b['links'] as $u): $host = (string) parse_url((string) $u, PHP_URL_HOST); ?><a href="<?= e($u) ?>" target="_blank" rel="noopener nofollow ugc"><?= bug_icon('link') ?><span><?= e(preg_replace('#^https?://(www\.)?#', '', (string) $u)) ?></span><i>↗</i></a><?php endforeach ?></div>
+              <div class="ext-links"><?php foreach ((array) $b['links'] as $u): ?><a href="<?= e($u) ?>" target="_blank" rel="noopener nofollow ugc"><?= bug_icon('link') ?><span><?= e(preg_replace('#^https?://(www\.)?#', '', (string) $u)) ?></span><i>↗</i></a><?php endforeach ?></div>
               <p class="muted small ext-note">These links open on another website.</p>
             <?php endif ?>
           </div>
@@ -395,7 +394,7 @@ if ($n > 0) {
           <?php if ($canFollow): ?>
             <form method="post" action="/bugs/<?= $n ?>/"><input type="hidden" name="csrf" value="<?= e(m3d_csrf()) ?>" /><input type="hidden" name="do" value="follow" /><input type="hidden" name="n" value="<?= $n ?>" />
               <button class="follow-btn<?= $seenAt !== null ? ' on' : '' ?>" aria-pressed="<?= $seenAt !== null ? 'true' : 'false' ?>"><?= bug_icon('bell') ?><?= $seenAt !== null ? 'Following' : 'Follow' ?></button></form>
-            <p><?= $seenAt !== null ? 'You follow reports you write, comment on or press Me Too on.' : 'See a number next to Bugs in the menu when this report changes.' ?></p>
+            <p><?= $seenAt !== null ? 'You follow reports you write, comment on or press Me Too on.' : 'See it in your bell when this report changes.' ?></p>
           <?php endif ?>
         </div>
         <?php if ($creator): $others = $byId !== '' ? count(array_filter(m3d_bugs(), fn($x) => (string) ($x['by'] ?? '') === $byId && (int) $x['n'] !== $n)) : 0; ?>

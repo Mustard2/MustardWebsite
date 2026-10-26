@@ -1,12 +1,16 @@
 <?php
 // Patron renders (the "Made a Render?" box, approved ones in the item's gallery): a paying patron shares a render they made with a model or accessory, from its page (auth/render.php);
-// the creator approves or rejects it in Admin → Gallery → From Patrons (admin/showcase.php). Approved renders show in the item's gallery
+// the creator approves or rejects it in Media → From Patrons (admin/images.php?tab=patrons, admin/_showcase.php). Approved renders show in the item's gallery
 // row after the creator's pictures (showcase_tiles(), and in its viewer); "Also in Gallery" adds one to the Gallery as a still with `from` = the render's id (the still is the only record of that, so
 // removing it in Admin → Gallery turns the switch off). Settings → Features → Patron Renders (settings.json → showcase.on, off by default).
-// data/showcase.json: {renders: [{id (8 hex), kind (models | outfits), slug, src (/media/showcase/<ymd>-<hex>.webp, + -md/-sm/-xs), by (Patreon id),
-//   name (Patreon name when sent), named (show the name), link? {t: x | patreon, h: handle} (their profile, only kept with `named`: RENDER_LINKS),
+// The creator can also add one by hand (+ Add Render in From Patrons, showcase_add() in admin/_showcase.php: a render sent another way, e.g. on Discord):
+// shown at once, `added` set; `by` is the Patreon id typed there, or '' (nobody's: no My Renders, no ban), `name` the name typed (or their known name, with `named` off).
+// data/showcase.json: {renders: [{id (8 hex), kind (models | outfits), slug, src (/media/showcase/<ymd>-<hex>.webp, + -md/-sm/-xs), by (Patreon id, '' for one the creator added for nobody),
+//   name (Patreon name when sent), named (show the name), added? (added by the creator, already approved), link? {t: x | patreon, h: handle} (their profile, only kept with `named`: RENDER_LINKS),
 //   full? (an https address of the picture in full quality on another website, m3d_render_full_clean(): only a link, never loaded by the site),
-//   caption, at (unix), ok? (approved), ok_at?}]}, newest first.
+//   caption, at (unix), ok? (approved), ok_at?, hidden? (approved, then hidden by the creator in From Patrons: kept, shown nowhere but the
+//   author's My Renders, its Gallery copy hidden too: m3d_render_hidden()), pos? (its place among the item's shown renders, set by dragging in
+//   From Patrons: m3d_renders_order())}]}, newest first.
 // Personal data (privacy.php, Personal Data): the picture, the Patreon id and name, the caption, the profile link, the full-quality link. A rejected or removed render is deleted
 // with its files at once. Written only through m3d_renders_update() (m3d_json_update: no per-save copies); restored with the counters.
 declare(strict_types=1);
@@ -100,11 +104,18 @@ function m3d_renders_update(callable $fn): mixed
     return $out;
 }
 
-/** What the bell and the admin menu need, without reading the renders: ['waiting' => [[id, at]…]]. */
+/** What the bells and the admin menu need, without reading the renders: ['waiting' => [[id, at]…], 'ok' => {author's like code: [[id, ok_at]…]}]
+ *  (waiting = the creator's bell; ok = the approved ones, for their author's bell, app/bell.php). */
 function m3d_showcase_summary(): array
 {
-    return m3d_data_summary('showcase', fn() => ['waiting' => array_map(fn($r) => [$r['id'], (int) ($r['at'] ?? 0)], array_values(array_filter(m3d_renders(), fn($r) => empty($r['ok']))))])
-        + ['waiting' => []];
+    $make = function () {
+        $ok = [];
+        foreach (m3d_renders() as $r) if (!empty($r['ok']) && empty($r['hidden']) && ($by = (string) ($r['by'] ?? '')) !== '') $ok[m3d_like_code($by)][] = [$r['id'], (int) ($r['ok_at'] ?? $r['at'] ?? 0)];
+        return ['waiting' => array_map(fn($r) => [$r['id'], (int) ($r['at'] ?? 0)], array_values(array_filter(m3d_renders(), fn($r) => empty($r['ok'])))), 'ok' => $ok];
+    };
+    $s = m3d_data_summary('showcase', $make);
+    if (!array_key_exists('ok', $s)) $s = m3d_data_summary('showcase', $make, true);   // saved before `ok` existed
+    return $s + ['waiting' => [], 'ok' => []];
 }
 
 /** Privacy page / Personal Data: renders are stored (the feature may be off by now). */
@@ -117,6 +128,18 @@ function m3d_render(string $id): ?array
 {
     foreach (m3d_renders() as $r) if ($r['id'] === $id) return $r;
     return null;
+}
+
+/** Where the creator reviews patron renders: Media → From Patrons (admin/images.php), at one render's card when given. */
+function m3d_showcase_admin_url(string $id = ''): string
+{
+    return '/admin/images.php?tab=patrons' . ($id !== '' ? '#r-' . $id : '');
+}
+
+/** The creator hid this render (Media → From Patrons → Hide): off its item's page and, through m3d_still_view(), the Gallery. */
+function m3d_render_hidden(string $id): bool
+{
+    return !empty(m3d_render($id)['hidden']);
 }
 
 /** The credit under a render: "Emily R.", or "A patron" when they chose not to show their name. */
@@ -225,6 +248,14 @@ function m3d_showcase_save_pic(mixed $f): array
     return [SHOWCASE_DIR . '/' . $name, ''];
 }
 
+/** A caption as typed: one line, no control or direction characters (like names), at most SHOWCASE_CAPTION characters. */
+function m3d_render_caption(mixed $v): string
+{
+    $cap = mb_scrub(is_string($v) ? $v : '', 'UTF-8');
+    $cap = (string) preg_replace('/[\x{200E}\x{200F}\x{202A}-\x{202E}\x{2066}-\x{2069}\x{061C}]/u', '', $cap);
+    return rtrim(mb_substr(trim((string) preg_replace('/[\p{Cc}\s]+/u', ' ', $cap)), 0, SHOWCASE_CAPTION));
+}
+
 /** The "Full Quality Link" as typed: '' = none, null = not an https web address (no user:password@, a host with a dot). */
 function m3d_render_full_clean(string $u): ?string
 {
@@ -239,7 +270,7 @@ function m3d_render_full_clean(string $u): ?string
 /** The image host suggested under the Share window's Full Quality Link: the one of Settings → Bug Reports (https only), else none. */
 function m3d_showcase_host(): string
 {
-    $h = function_exists('m3d_bug_settings') ? trim((string) (m3d_bug_settings()['host'] ?? '')) : '';
+    $h = trim((string) (m3d_bug_settings()['host'] ?? ''));
     return preg_match('#^https://[^\s"<>]+$#D', $h) ? $h : '';
 }
 
@@ -286,7 +317,7 @@ function m3d_renders_delete(callable $match): ?int
     return count($gone);
 }
 
-/** Admin → Gallery → From Patrons' "Also in Gallery": adds the approved render to the Gallery as a still (on top, dated today), or takes it out. */
+/** Media → From Patrons' Add to / Take Out of the Gallery (a card's ⋯ menu; Also in Gallery of + Add Render): adds the approved render to the Gallery as a still (on top, dated today), or takes it out. */
 function m3d_render_gallery(array $r, bool $on): bool
 {
     $g = m3d_gallery(true);
@@ -296,9 +327,7 @@ function m3d_render_gallery(array $r, bool $on): bool
     if ($on) {
         $taken = array_column($g['stills'], 'id');
         do { $id = bin2hex(random_bytes(4)); } while (in_array($id, $taken, true));
-        $by = 'By ' . (m3d_render_by($r) === 'A patron' ? 'a patron' : m3d_render_by($r));
-        $cap = trim((string) ($r['caption'] ?? ''));
-        array_unshift($g['stills'], ['id' => $id, 'src' => $r['src'], 'caption' => mb_substr($cap !== '' ? "$cap · $by" : $by, 0, 200), 'date' => m3d_today(),
+        array_unshift($g['stills'], ['id' => $id, 'src' => $r['src'], 'caption' => m3d_render_still_caption($r), 'date' => m3d_today(),
             'chars' => $r['kind'] === 'models' ? [$r['slug']] : [], 'from' => $r['id']] + (!empty($r['full']) ? ['link' => ['url' => (string) $r['full'], 'access' => 'public']] : []));
     } else {
         $g['stills'] = array_values(array_filter($g['stills'], fn($s) => (string) ($s['from'] ?? '') !== $r['id']));
@@ -309,15 +338,38 @@ function m3d_render_gallery(array $r, bool $on): bool
     return true;
 }
 
-/** An item's address changed (the editor): its renders follow. */
-function m3d_showcase_rename(string $kind, string $old, string $new): void
+/** The caption of a render's Gallery copy: "Its caption · By Name". */
+function m3d_render_still_caption(array $r): string
 {
-    if (!array_filter(m3d_renders(), fn($r) => $r['kind'] === $kind && $r['slug'] === $old)) return;
-    m3d_renders_update(function (array $rs) use ($kind, $old, $new) {
-        foreach ($rs as &$r) if (($r['kind'] ?? '') === $kind && ($r['slug'] ?? '') === $old) $r['slug'] = $new;
-        unset($r);
-        return [$rs, null];
-    });
+    $by = 'By ' . (m3d_render_by($r) === 'A patron' ? 'a patron' : m3d_render_by($r));
+    $cap = trim((string) ($r['caption'] ?? ''));
+    return mb_substr($cap !== '' ? "$cap · $by" : $by, 0, 200);
+}
+
+/**
+ * A render edited in From Patrons' window ($old → $new): its Gallery copy follows what it took from the render, unless that was changed in
+ * Admin → Gallery since: the caption, the model among its characters, the full size link. Nothing to do = true.
+ */
+function m3d_render_gallery_sync(array $old, array $new): bool
+{
+    $g = m3d_gallery(true);
+    $changed = false;
+    foreach ($g['stills'] as &$s) {
+        if ((string) ($s['from'] ?? '') !== $new['id']) continue;
+        $was = $s;
+        if ((string) ($s['caption'] ?? '') === m3d_render_still_caption($old)) $s['caption'] = m3d_render_still_caption($new);
+        $chars = array_values(array_filter((array) ($s['chars'] ?? []), fn($c) => !($old['kind'] === 'models' && $c === $old['slug'])));
+        if ($new['kind'] === 'models' && !in_array($new['slug'], $chars, true)) array_unshift($chars, $new['slug']);
+        $s['chars'] = $chars;
+        $oldFull = (string) ($old['full'] ?? ''); $newFull = (string) ($new['full'] ?? '');
+        $url = (string) ($s['link']['url'] ?? '');
+        if ($url === $oldFull && $newFull !== $oldFull) {
+            if ($newFull === '') unset($s['link']); else $s['link'] = ['url' => $newFull] + (array) ($s['link'] ?? []) + ['access' => 'public'];
+        }
+        $changed = $changed || $s !== $was;
+    }
+    unset($s);
+    return !$changed || m3d_save_gallery($g);
 }
 
 /** Items deleted in the admin: their renders go with them (and their stills in the Gallery). */
@@ -331,21 +383,50 @@ function m3d_showcase_forget(string $kind, array $slugs): void
 /** Short Discord post in the creator's channel (Settings → Notifications → Patron Renders): who, which item, no picture. */
 function m3d_render_notify(array $r, array $item): void
 {
-    m3d_notify_post('renders', [['title' => mb_substr('New render of ' . $item['name'], 0, 250), 'url' => abs_url('/admin/showcase.php#r-' . $r['id']),
+    m3d_notify_post('renders', [['title' => mb_substr('New render of ' . $item['name'], 0, 250), 'url' => abs_url(m3d_showcase_admin_url($r['id'])),
         'description' => m3d_notify_plain((string) ($r['caption'] ?? ''), 200), 'color' => hexdec('e8b931'),
         'footer' => ['text' => 'From ' . mb_substr((string) ($r['name'] ?? ''), 0, 60) . (empty($r['named']) ? ' (name hidden on the site)' : '') . ' · waiting for you']]]);
 }
 
 // ── Page pieces ───────────────────────────────────────────────────────────────
 /**
- * This item's renders this visitor may see: the approved ones, newest approved first, then the waiting ones of `$mine` (the visitor's id,
+ * Approved renders of one item in their order on its page: the ones not placed by the creator first (approved since the last drag, or all of
+ * them before any), newest approved first, then the placed ones by `pos`.
+ */
+function m3d_renders_sorted(array $rs): array
+{
+    $rs = array_values($rs);
+    usort($rs, fn($a, $b) => [isset($a['pos']) ? 1 : 0, (int) ($a['pos'] ?? 0), (int) ($b['ok_at'] ?? $b['at'] ?? 0)]
+        <=> [isset($b['pos']) ? 1 : 0, (int) ($b['pos'] ?? 0), (int) ($a['ok_at'] ?? $a['at'] ?? 0)]);
+    return $rs;
+}
+
+/**
+ * From Patrons: puts one item's shown renders in the order of `$ids` (pos 1, 2…); shown renders of the item missing from `$ids`
+ * (approved meanwhile) lose their place and go first; hidden ones keep theirs. `$ids` = [] takes every place away (back to newest first). False = not saved.
+ */
+function m3d_renders_order(string $kind, string $slug, array $ids): bool
+{
+    $at = array_flip(array_values(array_filter($ids, 'is_string')));
+    return m3d_renders_update(function (array $rs) use ($kind, $slug, $at) {
+        foreach ($rs as &$x) {
+            if (($x['kind'] ?? '') !== $kind || ($x['slug'] ?? '') !== $slug || empty($x['ok'])) continue;
+            if ($at && !empty($x['hidden'])) continue;   // a hidden one keeps its place for when it is shown again
+            if (isset($at[$x['id'] ?? ''])) $x['pos'] = $at[$x['id']] + 1; else unset($x['pos']);
+        }
+        unset($x);
+        return [$rs, true];
+    }) !== null;
+}
+
+/**
+ * This item's renders this visitor may see: the approved ones not hidden, in their order (m3d_renders_sorted()), then the waiting ones of `$mine` (the visitor's id,
  * '' = none), or every waiting one with `$allWaiting` (the creator), newest first.
  */
 function m3d_item_renders(string $kind, array $item, string $mine, bool $allWaiting = false): array
 {
     $here = array_filter(m3d_renders(), fn($r) => $r['kind'] === $kind && $r['slug'] === $item['slug']);
-    $ok = array_values(array_filter($here, fn($r) => !empty($r['ok'])));
-    usort($ok, fn($a, $b) => (int) ($b['ok_at'] ?? $b['at'] ?? 0) <=> (int) ($a['ok_at'] ?? $a['at'] ?? 0));
+    $ok = m3d_renders_sorted(array_filter($here, fn($r) => !empty($r['ok']) && empty($r['hidden'])));
     $wait = array_values(array_filter($here, fn($r) => empty($r['ok']) && ($allWaiting || ($mine !== '' && (string) ($r['by'] ?? '') === $mine))));
     usort($wait, fn($a, $b) => (int) ($b['at'] ?? 0) <=> (int) ($a['at'] ?? 0));
     return array_merge($ok, $wait);
@@ -371,6 +452,9 @@ function showcase_tall(string $src): string
     return $d && $d[1] > $d[0] * 1.2 ? ' is-tall' : '';
 }
 
+const SHOWCASE_EYE_OFF = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 3l18 18M10.6 5.1A9.8 9.8 0 0 1 12 5c5 0 9 4.5 10 7a13 13 0 0 1-3 4.2M6.6 6.6A13 13 0 0 0 2 12c1 2.5 5 7 10 7a9.6 9.6 0 0 0 4.4-1.1M9.9 9.9a3 3 0 0 0 4.2 4.2"/></svg>';
+const SHOWCASE_EYE = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12c1-2.5 5-7 10-7s9 4.5 10 7c-1 2.5-5 7-10 7S3 14.5 2 12z"/><circle cx="12" cy="12" r="3"/></svg>';
+const SHOWCASE_PAGE_ICON = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 3h7l5 5v11a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z"/><path d="M14 3v5h5M9 13h6M9 17h4"/></svg>';
 const SHOWCASE_CLOCK = '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>';
 
 /** The ✕ of a patron's own render (gallery tile, My Account): do=remove; `$back` = 'account' comes back to My Account. */
@@ -386,7 +470,7 @@ function showcase_remove_form(array $r, string $back = ''): string
 /**
  * The renders as tiles of the item's gallery row (gallery_strip()'s $extra): the approved ones after the creator's pictures, with the patron's
  * name pill; the waiting ones at the start of the row, greyed with a dashed edge and "Waiting", only for their author and the creator. The
- * author's tiles have a ✕ (Withdraw / Remove), the creator's waiting ones a → to Gallery → From Patrons. Each opens the viewer at slide
+ * author's tiles have a ✕ (Withdraw / Remove), the creator's waiting ones a → to Media → From Patrons. Each opens the viewer at slide
  * $first + its place (approved first, then waiting). Returns [approved tiles, slides, waiting tiles]; nothing while renders are off here.
  */
 function showcase_tiles(string $kind, array $item, int $first): array
@@ -406,7 +490,7 @@ function showcase_tiles(string $kind, array $item, int $first): array
         $credit = $link ? '<a class="sc-by is-link" href="' . e($link['url']) . '" target="_blank" rel="nofollow ugc noopener" title="' . e($link['label']) . '">' . $ini . '<span>' . e($by) . '</span>' . render_link_icon($link['net']) . '</a>'
             : '<span class="sc-by">' . $ini . '<span>' . e($by) . '</span></span>';
         $tool = $me !== '' && (string) ($r['by'] ?? '') === $me ? showcase_remove_form($r)
-            : ($wait && $creator ? '<a class="sc-act sc-del" href="/admin/showcase.php#r-' . e($r['id']) . '" title="Review in Gallery → From Patrons" aria-label="Review this render">→</a>' : '');
+            : ($wait && $creator ? '<a class="sc-act sc-del" href="' . e(m3d_showcase_admin_url($r['id'])) . '" title="Review in Media → From Patrons" aria-label="Review this render">→</a>' : '');
         $tile = '<div class="thumb sc-tile' . ($wait ? ' is-waiting' : '') . showcase_tall($r['src']) . '" id="r-' . e($r['id']) . '"><button type="button" class="sc-open" data-slide="' . ($first + count($slides)) . '" aria-label="' . e('Open the render by ' . $by) . '">' . $img . '</button>'
             . ($wait ? '<span class="sc-wait">' . SHOWCASE_CLOCK . '<span>Waiting</span></span>' : '') . $tool . $credit . '</div>';
         if ($wait) $waiting .= $tile; else $tiles .= $tile;
@@ -460,21 +544,24 @@ function showcase_account(): string
     if ($me === '' || !m3d_showcase_on()) return '';
     $mine = array_values(array_filter(m3d_renders(), fn($r) => (string) ($r['by'] ?? '') === $me));
     if (!$mine) return '';
-    usort($mine, fn($a, $b) => [!empty($a['ok']), -(int) ($a['ok_at'] ?? $a['at'] ?? 0)] <=> [!empty($b['ok']), -(int) ($b['ok_at'] ?? $b['at'] ?? 0)]);
+    usort($mine, fn($a, $b) => [!empty($a['ok']), !empty($a['hidden']), -(int) ($a['ok_at'] ?? $a['at'] ?? 0)] <=> [!empty($b['ok']), !empty($b['hidden']), -(int) ($b['ok_at'] ?? $b['at'] ?? 0)]);
     $tiles = '';
     foreach ($mine as $r) {
         $wait = empty($r['ok']);
+        $hid = !$wait && !empty($r['hidden']);   // hidden by the creator: greyed with "Hidden", no link (it isn't on the item's page)
         $item = m3d_item($r['kind'], $r['slug']);
         $name = $item ? ($r['kind'] === 'models' ? m3d_model_name($item) : (string) $item['name']) : '';
-        $url = $item && m3d_showcase_here($r['kind'], $item) ? m3d_item_url($r['kind'], $r['slug']) . '#r-' . $r['id'] : '';
+        $url = $item && !$hid && m3d_showcase_here($r['kind'], $item) ? m3d_item_url($r['kind'], $r['slug']) . '#r-' . $r['id'] : '';
         $img = '<img src="' . e(img_small($r['src'])) . '" alt="' . e('Your render' . ($name !== '' ? ' of ' . $name : '')) . '" loading="lazy"' . img_ratio_style(img_small($r['src'])) . '>';
-        $tiles .= '<div class="sc-acc-t' . ($wait ? ' is-waiting' : '') . showcase_tall($r['src']) . '">' . ($url !== '' ? '<a href="' . e($url) . '">' . $img . '</a>' : $img)
-            . ($wait ? '<span class="sc-wait">' . SHOWCASE_CLOCK . '<span>Waiting</span></span>' : '') . showcase_remove_form($r, 'account')
+        $tiles .= '<div class="sc-acc-t' . ($wait ? ' is-waiting' : '') . ($hid ? ' is-hidden' : '') . showcase_tall($r['src']) . '">' . ($url !== '' ? '<a href="' . e($url) . '">' . $img . '</a>' : $img)
+            . ($wait ? '<span class="sc-wait">' . SHOWCASE_CLOCK . '<span>Waiting</span></span>' : '')
+            . ($hid ? '<span class="sc-wait sc-hid" title="The creator hid it from the site">' . SHOWCASE_EYE_OFF . '<span>Hidden</span></span>' : '') . showcase_remove_form($r, 'account')
             . ($name !== '' ? '<span class="sc-by"><span>' . e($name) . '</span></span>' : '') . '</div>';
     }
     $nWait = count(array_filter($mine, fn($r) => empty($r['ok'])));
-    $nOk = count($mine) - $nWait;
-    $sum = implode(' · ', array_filter([$nWait ? $nWait . ' waiting for approval' : '', $nOk ? $nOk . ' shown' : '']));
+    $nHid = count(array_filter($mine, fn($r) => !empty($r['ok']) && !empty($r['hidden'])));
+    $nOk = count($mine) - $nWait - $nHid;
+    $sum = implode(' · ', array_filter([$nWait ? $nWait . ' waiting for approval' : '', $nOk ? $nOk . ' shown' : '', $nHid ? $nHid . ' hidden' : '']));
     return '<section class="acc-sec" id="my-renders"><h2 class="acc-liked acc-renders">' . SHOWCASE_ICON . 'My Renders <span class="muted small">' . e($sum) . '</span></h2>'
         . strip_html('like-strip sc-acc-strip', 'sc-acc-row', $tiles, 'renders', 'div', ' data-strip-auto') . '</section>';
 }
@@ -490,7 +577,7 @@ function showcase_dialog(string $kind, array $item, array $p): string
 {
     $name = trim((string) ($p['name'] ?? ''));
     $max = m3d_showcase_max();
-    return '<dialog class="sc-dlg" data-sc-dlg data-max="' . $max . '" aria-labelledby="sc-dlg-t"><form method="post" action="/auth/render.php" enctype="multipart/form-data" data-sc-form>'
+    return '<dialog class="sc-dlg" data-sc-dlg data-max="' . $max . '" aria-labelledby="sc-dlg-t"><form method="post" action="/auth/render.php" enctype="multipart/form-data">'
         . '<input type="hidden" name="csrf" value="' . e(m3d_csrf()) . '"><input type="hidden" name="do" value="share">'
         . '<input type="hidden" name="kind" value="' . e($kind) . '"><input type="hidden" name="slug" value="' . e($item['slug']) . '">'
         . '<h2 id="sc-dlg-t">Share Your Render of ' . e($item['name']) . '</h2>'

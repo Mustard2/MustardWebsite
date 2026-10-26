@@ -183,7 +183,7 @@ header('Content-Type: text/html; charset=utf-8');
         <h3 class="setup-sub">Who Runs the Site <span class="muted small">shown on the privacy page, required in the EU</span></h3>
         <div class="id-grid">
           <label class="field"><span class="lbl">Full Name</span><input class="input" name="legal_name" value="<?= e($legal['name']) ?>" maxlength="120" /></label>
-          <label class="field"><span class="lbl">Privacy Email<?= tip('Shown on the privacy page.') ?></span><input class="input" type="email" name="legal_email" value="<?= e($legal['email']) ?>" maxlength="120" /></label>
+          <label class="field"><span class="lbl">Privacy Email</span><input class="input" type="email" name="legal_email" value="<?= e($legal['email']) ?>" maxlength="120" /></label>
           <label class="field id-wide"><span class="lbl">Postal Address</span><textarea class="input" name="legal_address" rows="3" maxlength="300"><?= e($legal['address']) ?></textarea></label>
           <label class="field id-wide"><span class="lbl">Support Email<?= tip('Optional. Shown on the Contacts page for legal matters about the website’s content (copyright, privacy).') ?></span><input class="input" type="email" name="support_email" value="<?= e(m3d_support_email()) ?>" maxlength="120" /></label>
         </div>

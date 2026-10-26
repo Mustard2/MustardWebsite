@@ -4,7 +4,9 @@
 // The admin presses "Check all links" (or "Check again" on one row) and admin.js asks links.php to check the links one by one; with the
 // automatic check on (settings.json → linkcheck.auto / every), lc_auto_tick() also checks a few due links after a page now and then.
 // MEGA (file / folder links) and transfer.it (MEGA's transfer service) are asked to MEGA's own API, without logging in and without
-// downloading: one small request per link. Any other address must answer (HEAD, else the first bytes of a GET).
+// downloading: one small request per link. Any other address must answer (the first bytes of a GET; a picture must be a whole picture).
+// The full-quality links patrons add to their renders (app/showcase.php → `full`) only while Link Check's "Patron Renders" switch is on
+// (settings.json → linkcheck.renders, off by default), on any website: patrons pick their own image host.
 // The results are kept in data/linkcheck.json: {links: {md5(url): {st: ok|dead|unknown, why, at}}}; a changed address starts unchecked.
 declare(strict_types=1);
 
@@ -16,11 +18,22 @@ const LC_AUTO_BATCH = 5;      // automatic check: links per run (after a page, o
 const LC_AUTO_GAP = 600;      // seconds between two runs while links are due
 const LC_EVERY_MAX = 90;      // days
 
-/** The links Link check looks at: MEGA and transfer.it links, and links on the websites the admin added (lc_sites()). */
+/** The links Link check looks at: MEGA and transfer.it links, links on the websites the admin added (lc_sites()), and patrons' render links
+ *  while lc_renders_on() (their Gallery copies too, whatever the website). */
 function lc_links(): array
 {
     static $out = null;
-    return $out ??= array_values(array_filter(lc_all_links(), fn($l) => lc_group($l['host']) !== 'other' || lc_site_added($l['url'])));
+    if ($out !== null) return $out;
+    $renders = lc_renders_on();
+    // a render's Gallery copy counts as a render link while it has the patron's link; with another link it is a Gallery link like any other
+    return $out = array_values(array_filter(lc_all_links(), fn($l) => ($renders && ($l['kind'] === 'render' || (isset($l['render']) && $l['url'] === $l['full'])))
+        || ($l['kind'] !== 'render' && (lc_group($l['host']) !== 'other' || lc_site_added($l['url'])))));
+}
+
+/** Link Check → Patron Renders: the full-quality links patrons add to their renders are checked too. */
+function lc_renders_on(): bool
+{
+    return !empty(m3d_settings()['linkcheck']['renders']);
 }
 
 /**
@@ -48,6 +61,16 @@ function lc_replace_everywhere(string $old, string $new): ?int
         if ($hit && !m3d_save_items($kind, $items)) return null;
         $n += $hit;
     }
+    if (m3d_render_full_clean($new)) {   // patrons' full-quality links: https addresses only, never "s4:"
+        $hit = m3d_renders_update(function (array $rs) use ($old, $new) {
+            $hit = 0;
+            foreach ($rs as &$x) if (trim((string) ($x['full'] ?? '')) === $old) { $x['full'] = $new; $hit++; }
+            unset($x);
+            return [$rs, $hit];
+        });
+        if ($hit === null) return null;
+        $n += $hit;
+    }
     $g = m3d_gallery(true);
     $hit = 0;
     foreach ($g['stills'] as &$st) if (is_array($st['link'] ?? null) && trim((string) ($st['link']['url'] ?? '')) === $old) { $st['link']['url'] = $new; $hit++; }
@@ -56,8 +79,9 @@ function lc_replace_everywhere(string $old, string $new): ?int
     return $n + $hit;
 }
 
-/** Every full (https) address among models' and accessories' download links, add-ons and pictures' full size links, and Gallery full size links:
- *  [{h, url, kind, slug, name, sub, label, access, edit, host}] in the admin lists' order. */
+/** Every full (https) address among models' and accessories' download links, add-ons and pictures' full size links, Gallery full size links and
+ *  patrons' render links: [{h, url, kind (models | outfits | gallery | render), slug, name, sub, label, access, edit, host, render? (the render's id), full? (its link now)}]
+ *  in the admin lists' order. */
 function lc_all_links(): array
 {
     static $out = null;
@@ -90,10 +114,21 @@ function lc_all_links(): array
             }
         }
     }
+    $full = [];   // render id => its full-quality link
+    foreach (m3d_renders() as $r) {
+        $u = trim((string) ($r['full'] ?? ''));
+        if ($u === '') continue;
+        $full[$r['id']] = $u;
+        $item = m3d_item($r['kind'], $r['slug']);
+        $add(['kind' => 'render', 'slug' => (string) $r['id'], 'render' => (string) $r['id'], 'full' => $u, 'name' => $item ? (string) $item['name'] : (string) $r['slug'],
+              'sub' => 'Patron Render' . (empty($r['ok']) ? ' · Waiting' : (!empty($r['hidden']) ? ' · Hidden' : '')), 'edit' => m3d_showcase_admin_url($r['id']), 'url' => $u,
+              'label' => 'Render by ' . (trim((string) ($r['name'] ?? '')) ?: 'Patron'), 'access' => 'Full Quality Link']);
+    }
     foreach (m3d_gallery()['stills'] as $s) {
         if (!is_array($s['link'] ?? null) || ($s['link']['url'] ?? '') === '') continue;
         $name = m3d_still_name($s, 'Untitled picture');
-        $add(['kind' => 'gallery', 'slug' => (string) $s['id'], 'name' => $name, 'sub' => 'Gallery' . (($s['date'] ?? '') !== '' ? ' · ' . $s['date'] : ''),
+        $from = (string) ($s['from'] ?? '');
+        $add(($from !== '' ? ['render' => $from, 'full' => $full[$from] ?? ''] : []) + ['kind' => 'gallery', 'slug' => (string) $s['id'], 'name' => $name, 'sub' => 'Gallery' . (($s['date'] ?? '') !== '' ? ' · ' . $s['date'] : ''),
               'edit' => '/admin/gallery.php?still=' . rawurlencode((string) $s['id']), 'url' => (string) $s['link']['url'], 'label' => 'Full size', 'access' => ($s['link']['access'] ?? '') === 'public' ? 'Public' : 'Patrons']);
     }
     return $out;
@@ -185,7 +220,7 @@ function lc_other_sites(): array
 {
     $n = [];
     foreach (lc_all_links() as $l) {
-        if (lc_group($l['host']) !== 'other' || lc_site_added($l['url']) || ($d = lc_domain($l['url'])) === '') continue;
+        if ($l['kind'] === 'render' || (isset($l['render']) && $l['url'] === $l['full'] && lc_renders_on()) || lc_group($l['host']) !== 'other' || lc_site_added($l['url']) || ($d = lc_domain($l['url'])) === '') continue;   // render links (a Gallery copy's too): their own switch
         $n[$d] = ($n[$d] ?? 0) + 1;
     }
     arsort($n);
@@ -304,32 +339,99 @@ function lc_check_s4(string $url): array
     return ['st' => $dead ? 'dead' : 'unknown', 'why' => m3d_s4_error_text($r['err'])];
 }
 
-/** Any other address: it must answer. 2xx / 3xx = works, 404 / 410 or an address that doesn't exist = dead, anything else = couldn't check. */
+/** Any other address: it must answer. 2xx / 3xx = works, 404 / 410 or an address that doesn't exist = dead, anything else = couldn't check.
+ *  Always a GET of the first bytes (a HEAD answer can say 200 for a file that is gone), so the file itself is looked at too: a file address
+ *  answering an empty file, and a picture address (LC_PIC_EXT: patrons' render links) answering a web page, something that isn't a
+ *  picture or a picture cut short, is dead (lc_file_problem()). */
 function lc_check_web(string $url): array
 {
-    $try = function (bool $head) use ($url): array {
-        $got = 0;
+    $get = function (string $range) use ($url): array {
+        $hdr = [];
+        $body = '';
         // m3d_fetch(): http / https only, never this server or a private network, each of the 5 redirects checked again
         $r = m3d_fetch($url, [
-            CURLOPT_NOBODY         => $head,
             CURLOPT_CONNECTTIMEOUT => 10,
             CURLOPT_TIMEOUT        => 20,
-            CURLOPT_HTTPHEADER     => ['User-Agent: Mozilla/5.0 (compatible; site link check)', 'Range: bytes=0-1023'],
-            // a GET stops after the first bytes: a big file is never downloaded
-            CURLOPT_WRITEFUNCTION  => function ($ch, string $data) use (&$got) { $got += strlen($data); return $got > 65536 ? 0 : strlen($data); },
+            CURLOPT_HTTPHEADER     => ['User-Agent: Mozilla/5.0 (compatible; site link check)', ...($range !== '' ? ["Range: bytes=$range"] : [])],
+            CURLOPT_HEADERFUNCTION => function ($ch, string $line) use (&$hdr, &$body) {
+                if (preg_match('~^HTTP/~i', $line)) { $hdr = []; $body = ''; }   // a new answer (after a redirect): only the last one counts
+                elseif (str_contains($line, ':')) { [$k, $v] = explode(':', $line, 2); $hdr[strtolower(trim($k))] = trim($v); }
+                return strlen($line);
+            },
+            // stops after the first bytes when the website ignores the Range: a big file is never downloaded
+            CURLOPT_WRITEFUNCTION  => function ($ch, string $data) use (&$body) { $body .= $data; return strlen($body) > 65536 ? 0 : strlen($data); },
         ], 5);
-        return [$r['code'], $r['errno'], $r['err']];
+        $cut = $r['errno'] === CURLE_WRITE_ERROR;   // stopped on purpose
+        return ['code' => $r['code'], 'errno' => $cut ? 0 : $r['errno'], 'err' => $r['err'], 'hdr' => $hdr, 'body' => $body, 'cut' => $cut, 'url' => $r['url']];
     };
-    [$code, $errno, $err] = $try(true);
+    $a = $get('0-1023');
+    if ($a['errno'] === 0 && $a['code'] === 416) $a = $get('');   // the website refuses the Range
+    [$code, $errno, $err] = [$a['code'], $a['errno'], $a['err']];
     if ($errno === M3D_FETCH_REFUSED) return ['st' => 'unknown', 'why' => $err];
-    if ($errno === 0 && ($code === 405 || $code === 403 || $code === 400 || $code === 501 || $code === 404)) [$code, $errno, $err] = $try(false);   // some sites refuse HEAD
-    if ($errno === CURLE_WRITE_ERROR) $errno = 0;   // stopped on purpose after the first bytes
-    if ($errno === M3D_FETCH_REFUSED) return ['st' => 'unknown', 'why' => $err];   // the GET was sent somewhere else
     if ($errno === CURLE_COULDNT_RESOLVE_HOST) return ['st' => 'dead', 'why' => 'This website’s address doesn’t exist'];
     if ($errno !== 0) return ['st' => 'unknown', 'why' => 'No answer (' . ($err ?: "error $errno") . ')'];
-    if ($code >= 200 && $code < 400) return ['st' => 'ok', 'why' => "Page answers (HTTP $code)"];
     if ($code === 404 || $code === 410) return ['st' => 'dead', 'why' => "Page not found (HTTP $code)"];
-    return ['st' => 'unknown', 'why' => "The website answered HTTP $code"];
+    if ($code < 200 || $code >= 400) return ['st' => 'unknown', 'why' => "The website answered HTTP $code"];
+    $tail = fn(int $n) => ($t = $get("-$n"))['errno'] === 0 && $t['code'] === 206 ? $t['body'] : null;
+    [$problem, $what] = lc_file_problem($url, $a, $tail);
+    if ($problem !== '') return ['st' => 'dead', 'why' => $problem];
+    return ['st' => 'ok', 'why' => $what !== '' ? $what : "Page answers (HTTP $code)"];
+}
+
+const LC_PIC_EXT = ['png', 'jpg', 'jpeg', 'webp', 'gif'];
+const LC_PAGE_EXT = ['', 'html', 'htm', 'php', 'asp', 'aspx', 'jsp', 'cgi'];
+
+/** The type of picture these first bytes start (png | jpeg | gif | webp | other: AVIF, HEIC, BMP, TIFF), '' = not a picture. */
+function lc_pic_type(string $b): string
+{
+    return match (true) {
+        str_starts_with($b, "\x89PNG\r\n\x1a\n")                       => 'png',
+        str_starts_with($b, "\xff\xd8\xff")                            => 'jpeg',
+        str_starts_with($b, 'GIF87a') || str_starts_with($b, 'GIF89a') => 'gif',
+        str_starts_with($b, 'RIFF') && substr($b, 8, 4) === 'WEBP'     => 'webp',
+        substr($b, 4, 4) === 'ftyp' && preg_match('/^(avi[fs]|hei[cxs]|mif1|msf1)$/D', substr($b, 8, 4)) === 1,
+        str_starts_with($b, 'BM'), str_starts_with($b, "II*\0"), str_starts_with($b, "MM\0*") => 'other',
+        default => '',
+    };
+}
+
+/**
+ * What is wrong with the file a working address answered: ['' or why it is dead, a description of the file when it looks right].
+ * $a: the answer of lc_check_web()'s first GET (Range 0-1023); $tail(n): the file's last n bytes (null when the website won't say).
+ * Only addresses ending in a file name are looked at (a page or a download host's page is never judged by its content):
+ * an empty file is dead; a picture address must answer a picture, whole (PNG: its IEND end, JPEG: its end marker, WebP: its size).
+ */
+function lc_file_problem(string $url, array $a, callable $tail): array
+{
+    $hdr = $a['hdr'];
+    $body = (string) $a['body'];
+    if (preg_match('~/(removed|deleted)\.(png|jpe?g|gif)$~iD', (string) parse_url((string) $a['url'], PHP_URL_PATH))
+        && strcasecmp((string) parse_url((string) $a['url'], PHP_URL_PATH), (string) parse_url($url, PHP_URL_PATH)) !== 0) {
+        return ['The picture was removed (the image host shows its “removed” picture)', ''];   // e.g. imgur
+    }
+    $ext = strtolower(pathinfo((string) parse_url($url, PHP_URL_PATH), PATHINFO_EXTENSION));
+    if (in_array($ext, LC_PAGE_EXT, true)) return ['', ''];
+    // the whole size: "bytes 0-1023/52311" of a Range answer, else the length of a whole answer, else what came when nothing was cut
+    $total = preg_match('~/(\d+)\s*$~D', $hdr['content-range'] ?? '', $m) ? (int) $m[1]
+        : ($a['code'] === 206 ? -1 : (isset($hdr['content-length']) ? (int) $hdr['content-length'] : ($a['cut'] ? -1 : strlen($body))));
+    if ($total === 0 || ($body === '' && !$a['cut'])) return ['The file is empty (0 bytes)', ''];
+    if (!in_array($ext, LC_PIC_EXT, true)) return ['', ''];
+    $type = lc_pic_type($body);
+    if ($type === '') {
+        $page = str_starts_with(strtolower($hdr['content-type'] ?? ''), 'text/html') || preg_match('~^\s*<(!doctype|html|head|body)~i', $body);
+        return [$page ? 'The website answers a web page instead of the picture' : 'This isn’t a picture any more (the file is damaged)', ''];
+    }
+    $ok = 'Picture answers (' . ($type === 'other' ? 'picture' : strtoupper($type)) . ($total > 0 ? ' · ' . m3d_size($total) : '') . ')';
+    if ($total <= 0) return ['', $ok];
+    if ($type === 'webp') {
+        $want = unpack('V', substr($body, 4, 4))[1] + 8;
+        return [$total < $want ? 'The picture is cut short: the file is ' . m3d_size($total) . ' of ' . m3d_size($want) : '', $ok];
+    }
+    if ($type !== 'png' && $type !== 'jpeg') return ['', $ok];
+    $end = $total <= strlen($body) ? substr($body, -4096) : $tail(4096);
+    if ($end === null) return ['', $ok];
+    $whole = $type === 'png' ? str_contains($end, 'IEND') : str_contains($end, "\xff\xd9");
+    return [$whole ? '' : 'The picture is cut short (its end is missing: a damaged upload)', $ok];
 }
 
 /** The saved results, keyed by md5(url). */

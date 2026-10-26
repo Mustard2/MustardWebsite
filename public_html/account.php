@@ -117,12 +117,14 @@ layout_start('My Account', 'Your Patreon membership on ' . site_name() . '.', 'p
     if (!empty($p['preview_updates'])) foreach ($updates as $kind => $list) foreach ($list as $slug => $v) {
         if (!isset($claimed["$kind:$slug"]) && ($c = $target($kind, $slug, '')) !== null) $claimed["$kind:$slug"] = $c + ['slug' => $slug, 'first' => null, 'lastT' => 0, 'got' => m3d_preview_got($c['item']), 'sim' => true];
     }
-    $ignored = m3d_ignored_updates($p);   // "Ignore This Update": still listed here, greyed, after the others; no catalog tag or dot
-    foreach ($claimed as $key => &$c) {
+    $ignored = m3d_ignored_updates($p);   // ignored updates: still listed here, greyed, after the others; no catalog tag or bell row
+    foreach ($claimed as &$c) {
         $c['update'] = $updates[$c['kind']][$c['slug']] ?? null;
         $c['ign'] = $c['update'] !== null && ($ignored[$c['kind'] . ':' . $c['slug']] ?? null) === $c['update'];
-        // the update tag opens the versions released since their download under the row (site.js, [data-upd-toggle])
-        $c['updTag'] = $c['update'] === null ? '' : '<button type="button" class="upd-tag" data-upd-toggle aria-expanded="false" title="What\'s new since your download"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19V5M5.5 11.5 12 5l6.5 6.5"/></svg><span class="upd-word">Update · </span>' . e($c['update']) . '<svg class="upd-chev" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></button>';
+        // the update tag opens the versions released since their download under the row (site.js, [data-upd-toggle]); its ✕
+        // ignores the update like the bell's ✕ ([data-upd-x], hidden while ignored; previewing: only in the preview)
+        $c['updTag'] = $c['update'] === null ? '' : '<span class="upd-pill has-x"><button type="button" class="upd-tag" data-upd-toggle aria-expanded="false" title="What\'s new since your download"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19V5M5.5 11.5 12 5l6.5 6.5"/></svg><span class="upd-word">Update · </span>' . e($c['update']) . '<svg class="upd-chev" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></button>'
+            . '<button type="button" class="upd-x" data-upd-x title="Ignore this update" aria-label="Ignore the update to ' . e($c['update']) . '">✕</button></span>';
     }
     unset($c);
     $rank = fn($c) => $c['update'] === null ? 2 : ($c['ign'] ? 1 : 0);   // updates first, the ignored ones after them
@@ -241,7 +243,7 @@ layout_start('My Account', 'Your Patreon membership on ' . site_name() . '.', 'p
                     <tr class="upd-row" hidden><td colspan="4">
                       <div class="upd-head">
                         <p class="upd-since"><?= count($newer) === 1 ? 'What’s new' : count($newer) . ' new versions' ?> since <?= $c['got'] !== '' ? e($c['got']) : 'your download' ?></p>
-                        <?php if (empty($p['preview'])): ?><button type="button" class="btn btn-ghost btn-sm" data-upd-ignore title="<?= $c['ign'] ? 'Show the update tag and the dot again' : 'No update tag on its card and no dot on your account button until the next version' ?>"><?= $c['ign'] ? 'Stop Ignoring' : 'Ignore This Update' ?></button><?php endif ?>
+                        <button type="button" class="btn btn-ghost btn-sm" data-upd-ignore title="Show the update tag again"<?= $c['ign'] ? '' : ' hidden' ?>>Stop Ignoring</button>
                       </div>
                       <ol class="log"><?= changelog_items($newer, m3d_pics_hidden($c['kind'], $c['item'])) ?></ol>
                     </td></tr>

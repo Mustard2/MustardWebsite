@@ -1,6 +1,7 @@
 <?php
 // "Ignore this update": hides the "↑ Update" tag of one model / accessory (catalog cards, the account button's dot) for its
-// current version only (m3d_ignore_update() in bootstrap.php, data/ignored.json). Patrons who can download, not in a preview.
+// current version only (m3d_ignore_update() in bootstrap.php, data/ignored.json). Patrons who can download; previewing as a patron,
+// only in the preview.
 //   POST {kind: models|outfits, slug, ignore: bool} + X-CSRF-Token (the csrf in the header's data-me)  → {ignored}
 require dirname(__DIR__) . '/app/_init.php';
 header('Content-Type: application/json');
@@ -22,9 +23,8 @@ $kind = ($in['kind'] ?? '') === 'outfits' ? 'outfits' : 'models';
 $slug = is_string($in['slug'] ?? null) ? $in['slug'] : '';
 $p = m3d_patron($M3D);
 if (!$p) ign_out(['error' => 'Log in again to change this.'], 401);
-if (!empty($p['preview'])) ign_out(['error' => 'Ignoring updates is off while previewing as a patron.'], 403);
 if (!m3d_check_csrf($_SERVER['HTTP_X_CSRF_TOKEN'] ?? null)) ign_out(['error' => 'Session expired, reload the page.'], 403);
-m3d_session_release();   // nothing more to write in the session: other pages of this visitor don't wait for the file below
+if (empty($p['preview'])) m3d_session_release();   // nothing more to write in the session (previewing: the ignore goes there)
 $ignore = !empty($in['ignore']);
 $r = m3d_ignore_update($p, $kind, $slug, $ignore);
 if ($r === false) ign_out(['error' => 'There is no update to ignore here any more. Reload the page.'], 409);

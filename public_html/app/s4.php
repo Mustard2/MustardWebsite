@@ -4,7 +4,7 @@
 // auth/get-still.php send the visitor to a pre-signed copy instead (m3d_download_url()): valid for a set time (`minutes`), so an
 // address copied from the browser or shared stops working by itself. The bucket stays private; the keys never leave the server.
 // A link can also be written short, `s4:<file>` (e.g. s4:model.zip or s4:folder/file.zip): the file in the bucket of the
-// "Bucket Address" setting (m3d_s4_resolve()). Settings: private/s4.php {key, secret, minutes, region, bucket, test}: a PHP file like
+// "Bucket Address" setting (m3d_s4_resolve()). Settings: private/s4.php {on, key, secret, minutes, region, bucket, domain}: a PHP file like
 // patreon.php (never readable over the web, never in backups). Signing is AWS Signature Version 4 with the query string (the only version S4 accepts: github.com/meganz/s4-specs).
 // Download Domain (`domain`, optional): the site's own address for downloads (files.example.com), a proxy (e.g. a CDN worker) that passes the
 // signed address on to the bucket's host unchanged. The address is still signed for the bucket's host (the Worker's request to S4 carries
@@ -20,14 +20,12 @@ const S4_REGIONS = ['us-east-1', 'host'];   // what the signature names as regio
 // the older s3.eu-central-1.s4.mega.io endpoints too
 const S4_HOST_RE = '/^(?:([a-z0-9][a-z0-9.-]{1,61}[a-z0-9])\.)?(s3\.([a-z0-9-]+)\.(?:megas4\.com|s4\.mega\.io))$/';
 
-/** The saved S4 settings: {on, key, secret, minutes, region, bucket (https://<host>/<bucket>/ or ''), domain (host or ''), test}; key / secret empty when not set; on = the main switch (absent = on). */
+/** The saved S4 settings: {on, key, secret, minutes, region, bucket (https://<host>/<bucket>/ or ''), domain (host or '')}; key / secret empty when not set; on = the main switch (absent = on). */
 function m3d_s4(bool $fresh = false): array
 {
     static $cache = null;   // read once per request (Link Check asks for every link); m3d_s4_save() refreshes it
     if ($cache !== null && !$fresh) return $cache;
-    $f = M3D_PRIVATE . '/s4.php';
-    $d = is_file($f) ? (include $f) : [];
-    $d = is_array($d) ? $d : [];
+    $d = m3d_key_file('s4');
     $str = fn(string $k) => is_string($d[$k] ?? null) ? $d[$k] : '';
     return $cache = [
         'on' => (bool) ($d['on'] ?? true),
@@ -36,7 +34,6 @@ function m3d_s4(bool $fresh = false): array
         'region' => in_array($d['region'] ?? '', S4_REGIONS, true) ? $d['region'] : S4_REGIONS[0],
         'bucket' => $str('bucket'),
         'domain' => $str('domain'),
-        'test' => $str('test'),
     ];
 }
 
@@ -64,18 +61,12 @@ function m3d_s4_lifetime(int $minutes): string
 /** Writes private/s4.php; without keys the file is deleted. */
 function m3d_s4_save(array $s): bool
 {
-    $f = M3D_PRIVATE . '/s4.php';
-    if (($s['key'] ?? '') === '' || ($s['secret'] ?? '') === '') { $ok = !is_file($f) || @unlink($f); m3d_s4(true); return $ok; }
-    $keep = ['on' => (bool) ($s['on'] ?? true), 'key' => (string) $s['key'], 'secret' => (string) $s['secret'], 'minutes' => (int) ($s['minutes'] ?? S4_MINUTES),
-             'region' => (string) ($s['region'] ?? S4_REGIONS[0]), 'bucket' => (string) ($s['bucket'] ?? ''), 'domain' => (string) ($s['domain'] ?? ''), 'test' => (string) ($s['test'] ?? '')];
-    $php = "<?php\n// MEGA S4 keys saved in Admin → Settings → Features → MEGA S4. Delete this file to stop signing S4 links.\nreturn " . var_export($keep, true) . ";\n";
-    $tmp = $f . '.tmp-' . bin2hex(random_bytes(4));
-    if (@file_put_contents($tmp, $php, LOCK_EX) === false) return false;
-    @chmod($tmp, 0600);
-    if (!@rename($tmp, $f)) { @unlink($tmp); return false; }
-    if (function_exists('opcache_invalidate')) @opcache_invalidate($f, true);
+    $keep = ($s['key'] ?? '') === '' || ($s['secret'] ?? '') === '' ? [] : [
+        'on' => (bool) ($s['on'] ?? true), 'key' => (string) $s['key'], 'secret' => (string) $s['secret'], 'minutes' => (int) ($s['minutes'] ?? S4_MINUTES),
+        'region' => (string) ($s['region'] ?? S4_REGIONS[0]), 'bucket' => (string) ($s['bucket'] ?? ''), 'domain' => (string) ($s['domain'] ?? '')];
+    $ok = m3d_key_file_save('s4', $keep, 'MEGA S4 keys saved in Admin → Settings → Features → MEGA S4. Delete this file to stop signing S4 links.');
     m3d_s4(true);
-    return true;
+    return $ok;
 }
 
 /** A short link "s4:<file>"? */

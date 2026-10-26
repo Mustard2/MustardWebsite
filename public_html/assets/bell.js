@@ -1,7 +1,9 @@
 // The bell of the admin header and of the creator's public header (notify_bell() in app/notify.php): the panel is filled from
 // /admin/notify.php each time it opens (?list=1 → {html, count}); Mark All as Read, Clear All, a row's ✓ / ✕ and Publish post there and
 // show the list again.
-// Loaded only where the bell is printed (admins), by both headers, so it stays out of site.js and admin.js.
+// Also the bell of logged-in visitors (ubell_html() in app/bell.php, list from /auth/bell.php: Clear All and a row's ✕; a row's link marks
+// it read as it opens, do=read: the creator's rows do that through their ?go= address).
+// Loaded only where a bell is printed, so it stays out of site.js and admin.js.
 // Also Quick Add, the "+" printed next to the bell (quick_add() in app/view.php): the second part below.
 (() => {
   const root = document.querySelector('[data-bell]');
@@ -42,7 +44,11 @@
       fail('Couldn’t load the notifications. Check the connection and open the bell again.');
     }
   };
-  const post = async (data) => {
+  // the visitors' bell: an update's ✕ (or Clear All) ignores it, so the "↑" tags of its cards on this page go too (site.js, event m3d-upd)
+  const updGone = (rows) => rows.forEach((r) => {
+    if (r.dataset.upd) document.dispatchEvent(new CustomEvent('m3d-upd', { detail: { code: r.dataset.upd, on: false } }));
+  });
+  const post = async (data, after) => {
     if (busy) return;
     busy = true;
     try {
@@ -52,6 +58,7 @@
         const r = await fetch(src, { method: 'POST', body, credentials: 'same-origin', headers: { Accept: 'application/json' } });
         d = await r.json();
       } catch (e) { /* no answer: said below */ }
+      if (d.ok && after) after();
       await load();
       if (!d.ok) {   // said in the panel, under its title
         const m = document.createElement('p');
@@ -91,18 +98,38 @@
     if (e.key === 'Escape' && !panel.hidden) { close(); btn.focus(); }
   });
   window.addEventListener('resize', () => { if (!panel.hidden) place(); });
+  // the visitors' bell: an unread row's link marks it read. A plain click waits for the answer (at most 1.5 s), so the page it opens
+  // already counts it; a new tab (ctrl / middle click) doesn't wait (keepalive: the request outlives this page too)
+  const readRow = (e) => {
+    const row = root.classList.contains('nt-user') && e.target.closest('.nt-hit') && e.target.closest('.nt-row.is-unread');
+    if (!row || (e.type === 'auxclick' && e.button !== 1)) return;
+    row.classList.remove('is-unread');
+    setCount(Math.max(0, (parseInt(count.textContent, 10) || 0) - 1));
+    const body = new URLSearchParams({ csrf: root.dataset.csrf, do: 'read', code: row.dataset.ntCode, at: row.dataset.ntAt || '0' });
+    const plain = e.type === 'click' && e.button === 0 && !(e.ctrlKey || e.metaKey || e.shiftKey || e.altKey);
+    const sent = fetch(src, { method: 'POST', body, credentials: 'same-origin', keepalive: true }).catch(() => {});
+    if (!plain) return;
+    e.preventDefault();
+    const href = e.target.closest('.nt-hit').href;
+    let gone = false;
+    const go = () => { if (!gone) { gone = true; location.assign(href); } };
+    setTimeout(go, 1500);
+    sent.then(go);
+  };
+  panel.addEventListener('auxclick', readRow);
   panel.addEventListener('click', (e) => {
+    readRow(e);
     const t = e.target.closest('[data-nt-tab]');
     if (t) { tab = t.dataset.ntTab; showTab(); return; }
     if (e.target.closest('[data-nt-readall]')) { post({ do: 'read-all' }); return; }
-    if (e.target.closest('[data-nt-clear]')) { post({ do: 'clear' }); return; }
+    if (e.target.closest('[data-nt-clear]')) { const rows = [...panel.querySelectorAll('[data-upd]')]; post({ do: 'clear' }, () => updGone(rows)); return; }
     // a row's ✓ / ✕: shown at once, then the list comes back from the server
     const row = e.target.closest('[data-nt-code]');
     const rb = row && e.target.closest('[data-nt-read], [data-nt-remove]');
     if (rb && !busy) {
       const gone = rb.matches('[data-nt-remove]');
       if (gone) row.hidden = true; else { row.classList.remove('is-unread'); rb.hidden = true; }   // hidden, not removed: still inside the bell for the outside-click check
-      post({ do: gone ? 'remove' : 'read', code: row.dataset.ntCode, at: row.dataset.ntAt || '0' });
+      post({ do: gone ? 'remove' : 'read', code: row.dataset.ntCode, at: row.dataset.ntAt || '0' }, gone ? () => updGone([row]) : null);
       return;
     }
     const p = e.target.closest('[data-nt-publish]');

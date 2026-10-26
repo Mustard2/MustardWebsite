@@ -2,6 +2,7 @@
 // Image library: every image in <site>/media/, where it is used, upload, copy address, delete.
 // Also converts leftover non-WebP images in media/ (banner shown only when there are some).
 require __DIR__ . '/_admin.php';
+require __DIR__ . '/_showcase.php';   // the From Patrons tab
 // the JSON requests (crop, delete…, ?info=) get the JSON "logged out" error, not a redirect to the login a fetch can't follow
 admin_require($M3D, isset($_GET['info']) || (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST' && str_starts_with((string) ($_SERVER['CONTENT_TYPE'] ?? ''), 'application/json')));
 
@@ -49,36 +50,6 @@ function external_images(): array
     $inText(outfits_intro(), 'misc');   // Admin → Accessories → Page text
     $inText(m3d_welcome()['text'], 'misc');   // Settings → Features → Welcome Page
     return $found;
-}
-
-function replace_everywhere(array $models, array $map): array
-{
-    $inText = [];   // pictures written in texts (descriptions, notes…): ![caption](old) → ![caption](new), old = /media/… or another website's address
-    foreach ($map as $old => $new) $inText['](' . $old . ')'] = '](' . $new . ')';
-    array_walk_recursive($models, function (&$v) use ($map, $inText) {
-        if (!is_string($v)) return;
-        if (isset($map[$v])) $v = $map[$v];
-        elseif (str_contains($v, '](')) $v = strtr($v, $inText);
-    });
-    return $models;
-}
-
-/** Points every use of the pictures in $map (old address => new) to the new one: models, accessories, FAQ / docs texts, blog posts, gallery. */
-function media_replace(array $map): bool
-{
-    $ok = true;
-    foreach (['models', 'outfits'] as $kind) {
-        $items = m3d_items($kind, true);   // fresh: optimize / outside images ran for a while, edits saved meanwhile stay
-        $new = replace_everywhere($items, $map);
-        if ($new !== $items) $ok = m3d_save_items($kind, $new) && $ok;
-    }
-    $ok = m3d_texts_replace($map) && $ok;
-    $intro = (string) (m3d_settings(true)['outfits_intro'] ?? '');   // Admin → Accessories → Page text
-    if (($new = replace_everywhere([$intro], $map)[0]) !== $intro) $ok = m3d_save_settings(['outfits_intro' => $new]) && $ok;
-    $welcome = (array) (m3d_settings(true)['welcome'] ?? []);   // Settings → Features → Welcome Page
-    $wt = (string) ($welcome['text'] ?? '');
-    if (($new = replace_everywhere([$wt], $map)[0]) !== $wt) $ok = m3d_save_settings(['welcome' => ['text' => $new] + $welcome]) && $ok;
-    return m3d_gallery_replace($map) && $ok;
 }
 
 // ── Actions ──────────────────────────────────────────────────────────────────
@@ -167,6 +138,11 @@ if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST' && str_starts_with((string) ($
     }
     admin_json(['ok' => false, 'error' => 'Unknown action.'], 400);
 }
+if (m3d_get_text('tab') === 'patrons') {   // the From Patrons tab's forms
+    if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST' && !$_POST && (int) ($_SERVER['CONTENT_LENGTH'] ?? 0) > 0)   // + Add Render: a file over PHP's post_max_size arrives as an empty POST
+        admin_flash('<b>Not added:</b> ' . e(strtr(SHOWCASE_ERRORS['big'], ['{mb}' => showcase_mb(m3d_showcase_max())])), 'err');
+    showcase_post();
+}
 if (admin_form_post('external')) {
     @set_time_limit(600);
     $map = [];
@@ -230,33 +206,6 @@ if (admin_form_post('sizes')) {
         catch (Throwable $ex) { $results[] = [false, $url, $ex->getMessage()]; }
     }
     $ran = 'sizes';
-}
-
-/** The admin page where a use (a usage_map() key: 'models:<slug>', 'docs:<slug>', 'faq:<n>'…) is changed. */
-function use_href(string $key): string
-{
-    [$k, $sl] = explode(':', $key, 2) + [1 => ''];
-    return match ($k) {
-        'faq' => '/admin/faq.php', 'other' => '/admin/outfits.php', 'gallery' => '/admin/gallery.php?still=' . rawurlencode($sl),
-        'docs' => '/admin/docs.php?page=' . rawurlencode($sl), 'blog' => '/admin/blog.php?post=' . rawurlencode($sl), default => '/admin/edit.php?kind=' . rawurlencode($k) . '&slug=' . rawurlencode($sl),
-    };
-}
-
-/** Which part of a model / accessory uses each picture: url => [ 'models:<slug>' => ['Main image', …] ] (the image window's "Used by"). */
-function use_fields(array $models, array $outfits): array
-{
-    $labels = ['thumb' => 'Catalog Image', 'cover' => 'Main Image', 'gallery' => 'Gallery', 'images' => 'Pictures', 'notes' => 'Notes',
-               'changelog' => 'Changelog', 'description' => 'Description', 'extra' => 'Sidebar'];
-    $out = [];
-    foreach (['models' => $models, 'outfits' => $outfits] as $kind => $items) foreach ($items as $it) {
-        foreach ($it as $field => $v) {
-            $v = [$v];
-            array_walk_recursive($v, function ($x) use (&$out, $kind, $it, $field, $labels) {
-                foreach (media_in($x) as $u) $out[$u][$kind . ':' . $it['slug']][$labels[$field] ?? 'Text'] = true;
-            });
-        }
-    }
-    return $out;
 }
 
 /** What the picture window (admin.js) shows about a picture stored on this site: size, file, folder, date, the sizes made, and what
@@ -397,8 +346,9 @@ $todoExt = array_diff_key($todoExtAll, array_flip($extFailed));
 // unused images go by their folder (media/<model>, outfit-<slug>, docs, faq, misc…). 'group' = the model/outfit/docs page/
 // FAQ question/folder it is listed under (the filter menu of the tab); 'groups' = every one of the tab's it is used by.
 // 'videos' = the videos of texts (app/video.php, with their covers), '3d' = the 3D preview files (.glb, `model3d`): listed only there, so
-// each of these tabs shows only when there is one.
-const IMG_TABS = ['models' => 'Models', 'outfits' => 'Accessories', 'gallery' => 'Gallery', 'blog' => 'Blog', 'docs' => 'Docs', 'faq' => 'FAQ', 'other' => 'Other', 'videos' => 'Videos', '3d' => '3D Files'];
+// each of these tabs shows only when there is one. 'patrons' = From Patrons, the renders patrons shared (admin/_showcase.php): while patron renders
+// are on or stored, its number = the renders, plus the waiting ones; Unused Only and the upload don't apply to it.
+const IMG_TABS = ['models' => 'Models', 'outfits' => 'Accessories', 'gallery' => 'Gallery', 'blog' => 'Blog', 'docs' => 'Docs', 'faq' => 'FAQ', 'other' => 'Other', 'videos' => 'Videos', '3d' => '3D Files', 'patrons' => 'From Patrons'];
 $modelSlugs = array_flip(array_column($models, 'slug'));
 $folderSection = fn(string $folder): string => match (true) {
     $folder === 'docs' => 'docs',
@@ -436,8 +386,11 @@ $tabUnused['3d'] = count(array_filter($glbs, fn($g) => empty($use[$g['url']])));
 $vids = media_videos();
 $tabCount['videos'] = count($vids);
 $tabUnused['videos'] = count(array_filter($vids, fn($v) => empty($use[$v['url']])));
+$renders = m3d_showcase_on() || m3d_showcase_stored() ? m3d_renders() : null;   // null: no From Patrons tab
+$tabCount['patrons'] = count($renders ?? []);
+$tabWait = count(array_filter($renders ?? [], fn($x) => empty($x['ok'])));
 $onlyUnused = m3d_get_text('unused') !== '';
-$tab = isset(IMG_TABS[m3d_get_text('tab')]) ? m3d_get_text('tab') : 'models';
+$tab = isset(IMG_TABS[m3d_get_text('tab')]) && (m3d_get_text('tab') !== 'patrons' || $renders !== null) ? m3d_get_text('tab') : 'models';
 if ($onlyUnused && !isset(IMG_TABS[m3d_get_text('tab')]) && !$tabUnused['models']) $tab = array_key_first(array_filter($tabUnused)) ?? 'models';   // ?unused=1 alone (Settings → Tools): the first tab with unused ones
 $items = array_values(array_filter($items, fn($i) => $i['section'] === $tab));
 if ($tab === '3d' || $tab === 'videos') {   // listed under the item / post using it, else its folder; a 3D file's facts read from its header (m3d_glb_info())
@@ -454,7 +407,7 @@ if ($tab === '3d' || $tab === 'videos') {   // listed under the item / post usin
 $folders = array_values(array_unique(array_merge(...array_column($items, 'groups') ?: [[]])));
 $uploadDefault = ['gallery' => 'gallery', 'blog' => 'blog', 'docs' => 'docs', 'faq' => 'faq', 'other' => 'misc'][$tab] ?? null;
 $whatName = ['models' => 'model', 'outfits' => 'accessory', 'blog' => 'post', 'docs' => 'page', 'faq' => 'question', '3d' => 'item', 'videos' => 'post or page'][$tab] ?? 'folder';
-$fileTab = $tab === '3d' || $tab === 'videos';   // files, not pictures: no upload button here, no picture window
+$fileTab = $tab === '3d' || $tab === 'videos' || $tab === 'patrons';   // files (or From Patrons), not the library's pictures: no upload button here, no picture window
 // what the folder pickers show for each folder (admin.js turns the two menus into a search picker: one row per character, its generations as buttons)
 [$pick, $names] = admin_folder_picks($models);
 $order = array_flip(array_keys($pick));   // the filter menu in the site's own order (models, accessories, docs pages, FAQ questions), folders last
@@ -477,13 +430,17 @@ admin_start('Media', 'images');
       <div>
         <h1>Media</h1>
       </div>
-      <div class="head-actions" <?= $fileTab ? 'hidden' : '' ?>>
-        <select class="input" data-upload-folder data-folder-pick="upload" aria-label="Upload into">
+      <div class="head-actions">
+        <a class="btn btn-ghost" href="/admin/duplicates.php">Find Duplicates</a>
+        <?php if ($tab === 'patrons'): ?><button type="button" class="btn btn-primary" data-sc-add-open>+ Add Render</button><?php endif ?>
+        <?php if (!$fileTab): ?>
+        <select class="input" data-upload-folder aria-label="Upload into" hidden><?php /* the upload window's first folder (admin.js), picked again inside it */ ?>
           <optgroup label="Models"><?php foreach ($models as $m) echo folder_option($m['slug'], $pick, $names) ?></optgroup>
           <?php if (m3d_outfits()): ?><optgroup label="Accessories"><?php foreach (m3d_outfits() as $k => $o) echo folder_option('outfit-' . $o['slug'], $pick, $names, $tab === 'outfits' && $k === 0) ?></optgroup><?php endif ?>
           <optgroup label="Other"><?php foreach (array_merge(['gallery'], m3d_blog_on() || m3d_blog()['posts'] ? ['blog'] : [], ['docs', 'faq', 'misc']) as $f) echo folder_option($f, $pick, $names, $uploadDefault === $f) ?></optgroup>
         </select>
-        <label class="btn btn-primary">Upload Images<input type="file" accept="image/*" multiple hidden data-upload-files /></label>
+        <button type="button" class="btn btn-primary" data-upload-open>Upload Images</button>
+        <?php endif ?>
       </div>
     </div>
 
@@ -526,12 +483,18 @@ admin_start('Media', 'images');
     <?php endif ?>
 
     <nav class="lib-tabs" aria-label="Sections">
-      <?php foreach (IMG_TABS as $k => $label): if ($k !== 'models' && !$tabCount[$k] && $tab !== $k) continue; ?>
+      <?php foreach (IMG_TABS as $k => $label): if ($k !== 'models' && !$tabCount[$k] && $tab !== $k && ($k !== 'patrons' || $renders === null)) continue; ?>
+        <?php if ($k === 'patrons'): /* not a tab of the library: Unused Only leaves it alone */ ?>
+        <a href="<?= e(m3d_showcase_admin_url()) ?>" <?= $tab === $k ? 'aria-current="page"' : '' ?>><?= e($label) ?> <span><?= $tabCount[$k] ?></span><?= $tabWait ? ' <span class="tab-wait">' . $tabWait . ' waiting</span>' : '' ?></a>
+        <?php else: ?>
         <a href="/admin/images.php?tab=<?= $k ?><?= $onlyUnused ? '&amp;unused=1' : '' ?>" <?= $tab === $k ? 'aria-current="page"' : '' ?> data-lib-tab><?= e($label) ?> <span data-all="<?= $tabCount[$k] ?>" data-unused="<?= $tabUnused[$k] ?>"><?= $onlyUnused ? $tabUnused[$k] : $tabCount[$k] ?></span></a>
+        <?php endif ?>
       <?php endforeach ?>
     </nav>
 
-    <?php if (!$items): ?>
+    <?php if ($tab === 'patrons'): ?>
+<?= showcase_tab_html($pick, $names) ?>
+    <?php elseif (!$items): ?>
       <?php if ($tab === '3d'): ?><p class="muted">No 3D files yet. Upload one in a model or accessory editor (Images → 3D Preview).</p>
       <?php elseif ($tab === 'videos'): ?><p class="muted">No videos yet. Add one to a blog post or a docs page with the editor’s Video button.</p>
       <?php else: ?><p class="muted">No <?= e(strtolower(IMG_TABS[$tab])) ?> images yet. Upload some with the button above<?= ['models' => ', or from the editor', 'outfits' => ', or from the editor', 'gallery' => ', or with Add Pictures in Admin → Gallery', 'blog' => ', or from the Blog editor', 'docs' => ', or with Image in the Docs editor', 'faq' => ', or with Add Image in the FAQ editor'][$tab] ?? '' ?>.</p><?php endif ?>
@@ -598,7 +561,7 @@ admin_start('Media', 'images');
               </span>
               <span class="row-btns">
                 <button type="button" class="btn btn-ghost btn-sm" data-copy title="Copy the image address">Copy<span class="lib-t"> Link</span></button>
-                <?php if (!str_ends_with(strtolower($i['name']), '.gif')): ?><button type="button" class="btn btn-ghost btn-sm" data-crop data-used-count="<?= count($u) ?>">Crop</button><?php endif ?>
+                <?php if (!str_ends_with(strtolower($i['name']), '.gif')): ?><button type="button" class="btn btn-ghost btn-sm" data-crop>Crop</button><?php endif ?>
                 <button type="button" class="icon-btn del" data-del title="<?= $u ? 'In use: remove it there first' : 'Delete' ?>" aria-label="Delete" <?= $u ? 'disabled' : '' ?>>✕</button>
               </span>
             </figcaption>

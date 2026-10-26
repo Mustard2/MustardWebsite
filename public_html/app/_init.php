@@ -34,4 +34,5 @@ require_once __DIR__ . '/blog.php';
 require_once __DIR__ . '/comments.php';
 require_once __DIR__ . '/showcase.php';
 require_once __DIR__ . '/notify.php';
+require_once __DIR__ . '/bell.php';
 require_once __DIR__ . '/shares.php';

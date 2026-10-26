@@ -36,7 +36,7 @@ $cmOn = m3d_comments_on();   // the Comments column (app/comments.php)
       <form method="post" class="intro-form">
         <?= form_keys('intro') ?>
         <textarea class="input" name="intro" rows="5" maxlength="5000" placeholder="Empty = no text" data-img-drop="misc"><?= e(outfits_intro()) ?></textarea>
-        <?= format_help('How to Format the Text', ['box', 'image', 'card']) ?>
+        <?= format_help('How to Format the Text', ['box', 'fold', 'image', 'carousel', 'card']) ?>
         <div class="form-actions"><button class="btn btn-primary btn-sm">Save Text</button></div>
       </form>
     </details>

@@ -38,7 +38,7 @@ admin_start('Blog', 'blog');
     </div>
     <?php if (!m3d_blog_on()): ?><p class="notice">The blog is off: only admins can see it. <a href="<?= e(settings_url('blog')) ?>">Turn it on in Settings</a> when the first posts are ready.</p><?php endif ?>
 
-    <?= format_help('How to Format Posts', ['box', 'image', 'card', 'tabs', 'paywall'],
+    <?= format_help('How to Format Posts', ['box', 'fold', 'image', 'carousel', 'card', 'tabs', 'paywall'],
         'The toolbar above the text inserts most of them for you. The summary is shown on the cards and in link previews.', true) ?>
 
     <form class="docs-editor blog-editor" data-editor novalidate></form>

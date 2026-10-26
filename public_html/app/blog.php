@@ -55,8 +55,35 @@ function m3d_blog_summary(bool $remake = false): array
     return m3d_data_summary('blog', function () {
         $posts = m3d_blog(true)['posts'];
         $first = fn(callable $f) => min(array_map('m3d_post_ts', array_filter($posts, fn($p) => ($p['visibility'] ?? '') !== 'draft' && $f($p))) ?: [0]);
-        return ['n' => count($posts), 'live' => $first(fn($p) => true), 'due' => $first(fn($p) => !empty($p['discord']) && empty($p['announced']))];
+        return ['n' => count($posts), 'live' => $first(fn($p) => true), 'due' => $first(fn($p) => !empty($p['discord']) && empty($p['announced'])), 'cards' => m3d_blog_cards($posts)];
     }, $remake) + ['n' => 0, 'live' => 0, 'due' => 0];
+}
+
+const BLOG_HOME_MAX = 4;   // posts in the homepage's "From the Blog" row
+
+/** The summary's `cards` (the homepage's "From the Blog", without reading the posts): what a card shows of every post not yet out (scheduled) and of
+ *  the BLOG_HOME_MAX newest ones out when the summary was made, newest first, so a scheduled post takes its place on its day. Drafts never. */
+function m3d_blog_cards(array $posts): array
+{
+    $out = array_values(array_filter($posts, fn($p) => ($p['visibility'] ?? '') !== 'draft' && m3d_post_ts($p) > 0));
+    usort($out, fn($a, $b) => m3d_post_ts($b) <=> m3d_post_ts($a));
+    $now = time();
+    $live = 0;
+    $out = array_filter($out, function ($p) use ($now, &$live) { return m3d_post_ts($p) > $now || $live++ < BLOG_HOME_MAX; });
+    return array_values(array_map(fn($p) => ['id' => (string) $p['id'], 'slug' => (string) $p['slug'], 'title' => (string) $p['title'], 'date' => (string) $p['date'],
+        'cover' => (string) ($p['cover'] ?? ''), 'topic' => (string) (((array) ($p['topics'] ?? []))[0] ?? ''), 'visibility' => (string) ($p['visibility'] ?? ''),
+        'min' => m3d_post_minutes($p)], $out));
+}
+
+/** The homepage's "From the Blog": the newest posts out (Patrons Only ones too: their card is a teaser for everyone), the same for every visitor,
+ *  admins included; none while the blog is off. */
+function m3d_blog_latest(int $max = BLOG_HOME_MAX): array
+{
+    if (!m3d_blog_on()) return [];
+    $s = m3d_blog_summary();
+    if (!isset($s['cards'])) $s = m3d_blog_summary(true);   // a summary made before the cards were added to it
+    $now = time();
+    return array_slice(array_values(array_filter((array) ($s['cards'] ?? []), fn($c) => m3d_post_ts($c) <= $now)), 0, $max);
 }
 
 function m3d_post(string $id): ?array
@@ -181,22 +208,22 @@ function m3d_blog_replace(array $map): bool
     return $new === $posts || m3d_save_blog($new);
 }
 
-/** A model or accessory got a new address ($new) or was deleted ($new = ''): the posts showing it follow, or leave it out
- *  (a new item at that address isn't shown by old posts). From m3d_rename_counts() and admin_forget_items(). */
-function m3d_blog_rename_item(string $kind, string $old, string $new): void
+/** Models or accessories deleted (admin_forget_items()): the posts showing them leave them out (a new item at that address isn't
+ *  shown by old posts); a poll choice linked to one keeps its text, without the link. */
+function m3d_blog_forget_items(string $kind, array $slugs): void
 {
-    if (!is_file(M3D_PRIVATE . '/data/blog.json')) return;
+    if (!$slugs || !is_file(M3D_PRIVATE . '/data/blog.json')) return;
+    $gone = array_flip(array_map(fn($s) => $kind . ':' . $s, $slugs));
     $posts = m3d_blog(true)['posts'];
     $changed = false;
     foreach ($posts as &$p) {
-        foreach ((array) ($p['poll']['opts'] ?? []) as $k => $o) if (($o['item'] ?? '') === $kind . ':' . $old) {   // a poll choice keeps its text, without the link once deleted
-            if ($new !== '') $p['poll']['opts'][$k]['item'] = $kind . ':' . $new; else unset($p['poll']['opts'][$k]['item']);
+        foreach ((array) ($p['poll']['opts'] ?? []) as $k => $o) if (isset($gone[$o['item'] ?? ''])) {
+            unset($p['poll']['opts'][$k]['item']);
             $changed = true;
         }
-        $i = array_search($kind . ':' . $old, (array) ($p['items'] ?? []), true);
-        if ($i === false) continue;
-        if ($new !== '') $p['items'][$i] = $kind . ':' . $new;
-        else { array_splice($p['items'], $i, 1); if (!$p['items']) unset($p['items']); }
+        $items = array_values(array_filter((array) ($p['items'] ?? []), fn($i) => !isset($gone[$i])));
+        if ($items === (array) ($p['items'] ?? [])) continue;
+        if ($items) $p['items'] = $items; else unset($p['items']);
         $changed = true;
     }
     unset($p);
@@ -308,6 +335,12 @@ function blog_pills(array $p, bool $pinned = true): string
     return $out;
 }
 
+/** A post's title for the page: a dash between spaces stays at the end of its line ("MustardUI 2026.11 -" / "New effects!"), never starting the next one. */
+function blog_title(array $p): string
+{
+    return e(preg_replace('/ (?=[-–—](?:\s|$))/u', "\u{A0}", (string) $p['title']));
+}
+
 /** The cover of a card or the post: its versions with their real widths ($sizes = how wide it shows), or a plain block without a picture. */
 function blog_cover(array $p, string $sizes, bool $eager = false): string
 {
@@ -341,7 +374,7 @@ function blog_card(array $p, bool $lead = false): string
             . '<span class="pic">' . blog_cover($p, '(max-width: 900px) 92vw, 680px', true) . '</span>'
             . '<span class="txt">'
             . ($pills . $topics !== '' ? '<span class="bl-meta">' . $pills . $topics . '</span>' : '')
-            . '<h2>' . e($p['title']) . '</h2>'
+            . '<h2>' . blog_title($p) . '</h2>'
             . ($sum !== '' ? '<p>' . e($sum) . '</p>' : '')
             . '<span class="bl-meta">' . blog_meta($p) . $likesHtml . '</span>'
             . '<span class="more">Read the Post →</span>'
@@ -351,9 +384,22 @@ function blog_card(array $p, bool $lead = false): string
         . '<span class="pic">' . blog_cover($p, '(max-width: 600px) 92vw, (max-width: 900px) 46vw, 390px') . ($pills !== '' ? '<span class="cover-tags">' . $pills . '</span>' : '') . '</span>'
         . '<span class="body">'
         . ($topics !== '' ? '<span class="bl-meta">' . $topics . '</span>' : '')
-        . '<h3>' . e($p['title']) . '</h3>'
+        . '<h3>' . blog_title($p) . '</h3>'
         . ($sum !== '' ? '<p>' . e($sum) . '</p>' : '')
         . '<span class="bl-meta">' . blog_meta($p) . $likesHtml . '</span>'
+        . '</span></a>';
+}
+
+/** A small card of the homepage's "From the Blog" (the look of recent_card()): cover, topic (+ Patrons), title on up to 2 lines, date · N min read. $c = a summary card. */
+function blog_home_card(array $c): string
+{
+    $tag = ($c['topic'] !== '' ? blog_topic($c['topic']) : '<span class="recent-tag is-upd">Post</span>')
+        . ($c['visibility'] === 'patrons' ? '<span class="lock-pill">' . BLOG_LOCK_ICON . 'Patrons</span>' : '');
+    return '<a class="recent is-post" href="' . e(m3d_post_url($c)) . '">'
+        . '<span class="recent-img">' . card_img($c['cover'] !== '' ? img_thumb($c['cover']) : '', $c['title']) . '</span>'
+        . '<span class="recent-body"><span class="recent-tags">' . $tag . '</span>'
+        . '<b class="recent-name">' . blog_title($c) . '</b>'
+        . '<span class="recent-meta">' . when_html(m3d_post_ts($c), 'date') . '<span class="dot">·</span>' . $c['min'] . ' min read</span>'
         . '</span></a>';
 }
 

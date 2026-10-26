@@ -57,7 +57,7 @@ $add('Models', 'Page', '/admin/models.php', 'assets characters list add model');
 $add('Accessories', 'Page', '/admin/outfits.php', 'assets outfits hair list add accessory');
 $add('Link Check', 'Page', '/admin/links.php', 'broken dead links mega transfer.it downloads check');
 $add('Gallery', 'Page', '/admin/gallery.php', 'renders stills pictures');
-if (m3d_showcase_on() || m3d_showcase_stored()) $add('From Patrons', 'Page', '/admin/showcase.php', 'patron renders made by patrons showcase approve reject shared fan art');
+if (m3d_showcase_on() || m3d_showcase_stored()) $add('From Patrons', 'Page', m3d_showcase_admin_url(), 'media patron renders made by patrons showcase approve reject shared fan art');
 if (m3d_blog_on() || m3d_blog()['posts']) $add('Blog', 'Page', '/admin/blog.php', 'posts news articles write');
 $add('Docs', 'Page', '/admin/docs.php', 'documentation pages');
 $add('FAQ', 'Page', '/admin/faq.php', 'questions answers');
@@ -66,10 +66,11 @@ if (m3d_bugs_on()) {
 }
 $add('Patron Log', 'Page', '/admin/log.php', 'downloads log patrons csv export reset unlocks stats');
 $add('Stats', 'Page', '/admin/stats.php', 'statistics totals downloads likes logins patrons tiers versions uptake chart');
-$add('Access', 'Page', '/admin/users.php', 'downloads unlock limits rules download wait countdown daily cap');
+$add('Access', 'Page', '/admin/users.php', 'downloads unlock limits rules download wait countdown daily cap grace period pledge removed repledge months');
 $add('Access Exceptions', 'Page', '/admin/users.php?tab=exceptions', 'users exceptions bans banned block patrons bypass custom access');
 $add('Temporary Links', 'Page', '/admin/users.php?tab=links', 'share temporary download links tester collaborator give file expire access');
 $add('Media', 'Page', '/admin/images.php', 'images library pictures videos upload crop unused 3d files');
+$add('Find Duplicates', 'Page', '/admin/duplicates.php', 'duplicate pictures images same copies twice media gallery clean up');
 $add('Backups', 'Page', '/admin/backups.php', 'restore history');
 $add('Update', 'Page', '/admin/update.php', 'install site update remote zip version github channel stable development key');
 $add('+ Add Model', 'Page', '/admin/edit.php', 'new model create');
@@ -88,12 +89,13 @@ $boxes = [
     'blog'        => ['Blog (Settings)', 'posts news turn on off title'],
     'welcome'     => ['Welcome Page', 'first login tour new patrons onboarding landing intro'],
     'bugs'        => ['Bug Reports (Settings)', 'bugs uploads moderation blender mustardui versions'],
-    'comments'    => ['Comments (Settings)', 'comments comment moderation approve block delete all'],
+    'comments'    => ['Comments (Settings)', 'comments comment moderation approve block delete all paying patrons skip check'],
     'discord'     => ['Discord Announcements', 'webhook post new versions renders gallery message'],
     'showcase'    => ['Patron Renders (Settings)', 'made by patrons showcase fan art renders share'],
     's4'          => ['MEGA S4 Downloads', 'object storage bucket signed temporary download links keys download domain worker proxy cdn'],
     'mustardui'   => ['MustardUI Page', 'add-on addon'],
-    'patreon'     => ['Patreon', 'client id secret campaign currency keys creator access refresh token pledge history months as a patron'],
+    'campaign'    => ['Campaign', 'currency paid tiers prices read tiers now patreon'],
+    'patreon'     => ['Patreon Keys', 'client id secret campaign id redirect keys creator access refresh token pledge history months as a patron'],
     'logins'      => ['Logins', 'session days log out'],
     'maintenance' => ['Maintenance Mode', 'back soon offline'],
     'problems'    => ['Site Problems', 'errors log failed broken'],

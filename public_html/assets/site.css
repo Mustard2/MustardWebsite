@@ -115,7 +115,6 @@ h1, h2, h3 { font-family: var(--display); line-height: 1.05; margin: 0; letter-s
 .btn-who.ok { border-color: color-mix(in srgb, var(--mustard) 55%, transparent); color: var(--mustard); }
 .btn-who:hover { border-color: currentColor; }
 .who-name { overflow: hidden; text-overflow: ellipsis; }
-.who-dot { position: absolute; top: -5px; right: -5px; width: 15px; height: 15px; border-radius: 50%; background: var(--patreon); border: 2px solid var(--bg); }   /* updates available */
 @media (min-width: 721px) {
   /* a full menu that still doesn't fit scrolls sideways by itself (like on phones), never the page */
   body:not(.admin) :is(.brand, .account, .hsearch) { flex: none; }
@@ -129,7 +128,6 @@ h1, h2, h3 { font-family: var(--display); line-height: 1.05; margin: 0; letter-s
 .nav-more-btn:hover, .nav-more-btn[aria-expanded="true"], .nav-more-btn.is-current { color: var(--text); }
 .nav-more-btn svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; transition: transform .15s; }
 .nav-more-btn[aria-expanded="true"] svg { transform: rotate(180deg); }
-.nav-more-btn.has-new::after { content: ''; width: 8px; height: 8px; margin-left: 4px; border-radius: 50%; background: var(--patreon); }   /* Bugs' news number is inside */
 .nav-more-list { position: absolute; top: calc(100% + 18px); left: -10px; z-index: 7; min-width: 180px; display: grid; gap: 2px; padding: 6px;
   background: var(--bg-2); border: 1px solid var(--line); border-radius: 14px; box-shadow: 0 18px 50px rgb(0 0 0 / .55); }
 .nav-more-list[hidden] { display: none; }
@@ -162,6 +160,7 @@ h1, h2, h3 { font-family: var(--display); line-height: 1.05; margin: 0; letter-s
   .btn-who { max-width: 120px; }
   .hsearch-btn { width: 34px; height: 34px; }
 }
+@media (max-width: 400px) { .nt-user ~ .account .btn-who { max-width: 100px; } }   /* small phones: logo, search, bell and the name still on one row */
 
 /* Quick Add (quick_add() in app/view.php, assets/bell.js): the creator's "+" between the search and the bell, a short menu under it;
    Add Changelog Version swaps the menu for a list of models and accessories. On phones a sheet under the header, like the bell's. */
@@ -246,6 +245,15 @@ h1, h2, h3 { font-family: var(--display); line-height: 1.05; margin: 0; letter-s
 .nt-foot a:hover { color: var(--text); }
 .nt-err { margin: 0 16px 10px; padding: 8px 12px; border-radius: 10px; background: rgb(249 104 84 / .12); color: #ffb3a8; font-size: 13px; }
 .nt-panel .is-loading { padding: 26px 16px; color: var(--muted); font-size: 14px; text-align: center; }
+/* the visitors' bell (app/bell.php): the item's picture with a small badge (↑ update, ✓ render approved) instead of an icon */
+.nt-pic { position: relative; width: 32px; height: 40px; margin-top: -4px; }
+.nt-pic img { display: block; width: 32px; height: 40px; border-radius: 7px; object-fit: cover; background: rgb(255 255 255 / .05); }
+.nt-pic img.is-blurred { filter: blur(3px); }
+.nt-badge { position: absolute; right: -5px; bottom: -5px; width: 17px; height: 17px; border-radius: 50%; display: grid; place-items: center; border: 2px solid var(--bg-2); color: #fff; }
+.nt-badge svg { width: 10px; height: 10px; fill: none; stroke: currentColor; stroke-width: 3; stroke-linecap: round; stroke-linejoin: round; }
+.nt-badge.up { background: var(--patreon); }
+.nt-badge.ok { background: #3aa66a; }
+.nt-ico.nt-upd { color: var(--patreon); background: rgb(249 104 84 / .13); }
 /* a row's ✓ Mark as Read / ✕ Remove (notify_tools()): over its time while hovered or focused; always shown, under the time, on touch screens */
 .nt-tools { position: absolute; top: 8px; right: 10px; display: flex; gap: 4px; }
 .nt-ib { width: 28px; height: 28px; padding: 0; display: grid; place-items: center; border: 1px solid var(--line); border-radius: 8px; background: var(--bg-2); color: var(--muted); cursor: pointer; }
@@ -773,12 +781,12 @@ a.ocard:hover { transform: translateY(-3px); border-color: color-mix(in srgb, va
 .faq-sec h2 { font-size: 26px; margin-bottom: 12px; }
 .faq-item { border: 1px solid var(--line); border-radius: 14px; background: var(--card); margin-top: 10px; scroll-margin-top: 90px; }
 .faq-item[open] { border-color: color-mix(in srgb, var(--mustard) 45%, transparent); }
-.faq-item summary { list-style: none; cursor: pointer; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 15px 18px; font-weight: 600; }
-.faq-item summary::-webkit-details-marker { display: none; }
-.faq-item summary > span::before { content: '+'; display: inline-block; width: 22px; color: var(--mustard); font-weight: 700; transition: transform .2s; }
-.faq-item[open] summary > span::before { content: '−'; }
+.faq-item > summary { list-style: none; cursor: pointer; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 15px 18px; font-weight: 600; }
+.faq-item > summary::-webkit-details-marker { display: none; }
+.faq-item > summary > span::before { content: '+'; display: inline-block; width: 22px; color: var(--mustard); font-weight: 700; transition: transform .2s; }
+.faq-item[open] > summary > span::before { content: '−'; }
 .faq-link { opacity: 0; }
-.faq-item summary:hover .faq-link, .faq-item[open] .faq-link, .faq-link:focus-visible { opacity: 1; }
+.faq-item > summary:hover .faq-link, .faq-item[open] .faq-link, .faq-link:focus-visible { opacity: 1; }
 .copy-link { position: relative; display: inline-flex; align-items: center; justify-content: center; flex: none; width: 30px; height: 30px; border-radius: 8px; color: var(--muted); text-decoration: none; transition: color .15s, background .15s, opacity .15s; }
 .copy-link:hover, .copy-link:focus-visible { color: var(--text); background: rgba(255,255,255,.06); }
 .copy-link.is-copied { color: var(--mustard); opacity: 1; }
@@ -808,7 +816,8 @@ a.ocard:hover { transform: translateY(-3px); border-color: color-mix(in srgb, va
 .mv-play:hover svg, .mv-play:focus-visible svg { transform: scale(1.08); }
 .mv-play:focus-visible { outline: 2px solid var(--mustard); outline-offset: -4px; border-radius: 10px; }
 .mv-dur { position: absolute; right: 10px; bottom: 10px; padding: 5px 8px; border-radius: 999px; background: rgb(0 0 0 / .65); color: #fff; font-size: 12px; font-weight: 600; line-height: 1; pointer-events: none; }
-.mv-frame:not(.is-ready) .mv-dur, .mv-frame.is-playing .mv-dur { display: none; }
+/* only on the cover: never over the browser's own controls, however they came up (right-click "Show Controls", media keys) */
+.mv-frame:not(.is-ready) .mv-dur, .mv-frame.is-playing .mv-dur, .mv-frame:has(video[controls]) .mv-dur { display: none; }
 .md-video figcaption { font-size: 13px; color: var(--muted); margin-top: 6px; text-align: center; }
 /* a line holding only a link to a model / accessory page = a preview card (md_link_cards() in view.php), centred like pictures;
    several lines = two a row (one under 720 px), a last odd one centred */
@@ -844,6 +853,29 @@ a.ocard:hover { transform: translateY(-3px); border-color: color-mix(in srgb, va
 .md h3 { font-size: 18px; margin: 20px 0 8px; color: var(--text); }
 .md-gallery { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; align-items: start; }
 .md-gallery .md-zoom img { max-height: 300px; }
+/* "::: carousel" (md_carousel()): a picture at a time, the slides scroll sideways (swipe); site.js adds ‹ ›, the count and the dots (.is-ready) */
+.md-carousel { --h: clamp(260px, 62vw, 480px); position: relative; margin: 4px 0 18px; }
+.mc-track { display: flex; overflow-x: auto; scroll-snap-type: x mandatory; overscroll-behavior-x: contain; }
+.md-carousel.is-ready .mc-track { scrollbar-width: none; }
+.md-carousel.is-ready .mc-track::-webkit-scrollbar { display: none; }
+.mc-slide { flex: 0 0 100%; min-width: 0; margin: 0; scroll-snap-align: center; scroll-snap-stop: always; }
+.md-carousel.is-ready .mc-slide { min-height: calc(var(--h) + 32px); }   /* the caption line, where the dots sit on the right */
+.md-carousel:not(.is-ready) .mc-track { gap: 10px; }
+.md-carousel:not(.is-ready) .mc-slide { flex-basis: 88%; }   /* without the script (the admin's Preview too): the next picture peeks in */
+.mc-zoom { position: relative; display: grid; place-items: center; width: 100%; height: var(--h); padding: 0; border: 1px solid var(--line); border-radius: 12px; overflow: hidden; background: #0d0c0b; cursor: zoom-in; }
+.mc-zoom img { position: relative; width: auto; height: auto; max-width: 100%; max-height: calc(var(--h) - 2px); }
+.mc-zoom img.mc-bg { position: absolute; inset: 0; width: 100%; height: 100%; max-height: none; object-fit: cover; filter: blur(22px) brightness(.45) saturate(1.2); transform: scale(1.15); }   /* a picture of another shape: a blurred copy fills the bands */
+.mc-slide figcaption { font-size: 13px; color: var(--muted); margin-top: 8px; padding-right: var(--dots-w, 0px); }
+.mc-count { position: absolute; top: 10px; right: 10px; z-index: 2; padding: 3px 9px; border-radius: 99px; background: rgb(18 17 16 / .75); color: var(--text); font-size: 12px; font-weight: 600; font-variant-numeric: tabular-nums; pointer-events: none; }
+.md-carousel .strip-arrow { top: calc(var(--h) / 2); }
+.mc-prev { left: 10px; }
+.mc-next { right: 10px; }
+.mc-dots { position: absolute; right: 0; top: calc(var(--h) + 8px); display: flex; }
+.mc-dots button { display: grid; place-items: center; width: 16px; height: 20px; padding: 0; border: 0; background: none; cursor: pointer; }
+.mc-dots button::before { content: ''; width: 8px; height: 8px; border-radius: 99px; background: var(--line); transition: width .2s, background-color .2s; }
+.mc-dots button:hover::before { background: var(--muted); }
+.mc-dots button[aria-current] { width: 28px; }
+.mc-dots button[aria-current]::before { width: 20px; background: var(--mustard); }
 .md-table { overflow-x: auto; border: 1px solid var(--line); border-radius: 12px; margin: 0 0 14px; }
 .md-table table { width: 100%; border-collapse: collapse; font-size: 15px; }
 .md-table th, .md-table td { text-align: left; padding: 10px 14px; border-bottom: 1px solid var(--line); vertical-align: top; }
@@ -885,6 +917,22 @@ a.ocard:hover { transform: translateY(-3px); border-color: color-mix(in srgb, va
 .md-tabs.is-tabs .md-tab-name { display: none; }
 .md-tabs.is-tabs .md-tab-panel { border-top: 0; }
 .md-tab-name + h3, .md-tab-name + h4 { margin-top: 0; }
+/* Expandable boxes: "+++ Title" … "+++" (md_folds()) and "> [!TIP]- Title" boxes (md_callout()); a <details>, folded until clicked */
+.md-fold { margin: 0 0 16px; min-width: 0; }
+.md-fold:not(.callout) { border: 1px solid var(--line); border-radius: 12px; background: var(--bg-2); }
+.md-fold > summary { display: flex; align-items: center; gap: 8px; list-style: none; cursor: pointer; user-select: none; }
+.md-fold > summary::-webkit-details-marker { display: none; }
+.md-fold:not(.callout) > summary { padding: 12px 16px; font-weight: 600; color: var(--text); border-radius: 11px; }
+.md-fold:not(.callout) > summary:hover { background: rgb(255 255 255 / .03); }
+.md-fold > summary:focus-visible { outline: 2px solid var(--mustard); outline-offset: 2px; }
+.md-fold-chev { width: 18px; height: 18px; flex: none; margin-left: auto; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; opacity: .7; transition: transform .2s; }
+.md-fold:not(.callout) .md-fold-chev { color: var(--muted); }
+.md-fold[open] > summary .md-fold-chev { transform: rotate(180deg); }
+.md-fold:not(.callout) > .md-fold-body { padding: 2px 16px 14px; }
+.md-fold-body > :last-child, .md-fold-body .md-img:last-child { margin-bottom: 0; }
+.md-fold-body > :first-child { margin-top: 0; }
+.callout.md-fold:not([open]) > .callout-title { margin-bottom: 0 !important; }
+@media (prefers-reduced-motion: reduce) { .md-fold-chev { transition: none; } }
 
 /* ── Docs ── */
 .docs { display: grid; grid-template-columns: 240px minmax(0, 1fr) 200px; gap: 48px; align-items: start; padding-top: 40px; padding-bottom: 32px; }
@@ -1237,8 +1285,8 @@ a.acc-link:hover .acc-link-hint { color: var(--mustard); }
 .owned-check { position: absolute; top: 10px; right: 10px; z-index: 2; width: 26px; height: 26px; border-radius: 50%; display: grid; place-items: center; background: var(--green); color: #0f2016; box-shadow: 0 2px 8px rgb(0 0 0 / .45); }
 .owned-check svg { width: 15px; height: 15px; }
 /* Catalogs: a newer version of something the patron downloaded (site.js, s.updates) */
-.card-upd { position: absolute; left: 10px; bottom: 10px; z-index: 2; display: inline-flex; align-items: center; gap: 4px; max-width: calc(100% - 20px); padding: 4px 10px 4px 8px; border-radius: 999px; font-size: 12px; font-weight: 700; line-height: 1.2; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: #fff; background: var(--patreon); box-shadow: 0 2px 8px rgb(0 0 0 / .45); }
-.card-upd svg { flex: none; width: 13px; height: 13px; fill: none; stroke: currentColor; stroke-width: 2.8; stroke-linecap: round; stroke-linejoin: round; }
+.card-upd { position: absolute; left: 10px; bottom: 10px; z-index: 2; display: inline-flex; align-items: center; justify-content: center; width: 26px; height: 26px; border-radius: 50%; color: #fff; background: var(--patreon); box-shadow: 0 2px 8px rgb(0 0 0 / .45); }
+.card-upd svg { flex: none; width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 2.8; stroke-linecap: round; stroke-linejoin: round; }
 /* My account → My Models: newer versions of what the patron downloaded */
 .upd-count { display: inline-flex; align-items: center; margin-left: 10px; padding: 2px 9px; border-radius: 999px; font-size: 12px; font-weight: 700; color: #fff; background: var(--patreon); vertical-align: middle; }
 .upd-tag { display: inline-flex; align-items: center; gap: 5px; padding: 5px 12px 5px 10px; border-radius: 999px; font-size: 14px; font-weight: 700; color: var(--patreon); background: rgb(249 104 84 / .12); white-space: nowrap; }
@@ -1260,6 +1308,14 @@ a.acc-link:hover .acc-link-hint { color: var(--mustard); }
 .recent-tag { align-self: flex-start; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; padding: 1px 7px; border-radius: 6px; }
 .recent-tag.is-new { color: var(--green); background: rgb(111 207 142 / .14); }
 .recent-tag.is-upd { color: var(--mustard); background: color-mix(in srgb, var(--mustard) 14%, transparent); }
+/* "From the Blog" (blog_home_card()): the same cards, topic + Patrons on top, a title of up to 2 lines */
+.recent.is-post { align-items: flex-start; }
+.recent.is-post .recent-img img { object-position: center; }
+.recent-tags { display: flex; gap: 8px; align-items: center; min-width: 0; }
+.recent-tags .bl-tag { font-size: 11px; white-space: nowrap; }
+.recent-tags .lock-pill { font-size: 11px; padding: 1px 7px; }
+.recent.is-post .recent-name { white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; line-height: 1.25; text-wrap: balance; overflow-wrap: anywhere; }
+.recent-meta .dot { opacity: .5; }
 @media (max-width: 520px) { .recent-grid { grid-template-columns: 1fr; } }
 
 /* What's new (whats-new.php): every version, newest first, by month; "See all updates" next to the homepage's Recently Updated title */
@@ -1322,9 +1378,14 @@ button.upd-tag:hover, button.upd-tag[aria-expanded='true'] { background: rgb(249
 .upd-since { margin: 0 0 16px; font-size: 12px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--patreon); }
 @media (max-width: 520px) { #my-models .upd-row > td { padding: 16px 12px 20px 26px; } }
 .upd-tag svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 2.6; stroke-linecap: round; stroke-linejoin: round; }
-.acc-sub .upd-tag { display: none; }
+.acc-sub .upd-pill { display: none; }
 @media (max-width: 520px) {   /* phones: the Update column is hidden, the tag sits under the name instead of the old version */
-  .acc-sub .upd-tag { display: inline-flex; padding: 1px 9px 1px 7px; font-size: 13px; }
+  .acc-sub { flex-wrap: wrap; row-gap: 4px; }   /* with the ✕ the tag may need a line of its own */
+  .acc-sub .upd-pill { display: inline-flex; }
+  .acc-sub .upd-tag { padding: 1px 9px 1px 7px; font-size: 13px; }
+  .acc-sub .upd-pill.has-x .upd-tag { padding: 2px 24px 2px 7px; }
+  .acc-sub .upd-pill .upd-x { right: 2px; width: 16px; height: 16px; font-size: 9px; }
+  .is-upd-ignored .acc-sub .upd-pill.has-x .upd-tag { padding-right: 9px; }
   .acc-sub:has(.upd-tag) .acc-ver, .acc-sub .upd-word { display: none; }   /* "↑ V4" */
   .acc-table .c-actions { padding-left: 0; }
   #my-models .acc-table tr:not(.upd-row) > td { padding-left: 8px; padding-right: 8px; }
@@ -1629,7 +1690,7 @@ a.env-about:hover { border-color: var(--mustard); }
 .bug-shot.pic-del { height: auto; overflow: visible; font-size: 13px; }
 .bug-shot.pic-del img { height: 110px; border-radius: 10px 10px 0 0; }
 .pic-del span { display: flex; align-items: center; gap: 6px; padding: 6px 8px; }
-/* following a report: the Follow button, "New since your last visit", the list's "2 new" tags and the number next to Bugs in the menu */
+/* following a report: the Follow button, "New since your last visit", the list's "2 new" tags */
 .follow-btn { display: flex; justify-content: center; align-items: center; gap: 9px; width: 100%; padding: 11px; border-radius: 999px; font: inherit; font-weight: 600; font-size: 15px; cursor: pointer; border: 1px solid var(--line); background: transparent; color: var(--text); }
 .follow-btn:hover { border-color: color-mix(in srgb, var(--mustard) 55%, transparent); }
 .follow-btn.on { border-color: color-mix(in srgb, var(--mustard) 55%, transparent); color: var(--mustard); }
@@ -1638,7 +1699,6 @@ a.env-about:hover { border-color: var(--mustard); }
 .bug-row.has-new { border-color: color-mix(in srgb, var(--patreon) 55%, var(--line)); box-shadow: inset 3px 0 0 var(--patreon); }
 .bug-new { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; font-weight: 700; color: var(--patreon); background: color-mix(in srgb, var(--patreon) 13%, transparent); border-radius: 999px; padding: 3px 10px; }
 .bug-new::before { content: ''; width: 7px; height: 7px; border-radius: 50%; background: var(--patreon); }
-.nav-new { display: inline-grid; place-items: center; min-width: 18px; height: 18px; padding: 0 5px; margin-left: 6px; border-radius: 999px; background: var(--patreon); color: #fff; font-size: 11px; font-weight: 700; line-height: 1; vertical-align: 2px; }
 .facts-box { background: var(--card); border: 1px solid var(--line); border-radius: 16px; padding: 6px 18px; }
 .fact { display: grid; gap: 6px; padding: 12px 0; border-bottom: 1px solid var(--line); font-size: 14px; }
 .fact:last-child { border-bottom: 0; }
@@ -1726,8 +1786,8 @@ a.env-about:hover { border-color: var(--mustard); }
 .g-av { width: 28px; height: 28px; border-radius: 50%; object-fit: cover; object-position: 50% 15%; flex: none; background: var(--bg-2); }
 .g-av-blur { filter: blur(3px); }
 .g-av-ini { display: inline-grid; place-items: center; font-size: 11px; font-weight: 700; color: var(--muted); border: 1px solid var(--line); }
-.g-tag .g-av { width: 18px; height: 18px; }
-.g-tag .g-av-ini { font-size: 8px; }
+.g-tag .g-av { width: 22px; height: 22px; }
+.g-tag .g-av-ini { font-size: 9px; }
 /* the wall: rows of pictures, each as wide as its shape at the row's height, newest first (left to right) */
 .g-wall { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 22px; }
 .g-wall::after { content: ''; flex-grow: 999; }
@@ -1736,15 +1796,17 @@ a.env-about:hover { border-color: var(--mustard); }
 .g-open { display: block; width: 100%; height: 100%; margin: 0; padding: 0; border: 0; background: none; cursor: zoom-in; border-radius: inherit; }
 .g-open:hover img { transform: scale(1.03); }
 .g-open:focus-visible { outline: 2px solid var(--mustard); outline-offset: -3px; }
-/* heart: its own button over the caption's right end (bottom-right of the tile) */
-.g-like { position: absolute; right: 8px; bottom: 8px; display: inline-flex; align-items: center; gap: 4px; min-height: 28px; padding: 4px 9px; border: 0; border-radius: 999px; background: rgb(18 17 16 / .78); color: #fff; font: 700 12px var(--body); line-height: 1; cursor: pointer; transition: background .15s, color .15s; }
+/* heart: its own button at the top right of the tile, so the caption and the names below have the whole width */
+.g-like { position: absolute; top: 8px; right: 8px; display: inline-flex; align-items: center; gap: 4px; min-height: 28px; padding: 4px 9px; border: 0; border-radius: 999px; background: rgb(18 17 16 / .78); color: #fff; font: 700 12px var(--body); line-height: 1; cursor: pointer; transition: background .15s, color .15s; }
 .g-like svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 2.2; stroke-linejoin: round; }
 .g-like:hover { background: rgb(18 17 16 / .85); color: #ff8fa3; }
 .g-like[aria-pressed="true"] { color: #ff8fa3; background: rgb(60 18 28 / .78); }
 .g-like[aria-pressed="true"] svg, .lb-like[aria-pressed="true"] svg { fill: currentColor; }
 .g-like.pop svg, .lb-like.pop svg { animation: like-pop .35s ease; }
 .g-like:focus-visible { outline: 2px solid var(--mustard); outline-offset: 2px; }
-.g-tile:has(.g-like) .g-cap { padding-right: 64px; }
+/* no likes yet: a round button, the heart in its middle (the empty count kept no room) */
+.g-like [data-glike-count]:empty { display: none; }
+.g-like:has([data-glike-count]:empty) { width: 28px; padding: 0; justify-content: center; }
 .lb-like svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 2.2; stroke-linejoin: round; }
 .lb-like[aria-pressed="true"] { color: #ff8fa3; border-color: rgb(242 90 120 / .5); background: rgb(242 90 120 / .12); }
 /* Floating messages after an action (site_flash() / admin_flash(), admin.js toast()): a stack at the bottom, over the page instead of pushing it down */
@@ -1768,18 +1830,31 @@ a.env-about:hover { border-color: var(--mustard); }
 @media (prefers-reduced-motion: reduce) { .g-like.pop svg, .lb-like.pop svg { animation: none; } }
 .g-tile.is-blurred { cursor: default; }
 .g-tile.is-blurred > img, .g-tile.is-blurred:hover > img { filter: blur(18px) saturate(1.1); transform: scale(1.25); }
-.g-tile .cover-tags { right: 12px; }
+.g-tile .cover-tags { top: 8px; left: 8px; right: 12px; }
+.g-tile:has(.g-like) .cover-tags { right: 48px; }
 /* scrolling a wall of pictures stays light: no backdrop blur on the tiles' pills (each one is redrawn on every frame), and tiles off screen aren't painted */
-.g-tile .cover-tags > * { backdrop-filter: none; background: rgb(18 17 16 / .82); }
+.g-tile .cover-tags > * { backdrop-filter: none; background: rgb(18 17 16 / .82); white-space: nowrap; }
 /* the sticky header's frosted blur would re-blur the pictures under it on every frame: solid on this page (looks the same) */
 .page-gallery .site-header { backdrop-filter: none; background: rgb(18 17 16 / .97); }
 .g-cap { position: absolute; inset: auto 0 0 0; padding: 30px 10px 9px; display: flex; flex-direction: column; gap: 5px; background: linear-gradient(transparent, rgb(0 0 0 / .72)); pointer-events: none; }
-.g-title { font-size: 13px; font-weight: 600; color: #fff; text-shadow: 0 1px 3px rgb(0 0 0 / .6); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.g-tags { display: flex; gap: 5px; flex-wrap: wrap; }
-.g-tag { display: inline-flex; align-items: center; gap: 5px; padding: 2px 8px 2px 2px; border-radius: 999px; font-size: 12px; font-weight: 600; color: var(--text); background: rgb(18 17 16 / .8); }
-.g-full { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; font-weight: 700; padding: 4px 9px; border-radius: 8px; background: rgb(18 17 16 / .82); color: var(--text); line-height: 1.2; }
+.g-title { font-size: 13px; font-weight: 600; line-height: 1.3; color: #fff; text-shadow: 0 1px 3px rgb(0 0 0 / .6); overflow: hidden; overflow-wrap: anywhere; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; }
+.g-tags { display: flex; gap: 4px; flex-wrap: wrap; }
+.g-title a, a.g-tag { pointer-events: auto; text-decoration: none; }   /* links in the caption (.g-cap lets clicks through to the picture) */
+.g-title a { color: inherit; text-decoration: underline; text-decoration-color: rgb(255 255 255 / .45); text-underline-offset: 2px; }
+.g-title a:hover, .g-title a:focus-visible { color: var(--mustard); text-decoration-color: currentColor; }
+.g-title .sc-net { display: inline-block; margin-left: 4px; vertical-align: -1px; }   /* X / Patreon, as on the item page's credit pill */
+a.g-tag:hover, a.g-tag:focus-visible { background: rgb(18 17 16 / .95); color: var(--mustard); }
+a.g-tag:focus-visible, .g-title a:focus-visible { outline: 2px solid var(--mustard); outline-offset: 1px; }
+/* a character = its face; with the pointer on the tile (or the tile focused by keyboard) the face grows into the name pill (still_tile()) */
+.g-tag { display: inline-flex; align-items: center; min-width: 0; max-width: 100%; padding: 2px; border-radius: 999px; font-size: 12px; font-weight: 600; color: var(--text); background: rgb(18 17 16 / .8); transition: padding .35s ease; }
+.g-tag-n { min-width: 0; max-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; opacity: 0; transition: max-width .35s ease, margin .35s ease, opacity .25s; }
+@media (hover: hover) { .g-tile:hover .g-tag { padding-right: 9px; } .g-tile:hover .g-tag-n { max-width: 100%; margin-left: 6px; opacity: 1; } }
+.g-tile:has(:focus-visible) .g-tag { padding-right: 9px; }
+.g-tile:has(:focus-visible) .g-tag-n { max-width: 100%; margin-left: 6px; opacity: 1; }
+@media (prefers-reduced-motion: reduce) { .g-tag, .g-tag-n { transition: none; } }
+.g-full { display: inline-grid; place-items: center; width: 28px; height: 28px; border-radius: 50%; background: rgb(18 17 16 / .82); color: var(--text); }
 .g-full.pat { color: var(--violet); }
-.g-full svg { width: 13px; height: 13px; fill: none; stroke: currentColor; stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round; }
+.g-full svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round; }
 .g-empty { margin-top: 26px; }
 .g-empty p { margin: 0 0 12px; }
 .g-more { height: 1px; }   /* the infinite scroll's sentinel (catalogMore() in site.js) */
@@ -1793,11 +1868,14 @@ a.env-about:hover { border-color: var(--mustard); }
   .g-wall { gap: 8px; }
   .g-tile { height: 150px; }
   .g-cap { padding: 24px 7px 7px; }
-  .g-like { right: 6px; bottom: 6px; min-height: 26px; padding: 4px 8px; }
-  .g-tile:has(.g-like) .g-cap { padding-right: 56px; }
+  .g-like { top: 6px; right: 6px; min-height: 26px; padding: 4px 8px; }
+  .g-like:has([data-glike-count]:empty) { width: 26px; }
+  .g-tag .g-av { width: 20px; height: 20px; }
+  .g-tile:has(.g-like) .cover-tags { right: 38px; }
   .g-title { font-size: 12px; }
   .g-tag { font-size: 11px; }
-  .g-tile .cover-tags { top: 8px; left: 8px; }
+  .g-tile .cover-tags { top: 6px; left: 6px; }
+  .g-full { width: 26px; height: 26px; }
 }
 
 /* The creator's "Edit Tags" window on the bug pages (bug_tags_dialog() in app/bugs.php, [data-tags-dlg] in site.js) */
@@ -1953,14 +2031,18 @@ a.env-about:hover { border-color: var(--mustard); }
 }
 /* the download box: My account's Download button of an item with several files opens the page at it (#download) */
 .dl-box { scroll-margin-top: 90px; }
-/* "Ignore this update": the ✕ at the end of a card's update tag (site.js), the button under My account's update, greyed ignored rows */
-.card-upd .card-upd-txt { overflow: hidden; text-overflow: ellipsis; }
-.card-upd:has(.upd-x) { padding-right: 4px; }
-.upd-x { flex: none; display: inline-grid; place-items: center; width: 20px; height: 20px; margin-left: 4px; border-radius: 999px; background: rgb(0 0 0 / .22); font-size: 10px; line-height: 1; cursor: pointer; }
-.upd-x:hover, .upd-x:focus-visible { background: rgb(0 0 0 / .42); outline: none; }
+/* My account: "Ignore this update" (the ✕ on the tag), greyed ignored rows */
 .toast-act { padding: 0; margin-left: 6px; border: 0; background: none; color: var(--mustard); font: inherit; text-decoration: underline; cursor: pointer; }
 .upd-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 16px; }
 .upd-head .upd-since { margin: 0; }
+/* My Models: the ✕ sits inside the end of the tag, a button of its own next to the tag's button (.upd-pill) */
+.upd-pill { position: relative; display: inline-flex; vertical-align: middle; }
+.upd-pill.has-x .upd-tag { padding-right: 32px; }
+.upd-pill .upd-x { position: absolute; top: 50%; right: 3.5px; transform: translateY(-50%); display: inline-grid; place-items: center; width: 20px; height: 20px; margin: 0; padding: 0; border: 0; border-radius: 999px; color: #fff; background: rgb(249 104 84 / .55); font-family: inherit; font-size: 11px; font-weight: 700; line-height: 1; cursor: pointer; }   /* right = (tag height − 20) / 2: round like the tag's end */
+.upd-pill .upd-x:hover, .upd-pill .upd-x:focus-visible { background: var(--patreon); outline: none; }
+.upd-pill .upd-x:disabled { opacity: .5; cursor: default; }
+.is-upd-ignored .upd-pill .upd-x { display: none; }
+.is-upd-ignored .upd-pill.has-x .upd-tag { padding-right: 12px; }
 .is-upd-ignored .upd-tag { color: var(--muted); background: rgb(255 255 255 / .06); }
 .is-upd-ignored button.upd-tag:hover, .is-upd-ignored button.upd-tag[aria-expanded='true'] { background: rgb(255 255 255 / .1); }
 .is-upd-ignored + .upd-row .upd-since { color: var(--muted); }
@@ -2063,6 +2145,8 @@ a.bl-tag:hover { text-decoration: underline; }
 .bl-title { grid-template-areas: "eye like" "name name" "msg msg"; }
 .bl-title > .bl-meta { grid-area: eye; }
 .bl-title > h1 { font-size: clamp(34px, 5vw, 52px); font-weight: 800; line-height: 1.05; margin-top: 12px; }
+.bl-title > h1, .bl-lead h2, .bl-card h3, .bl-nav b { text-wrap: balance; }   /* titles break into lines of about the same length, never one word alone on the last */
+.bl-lead-text { text-wrap: pretty; }   /* the summary under it: no word alone on its last line where the browser can */
 .bl-lead-text { margin-top: 14px; max-width: none; }
 .bl-lead-text, .bl-head .lead { overflow-wrap: anywhere; }   /* a long address in the summary or the intro breaks instead of widening the page */
 .bl-post .bl-wrap + .bl-wrap { margin-top: 28px; }
@@ -2207,8 +2291,11 @@ a.bl-tag:hover { text-decoration: underline; }
 .sc-tile.is-waiting, .sc-acc-t.is-waiting { border: 2px dashed color-mix(in srgb, var(--mustard) 75%, transparent); }
 .sc-tile.is-waiting img, .sc-acc-t.is-waiting img { filter: grayscale(.55) brightness(.62); }
 .sc-wait { position: absolute; left: 8px; top: 8px; display: inline-flex; align-items: center; gap: 5px; padding: 3px 9px; border-radius: 999px; background: rgb(15 14 12 / .85); color: var(--mustard); font: 600 12px var(--body); pointer-events: none; }
+.sc-acc-t.is-hidden { border-style: dashed; }
+.sc-acc-t.is-hidden img { filter: grayscale(1) brightness(.5); }
+.sc-wait.sc-hid { color: var(--muted); }
 .sc-wait svg { flex: none; width: 13px; height: 13px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; }
-/* the ✕ of the author's own render (Withdraw / Remove), the creator's → to Gallery → From Patrons: top right of the tile */
+/* the ✕ of the author's own render (Withdraw / Remove), the creator's → to Media → From Patrons: top right of the tile */
 .sc-act { position: absolute; right: 8px; top: 8px; z-index: 1; margin: 0; }
 .sc-act .sc-del, a.sc-act.sc-del { width: 26px; height: 26px; font-size: 13px; background: rgb(15 14 12 / .85); color: #f3eee6; text-decoration: none; }
 a.sc-act.sc-del:hover, a.sc-act.sc-del:focus-visible { color: var(--mustard); border-color: var(--mustard); }

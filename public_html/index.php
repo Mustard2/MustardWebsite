@@ -92,6 +92,14 @@ layout_start('', site_description(), 'page-home');
   </section>
   <?php endif ?>
 
+  <?php $posts = m3d_blog_latest(); if ($posts): ?>
+  <!-- The newest blog posts (only while the blog is on and has a post out) -->
+  <section class="section wrap recent-sec" aria-labelledby="blog-title">
+    <div class="section-head"><h2 class="h2 cat-title" id="blog-title">From the Blog</h2><a class="recent-all" href="/blog/">See All Posts →</a></div>
+    <div class="recent-grid"><?php foreach ($posts as $p) echo blog_home_card($p) ?></div>
+  </section>
+  <?php endif ?>
+
   <!-- Catalog -->
   <section id="catalog" class="section wrap" data-catalog>
     <div class="section-head">

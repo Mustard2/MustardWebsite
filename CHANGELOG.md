@@ -1,5 +1,77 @@
 # Changelog
 
+## 2026.10.26-9 · 26 Oct 2026
+
+- Fix: The heart on Gallery pictures with no likes sits in the middle of its button.
+- Change: Gallery pictures show the characters' faces, and their names grow out of them when you point at the picture.
+- Change: Admin → Media's Upload Images opens the same upload window as Add Pictures, with the folder picked inside it.
+- New: picture files dropped anywhere on Admin → Media upload through that window.
+- Change: Settings → Notifications has no more "?" tooltips; an event whose feature is off says "Off in Features" in its row
+- Change: Fewer "?" tooltips across the admin: the ones that repeated their label or explained something evident are gone, and a few long ones are shorter
+- New: Find Duplicates in Media and Gallery lists pictures stored twice (the same file, or the same picture resized or saved again) and Gallery pictures added twice; keep one and every place using the others shows it instead.
+- New: My account's update tags have the same ✕ as the catalog cards to ignore an update
+- Change: Find Duplicates shows its groups side by side, each as wide as its pictures, with the buttons right under them.
+- Fix: patron render cards in Admin → Gallery → From Patrons no longer spill past their edge; their links are pills with a ✕ to remove them.
+- Change: Ban and Remove on patron render cards are red and warn more clearly before acting.
+- Fix: the parts of patron render cards in Admin → Gallery → From Patrons line up.
+- New: Link Check can also check the full-quality links patrons add to their renders (switch "Patron Renders", off by default), with Remove Link on dead ones
+- New: Gallery → From Patrons shows a dead full-quality link in red
+- New: patron renders can be hidden without deleting them (Hide / Show in Gallery → From Patrons)
+- Fix: Link Check's row buttons no longer overlap
+- New: Change the order of patron renders on each model or accessory page by dragging them in Gallery → From Patrons, and put them back with Reset Order.
+- New: Search box in Gallery → From Patrons to find renders by model, patron or caption.
+- New: a notification bell for logged-in users, showing updates to their downloads, news on bug reports they follow, replies to their comments and their approved renders, each removable with ✕ (Settings → Notifications → Bell for Users).
+- Change: the "↑ Update" tag on catalog cards no longer has a ✕. An update is ignored from the bell or from My account.
+- Change: while the bell is on, it replaces the dot on the name button and the number next to Bugs.
+- Change: The notifications bell is always on for logged-in users; its setting is gone.
+- Change: The dot on the name button and the number next to Bugs are gone: the bell shows that news.
+- Fix: The notification bells quoted comments with the text format's marks ("**great**"); they now show plain text.
+- Fix: The visitors' bell counted an approved render whose model or accessory is gone or no longer shown, while its list left it out.
+- Fix: Admin → Gallery showed a patron render's Gallery copy as public while the render was hidden in From Patrons; it now has a "Hidden" pill.
+- Fix: Find Duplicates' first visit could keep reading forever when a picture raised an error; that picture is now left out, and reading stops when it makes no progress.
+- Fix: Fresh installs from the public repository came with a sample "Tifa" model; the model template is empty again.
+- Change: Wrong password tries on a password-protected page are counted per patron, so someone guessing can no longer lock patrons out (visitors not logged in still share one count per item); the privacy page says so.
+- Change: the preview bar's Updates tooltip and My account's Stop Ignoring tooltip no longer mention the removed red dot.
+- Change: deleting several models or accessories saves the blog posts and ignored updates once instead of once per item.
+- Change: internal clean-up of unused code (no visible change).
+- Fix: The bell's number stays until each notification is opened or removed, instead of clearing when the bell is opened.
+- Fix: While previewing as a patron, the bell's ✕ and Clear All now work (only in the preview).
+- Fix: Removing an update from the bell with ✕ now also removes the update tag from that item's cards.
+- Change: The update tag on catalog cards is now just a round ↑ icon; the version shows when you point at it.
+- Fix: While previewing as a patron, ignoring updates (bell ✕, My account ✕ and Stop Ignoring) works, only in the preview.
+- Change: The MEGA S4 "Save and Test" button always tests the first file it finds in the bucket; the "Test File" field is gone.
+- Change: Patron renders are approved in Media → From Patrons instead of Gallery → From Patrons; old links still open it.
+- Fix: On phones, admin tab rows scroll to the open tab, so a tab at the end isn't hidden.
+- Change: The like heart on Gallery pictures sits at the top right.
+- Change: Gallery pictures show the full size download as a small icon instead of a "Full Size" label.
+- Fix: Captions and character names on narrow Gallery pictures are no longer cut short.
+- Change: Media → From Patrons has the same search row as the other Media tabs: search, a model / accessory picker and a Waiting Only switch.
+- New: Media → From Patrons has "+ Add Render" to add a patron's render yourself (shown at once, optionally linked to their Patreon account and added to the Gallery).
+- Change: Media → From Patrons shows renders as cards like the other Media tabs (waiting ones dashed); pick a model in the filter to drag its renders into order.
+- New: Clicking a patron render in Media → From Patrons opens a settings window (model, name, links, caption, page and Gallery switches, Patreon account) with Save, Approve, Remove and Ban.
+- Change: The patron render window in Media → From Patrons fits without scrolling; Ban is a red pill next to Remove.
+- Change: in a patron render's window, On the Page and In Gallery are icon buttons at the top, and Show Name is an eye button inside the Made By field.
+- Fix: Every row in the Stats table of models and accessories is now the same height.
+- Change: The Stats table no longer shows the "Click one to see its stats" hint.
+- New: Grace Period setting in Access → Downloads: a patron who removes their pledge and pledges again within that many days keeps their months as a patron.
+- New: Access exceptions can be switched off without deleting them; bans keep working.
+- Fix: Pressing Enter in a patron render's window asked to remove the render instead of saving it
+- Fix: Renders by an admin offered a Ban button that could only fail
+- Fix: The grace period didn't keep a patron's months when their Patreon pledge history started with the removed pledge
+- New: Expandable boxes in texts: `+++ Title` … `+++` shows a box folded until clicked, and `> [!TIP]- Title` folds a Note / Tip box
+- New: "Expandable" button in the docs and blog editors' toolbar
+- New: photo carousels in blog posts and docs pages: put picture lines between `::: carousel` and `:::` (or use the new Carousel button) to show them one at a time with arrows, dots and swipe
+- Fix: the length label of a video no longer sits on the player's fullscreen button when the browser's controls show.
+- New: a "Skip for Paying Patrons" switch in the comment settings lets comments from paying patrons show without waiting for approval
+- Fix: Long blog post titles break into balanced lines instead of leaving one word alone on the last line.
+- New: the homepage shows the newest blog posts in a "From the Blog" row under Recently Updated, while the blog is on.
+- New: With the creator token saved, the site reads your Patreon tiers once a day, so new, renamed or deleted tiers show without waiting for a patron to log in.
+- New: Settings → Patreon lists the known tiers, with a "Read Tiers Now" button.
+- Fix: On Gallery pictures, a patron render's "By Name" links to the author's X or Patreon, and the character faces link to their model pages.
+- Change: Settings → Patreon is split into clearer boxes. Paid tiers show as a price list, and the Patreon keys are folded at the bottom, opening by themselves when one is missing.
+- New: Discord posts of patron renders in the Gallery link the author's X or Patreon profile.
+- Fix: Link Check no longer shows broken picture links as working. Empty files, pictures that are damaged or cut short, and image hosts answering a page or a "removed" picture are now marked dead.
+
 ## 2026.10.24-4 · 24 Oct 2026
 
 - Change: The project is now called MustardWebsite.

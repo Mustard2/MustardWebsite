@@ -260,7 +260,7 @@ function img_cache(string $what, string $path, callable $make): mixed
 {
     $dir = M3D_PRIVATE . '/cache';
     img_cache_cleanup($dir);
-    $file = $dir . '/' . $what . '-' . md5($path . '|' . (int) @filemtime($path)) . '.json';
+    $file = img_cache_file($what, $path);
     if (is_file($file) && is_array($hit = json_decode((string) @file_get_contents($file), true)) && array_key_exists('v', $hit)) {
         if ((int) @filemtime($file) < time() - 7 * 86400) @touch($file);   // still in use: the clean-up keeps it (once a week at most)
         return $hit['v'];
@@ -268,6 +268,12 @@ function img_cache(string $what, string $path, callable $make): mixed
     $v = $make();
     if (is_dir($dir) || @mkdir($dir, 0700, true)) m3d_atomic_write($file, (string) json_encode(['v' => $v]));
     return $v;
+}
+
+/** The file img_cache() keeps $what of the picture at $path in (gone or old when the picture changed). */
+function img_cache_file(string $what, string $path): string
+{
+    return M3D_PRIVATE . '/cache/' . $what . '-' . md5($path . '|' . (int) @filemtime($path)) . '.json';
 }
 
 /**

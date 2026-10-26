@@ -223,7 +223,9 @@ if (admin_form_post()) {
                 else admin_flash('Patreon accepted the creator token, but none of the first ' . m3d_plural(count($r['json']['data'] ?? []), 'member') . ' is a paying patron, so the pledge history couldn’t be checked.', 'info');
             } else {
                 $failed('Patreon answered HTTP ' . $r['status'] . ($r['status'] === 401 ? ' (it refused the token: copy both creator tokens again)' : ' ' . ($r['json']['errors'][0]['detail'] ?? $r['error'])) . '.');
+                break;
             }
+            m3d_session_pause(fn() => m3d_tiers_sync());   // the tier list too, now that the token works (its result shows under the form)
             break;
         case 'plans':
             $one = fn(string $k, int $max) => clean_line($_POST[$k] ?? '', $max);
@@ -315,7 +317,7 @@ if (admin_form_post()) {
             if (!$ntOk) break;
             if ($_POST['do'] === 'notify-test') {
                 $done = null;
-                $on = array_map(fn($k) => NOTIFY_EVENTS[$k][0], array_keys(array_filter($new['discord'])));
+                $on = array_map(fn($k) => NOTIFY_EVENTS[$k], array_keys(array_filter($new['discord'])));
                 $res = m3d_session_pause(fn() => m3d_discord_post($hook, '', [['title' => 'Test message from ' . site_name(), 'url' => abs_url('/admin/settings.php?tab=notify'),
                     'description' => $on ? "This channel gets:\n• " . implode("\n• ", $on) : 'Nothing is switched on for Discord yet.', 'color' => hexdec('e8b931'),
                     'footer' => ['text' => 'Settings → Notifications']]]));
@@ -335,10 +337,7 @@ if (admin_form_post()) {
                 'region' => $cur['region'],
                 'bucket' => m3d_s4_bucket_clean((string) ($_POST['s4_bucket'] ?? '')),
                 'domain' => m3d_s4_domain_clean((string) ($_POST['s4_domain'] ?? '')),
-                'test' => trim((string) ($_POST['s4_test'] ?? '')),
             ];
-            // the test file: a file name in the bucket ("model.zip"), a short s4: link or a full address
-            if ($s4['test'] !== '' && !preg_match('#^(https?:|s4:)#i', $s4['test'])) $s4['test'] = 's4:' . ltrim($s4['test'], '/');
             if ($s4['key'] === '' && trim((string) ($_POST['s4_secret'] ?? '')) === '' && $cur['key'] === '') { $error = 'Paste the access key ID and the secret key.'; break; }
             if (!preg_match('/^[A-Za-z0-9]{8,128}$/', $s4['key'])) { $error = 'The access key ID doesn’t look right: copy it again from MEGA (letters and numbers only).'; break; }
             if ($s4['secret'] === '') { $error = 'Paste the secret key.'; break; }
@@ -347,32 +346,33 @@ if (admin_form_post()) {
             if (trim((string) ($_POST['s4_bucket'] ?? '')) !== '' && $s4['bucket'] === '') { $error = 'The bucket address isn’t an S4 address. It looks like https://s3.g.megas4.com/your-bucket/'; break; }
             if (trim((string) ($_POST['s4_domain'] ?? '')) !== '' && $s4['domain'] === '') { $error = 'The download domain should be your own address, like files.example.com.'; break; }
             if ($s4['domain'] !== '' && $s4['bucket'] === '') { $error = 'The download domain needs the Bucket Address: the Worker passes downloads on to its host.'; break; }
-            if ($s4['test'] !== '' && !m3d_s4_parse($s4['test'], $s4['bucket'])) {
-                $error = m3d_s4_short($s4['test']) ? 'Fill in the Bucket Address, or write the test file’s full address.' : 'The test file isn’t an S4 file address. It looks like https://s3.g.megas4.com/your-bucket/file.zip'; break;
-            }
             if ($_POST['do'] === 's4-test') {
-                if ($s4['test'] === '' && $s4['bucket'] === '') { $error = 'Fill in the Bucket Address, then test again.'; break; }
+                if ($s4['bucket'] === '') { $error = 'Fill in the Bucket Address, then test again.'; break; }
                 // the region the signature names: S4 doesn't tie a bucket to one, so the saved one first, then the others;
-                // any answer but a refused signature means the keys and the region work (a missing file too).
-                // No test file: the bucket's list, then the first byte of its first file (reading and listing both checked)
+                // any answer but a refused signature means the keys and the region work.
+                // The test: the bucket's list, then the first byte of the first file found (reading and listing both checked);
+                // no file at the top: the folders under it, a few lists at most
                 $regions = array_values(array_unique(array_merge([$s4['region']], S4_REGIONS)));
                 $refused = ['SignatureDoesNotMatch', 'AuthorizationHeaderMalformed', 'AuthorizationQueryParametersError', 'InvalidRequest'];
                 $s4Test = m3d_session_pause(function () use ($regions, $refused, &$s4) {
                     foreach ($regions as $rg) {
-                        if ($s4['test'] !== '') {
-                            $r = m3d_s4_probe($s4['test'], $rg, $s4);
-                            if ($r['code'] !== 0 && in_array($r['err'], $refused, true)) continue;
-                            $s4['region'] = $rg;
-                            return ['file' => $s4['test'], 'err' => $r['ok'] ? '' : ($r['code'] === 0 ? 'S4 didn’t answer (' . $r['err'] . ')' : m3d_s4_error_text($r['err']))] + $r;
-                        }
                         $l = m3d_s4_list('', $s4, $rg, 1);
                         if ($l['code'] !== '' && in_array($l['code'], $refused, true)) continue;
                         $s4['region'] = $rg;
                         if (!$l['ok']) return ['ok' => false, 'err' => $l['err']];
-                        $first = $l['files'][0]['key'] ?? '';
-                        $t = ['ok' => true, 'size' => 0, 'err' => '', 'file' => $first !== '' ? 's4:' . $first : '',
+                        $t = ['ok' => true, 'size' => 0, 'err' => '', 'file' => '',
                               'list' => count($l['files']) . ($l['more'] ? '+' : '') . ' ' . (count($l['files']) === 1 ? 'file' : 'files') . ($l['folders'] ? ', ' . m3d_plural(count($l['folders']), 'folder') : '')];
-                        if ($first === '') return $t;
+                        $first = $l['files'][0]['key'] ?? '';
+                        for ($todo = $l['folders'], $asks = 0; $first === '' && $todo && $asks < 5; $asks++) {
+                            $sub = m3d_s4_list((string) array_shift($todo), $s4, $rg, 1);
+                            if (!$sub['ok']) return ['ok' => false, 'err' => 'The list works, but listing the folder ' . rtrim((string) $sub['prefix'], '/') . ' failed: ' . $sub['err']];
+                            $first = $sub['files'][0]['key'] ?? '';
+                            $todo = array_merge($sub['folders'], $todo);
+                        }
+                        if ($first === '') return ['ok' => false, 'err' => $l['files'] || $l['folders']
+                            ? 'The list works, but no file was found near the top of the bucket: put a file at its top level, then test again'
+                            : 'The list works, but the bucket is empty: upload a file to it, then test again'];
+                        $t['file'] = 's4:' . $first;
                         $r = m3d_s4_probe($t['file'], $rg, $s4);
                         return $r['ok'] ? ['size' => $r['size']] + $t : ['ok' => false, 'err' => 'The list works, but reading ' . $first . ' failed: ' . ($r['code'] === 0 ? 'S4 didn’t answer (' . $r['err'] . ')' : m3d_s4_error_text($r['err']))];
                     }
@@ -405,7 +405,7 @@ if (admin_form_post()) {
             $on = !empty($_POST['cm_on']);
             $ok = m3d_comment_settings_save(['on' => $on, 'models' => !empty($_POST['cm_models']), 'outfits' => !empty($_POST['cm_outfits']), 'posts' => !empty($_POST['cm_posts']),
                 'who' => ($_POST['cm_who'] ?? '') === 'paying' ? 'paying' : 'any', 'moderate' => !empty($_POST['cm_moderate']),
-                'per_day' => max(1, min(100, (int) ($_POST['cm_per_day'] ?? 10)))]);
+                'paid_skip' => !empty($_POST['cm_paid_skip']), 'per_day' => max(1, min(100, (int) ($_POST['cm_per_day'] ?? 10)))]);
             if ($ok) $done = $on ? 'Comments are on: they show under the pages you picked (each page can turn them off in its editor).' : 'Comments are off: none are shown, and they are kept.';
             else $error = m3d_write_error();
             break;
@@ -455,6 +455,11 @@ if (admin_form_post()) {
             $k = $_POST['do'];
             $on = !empty($_POST[$k . '_on']);
             $save([$k => ['on' => $on]], FEATURE_SWITCHES[$k][$on ? 4 : 5]);
+            break;
+        case 'tiers-sync':
+            $st = m3d_session_pause(fn() => m3d_tiers_sync());
+            if ($st['ok']) $done = 'Tiers read from Patreon: ' . m3d_plural(count(m3d_known_tiers()), 'paid tier') . '.';
+            else $error = 'Tiers not read: ' . ($st['err'] ?? 'unknown error');
             break;
         case 'currency':
             $c = strtoupper((string) ($_POST['currency'] ?? ''));
@@ -586,8 +591,8 @@ admin_start('Settings', 'settings');
         </div>
         <div class="id-grid">
           <label class="field"><span class="lbl">Site Name</span><input class="input" name="id_name" value="<?= e($id['name']) ?>" maxlength="40" required data-id="name" /></label>
-          <label class="field"><span class="lbl">Highlighted Word<?= tip('Part of the name shown in the accent colour, written exactly as in the name (e.g. “Studio” in “PixelStudio”). Empty = one colour.') ?></span><input class="input" name="id_highlight" value="<?= e($id['highlight']) ?>" maxlength="20" data-id="highlight" /></label>
-          <label class="field id-wide"><span class="lbl">Tagline<?= tip('Homepage title (“' . $id['name'] . ' · …”) and footer line under the logo.') ?></span><input class="input" name="id_tagline" value="<?= e($id['tagline']) ?>" maxlength="90" required data-id="tagline" /></label>
+          <label class="field"><span class="lbl">Highlighted Word</span><input class="input" name="id_highlight" value="<?= e($id['highlight']) ?>" maxlength="20" data-id="highlight" /></label>
+          <label class="field id-wide"><span class="lbl">Tagline</span><input class="input" name="id_tagline" value="<?= e($id['tagline']) ?>" maxlength="90" required data-id="tagline" /></label>
           <label class="field id-wide"><span class="lbl">Search Description<?= tip('The text Google and other search engines show under the homepage’s title, and in link previews of the homepage. One or two sentences about the site (about 150 characters). Empty = the tagline.') ?></span><input class="input" name="id_description" value="<?= e($id['description']) ?>" maxlength="200" placeholder="<?= e($id['tagline']) ?>." /></label>
           <div class="field"><span class="lbl">Accent Colour</span>
             <span class="id-color"><input type="color" name="id_color" value="<?= e($id['color']) ?>" data-id="color" aria-label="Accent colour" /><code data-id-hex><?= e($id['color']) ?></code>
@@ -654,7 +659,7 @@ admin_start('Settings', 'settings');
 
     <?php $menuSaved = isset(m3d_settings()['menu']); ?>
     <section style="margin-top:20px" class="sec" id="menu">
-      <h2 class="small-h">Header Menu<?= tip('The links in the header, in this order (the footer lists them too). Drag to reorder; the switch hides an item without removing it. Links to other websites open in a new tab. Built-in items show only while their page has something to show.') ?></h2>
+      <h2 class="small-h">Header Menu<?= tip('Built-in items show only while their page has something to show. Links to other websites open in a new tab.') ?></h2>
       <form method="post" class="menu-form" data-rows-form>
         <?= form_keys('menu') ?>
         <?= admin_site_pages_datalist() ?>
@@ -679,7 +684,7 @@ admin_start('Settings', 'settings');
         <?= form_keys('plans') ?>
         <label class="toggle"><input type="checkbox" class="switch" name="pl_on" value="1" <?= $pl['on'] ? 'checked' : '' ?> /><span>Show Section</span></label>
         <div class="id-grid">
-          <label class="field"><span class="lbl">Small Heading<?= tip('Short line above the title.') ?></span><input class="input" name="pl_eyebrow" value="<?= e($pl['eyebrow']) ?>" maxlength="40" placeholder="Downloads" /></label>
+          <label class="field"><span class="lbl">Small Heading</span><input class="input" name="pl_eyebrow" value="<?= e($pl['eyebrow']) ?>" maxlength="40" placeholder="Downloads" /></label>
           <label class="field"><span class="lbl">Title</span><input class="input" name="pl_head" value="<?= e($pl['title']) ?>" maxlength="80" placeholder="How to get the models" /></label>
         </div>
         <div class="pl-boxes">
@@ -689,12 +694,12 @@ admin_start('Settings', 'settings');
               <label class="field"><span class="lbl">Tag</span><input class="input" name="pl_tag_<?= $i ?>" value="<?= e($b['tag']) ?>" maxlength="40" placeholder="<?= $i ? 'Membership' : 'Open access' ?>" /></label>
               <label class="field"><span class="lbl">Title</span><input class="input" name="pl_title_<?= $i ?>" value="<?= e($b['title']) ?>" maxlength="80" placeholder="<?= $i ? 'Every download' : 'Free releases' ?>" /></label>
               <label class="field"><span class="lbl">Text</span><textarea class="input" name="pl_text_<?= $i ?>" rows="3" maxlength="600"><?= e($b['text']) ?></textarea></label>
-              <label class="field"><span class="lbl">Bullet Points<?= tip('One per line.') ?></span><textarea class="input" name="pl_items_<?= $i ?>" rows="3"><?= e(implode("
+              <label class="field"><span class="lbl">Bullet Points</span><textarea class="input" name="pl_items_<?= $i ?>" rows="3"><?= e(implode("
 ", $b['items'])) ?></textarea></label>
               <div class="field"><span class="lbl">Buttons<?= tip('Discord and Patreon use the Social Links addresses (left out when not set). “Log In” opens the Patreon login.') ?></span>
                 <span class="pl-btns"><?php foreach (PLAN_BUTTONS as $k => $label): ?><label class="check small"><input type="checkbox" name="pl_btn_<?= $i ?>[]" value="<?= e($k) ?>" <?= in_array($k, $b['buttons'], true) ? 'checked' : '' ?> /> <?= e($label) ?></label><?php endforeach ?></span>
               </div>
-              <label class="field"><span class="lbl">Footnote<?= tip('Optional small print under the box.') ?></span><input class="input" name="pl_fine_<?= $i ?>" value="<?= e($b['fine']) ?>" maxlength="300" /></label>
+              <label class="field"><span class="lbl">Footnote</span><input class="input" name="pl_fine_<?= $i ?>" value="<?= e($b['fine']) ?>" maxlength="300" /></label>
             </fieldset>
           <?php endforeach ?>
         </div>
@@ -718,12 +723,12 @@ admin_start('Settings', 'settings');
           <label class="field"><span class="lbl">Show On</span>
             <select class="input" name="notice_where"><option value="all">Every Page</option><option value="home" <?= $notice['where'] === 'home' ? 'selected' : '' ?>>Homepage Only</option></select>
           </label>
-          <label class="field"><span class="lbl">End Date<?= tip('Optional. Shown until the end of this day.') ?></span><input class="input" type="date" name="notice_until" value="<?= e($notice['until']) ?>" /></label>
+          <label class="field"><span class="lbl">End Date<?= tip('The notice shows until the end of this day.') ?></span><input class="input" type="date" name="notice_until" value="<?= e($notice['until']) ?>" /></label>
         </div>
         <label class="field"><span class="lbl">Message</span>
           <textarea class="input" name="notice_text" rows="2" maxlength="600" placeholder="**New:** a new model is out for patrons! [See it](/models/your-model/)"><?= e($notice['text']) ?></textarea>
         </label>
-        <label class="toggle"><input type="checkbox" class="switch" name="notice_closable" value="1" <?= $notice['closable'] ? 'checked' : '' ?> /><span>Allow Closing<?= tip('Visitors can close it. It reappears when the message changes.') ?></span></label>
+        <label class="toggle"><input type="checkbox" class="switch" name="notice_closable" value="1" <?= $notice['closable'] ? 'checked' : '' ?> /><span>Allow Closing<?= tip('It shows again when the message changes.') ?></span></label>
         <div class="form-actions"><button class="btn btn-primary btn-sm">Save Notice</button></div>
       </form>
       <?php if ($notice['text'] !== ''): ?>
@@ -757,16 +762,16 @@ admin_start('Settings', 'settings');
     <?php if ($tab === 'notify'): ?>
     <?php $ns = m3d_notify_settings(); ?>
     <section class="sec" id="notify">
-      <h2 class="small-h">Notifications<?= tip('What tells you that something needs a look: the bell in the header (here and, for you, on the site), and a private Discord channel. Announcements to patrons are in Features → Discord Announcements.') ?></h2>
+      <h2 class="small-h">Notifications</h2>
       <form method="post" autocomplete="off" class="set-list">
         <?= form_keys() ?>
         <button class="dc-enter" name="do" value="notify" tabindex="-1" aria-hidden="true"></button><?php /* Enter in a field = Save, not the test message */ ?>
         <div class="nt-set" role="table" aria-label="Notifications">
           <div class="nt-set-row nt-set-head" role="row"><span role="columnheader">Event</span><span role="columnheader">Bell</span><span role="columnheader">Discord</span></div>
-          <?php foreach (NOTIFY_EVENTS as $k => [$label, $help]):
+          <?php foreach (NOTIFY_EVENTS as $k => $label):
               $off = !m3d_notify_feature($k); ?>
             <div class="nt-set-row<?= $off ? ' is-off' : '' ?>" role="row">
-              <span role="cell"><?= e($label) ?><?= tip($help . ($off ? ' ' . (['comments' => 'Comments are', 'renders' => 'Patron renders are'][$k] ?? 'Bug reports are') . ' off in Features.' : '')) ?></span>
+              <span role="cell"><?= e($label) ?><?php if ($off): ?> <span class="muted small">Off in Features</span><?php endif ?></span>
               <span role="cell"><input type="checkbox" class="switch" name="bell_<?= $k ?>" value="1" aria-label="<?= e($label) ?> in the bell" <?= $ns['bell'][$k] ? 'checked' : '' ?> /></span>
               <span role="cell"><input type="checkbox" class="switch" name="discord_<?= $k ?>" value="1" aria-label="<?= e($label) ?> on Discord" <?= $ns['discord'][$k] ? 'checked' : '' ?> /></span>
             </div>
@@ -789,37 +794,29 @@ admin_start('Settings', 'settings');
           $ptReal = fn(string $k) => m3d_cfg_real($ptVal($k));
           $ptFrom = fn(string $k) => $ptReal($k) ? '' : '<span class="badge tone-red">Missing</span>';
           $callback = abs_url('/auth/callback.php', true); ?>
-    <section class="sec" id="patreon">
-      <h2 class="small-h">Patreon</h2>
-      <form method="post" class="pt-form" autocomplete="off" onsubmit="return confirm(<?= e(json_encode('Save the Patreon keys? If they are wrong, nobody can log in (you stay logged in here). Test in a private window afterwards.')) ?>)">
-        <?= form_keys('patreon') ?>
-        <div class="id-grid">
-          <label class="field"><span class="lbl">Client ID <?= $ptFrom('client_id') ?><?= tip('From patreon.com/portal/registration/register-clients → your client → “Client ID”.') ?></span>
-            <?= key_field('Client ID', $ptReal('client_id'), $ptReal('client_id') ? $ptVal('client_id') : '', 'name="pt_client_id" spellcheck="false" autocomplete="off"') ?></label>
-          <label class="field"><span class="lbl">Client Secret <?= $ptFrom('client_secret') ?><?= tip('Same page, “Client Secret”. Never shown again once saved.') ?></span>
-            <?= key_field('Client Secret', $ptReal('client_secret'), null, 'type="password" name="pt_client_secret" placeholder="Paste the client secret" spellcheck="false" autocomplete="new-password"') ?></label>
-          <?php foreach (['creator_token' => 'Creator’s Access Token', 'creator_refresh' => 'Creator’s Refresh Token'] as $k => $label): $has = !empty($pt[$k]); ?>
-          <label class="field"><span class="lbl"><?= e($label) ?><?= tip('Same page, “' . $label . '”. Never shown again once saved.') ?></span>
-            <?= key_field($label, $has, null, 'type="password" name="pt_' . $k . '" placeholder="' . e('Paste the ' . mb_strtolower($label)) . '" spellcheck="false" autocomplete="new-password"') ?></label>
-          <?php endforeach ?>
-          <label class="field id-wide"><span class="lbl">Redirect URI <?= $ptFrom('redirect_uri') ?><?= tip('Must match one of your Patreon client’s “Redirect URIs” exactly.') ?></span>
-            <span class="pt-row"><?= key_field('Redirect URI', $ptReal('redirect_uri'), $ptReal('redirect_uri') ? $ptVal('redirect_uri') : '', 'name="pt_redirect_uri" placeholder="' . e($callback) . '" spellcheck="false" data-pt-redirect') ?>
-              <?php if ($ptVal('redirect_uri') !== $callback): ?><button type="button" class="btn btn-ghost btn-sm" data-pt-use="<?= e($callback) ?>" title="<?= e($callback) ?>">Use This Site’s Address</button><?php endif ?></span></label>
-          <label class="field"><span class="lbl">Campaign ID <?= $ptFrom('campaign_id') ?><?= tip('Your Patreon campaign number. Only its paying members can download.') ?></span>
-            <?= key_field('Campaign ID', $ptReal('campaign_id'), $ptReal('campaign_id') ? $ptVal('campaign_id') : '', 'name="pt_campaign_id" inputmode="numeric" spellcheck="false"') ?></label>
-        </div>
-        <div class="form-actions">
-          <button class="btn btn-primary btn-sm">Save Patreon Keys</button>
-        </div>
-      </form>
+    <?php $tst = m3d_tiers_state(); $tiersKnown = m3d_known_tiers(); $hasTok = !empty($pt['creator_token']);
+          $ptMiss = count(array_filter(['client_id', 'client_secret', 'redirect_uri', 'campaign_id'], fn($k) => !$ptReal($k)));
+          $tokBadge = !$hasTok ? ['grey', 'Not Saved'] : (!$tst ? ['grey', 'Not Tested'] : (!empty($tst['ok']) ? ['green', 'Working'] : ['red', 'Not Working'])); ?>
+    <section class="sec" id="campaign">
+      <h2 class="small-h">Campaign</h2>
       <form method="post" class="cur-form pt-cur">
         <?= form_keys('currency') ?>
-        <label class="field"><span class="lbl">Campaign Currency<?= tip('Used for “total support” requirements. Set automatically at patron login.') ?></span>
+        <label class="field"><span class="lbl">Currency<?= tip('Used for “total support” requirements and tier prices. Set automatically at patron login.') ?></span>
           <select class="input" name="currency">
             <?php foreach (['EUR' => 'Euro (€)', 'USD' => 'US Dollar ($)', 'GBP' => 'British Pound (£)', 'CAD' => 'Canadian Dollar', 'AUD' => 'Australian Dollar', 'JPY' => 'Japanese Yen'] as $k => $l): ?><option value="<?= $k ?>" <?= m3d_currency() === $k ? 'selected' : '' ?>><?= e($l) ?></option><?php endforeach ?>
           </select>
         </label>
         <button class="btn btn-primary btn-sm">Save</button>
+      </form>
+      <form method="post" class="pt-tiers" id="campaign-tiers" data-busy="Reading…">
+        <?= form_keys('tiers-sync') ?>
+        <span class="lbl">Paid Tiers<?= tip('The tiers offered in the unlock limits, the download requirements and on How Unlocks Work. With the creator token saved, they are read from Patreon once a day; without it, the site learns a tier when a patron on it logs in.') ?></span>
+        <?php if ($tiersKnown): ?><ul class="pt-tier-list"><?php foreach ($tiersKnown as $c => $t): ?><li><span class="pt-tier-name"><?= e($t) ?></span><span class="pt-tier-price"><?= e(m3d_money($c)) ?><small> / month</small></span></li><?php endforeach ?></ul>
+        <?php else: ?><p class="pt-tier-none muted small">None yet.</p><?php endif ?>
+        <div class="pt-tiers-foot">
+          <span class="muted small"><?php if (!$hasTok): ?>Learned from patron logins. Save the creator token in Patreon Keys to read them from Patreon.<?php elseif (!$tst): ?>Not read from Patreon yet.<?php elseif (!empty($tst['ok'])): ?>Read from Patreon <?= e(m3d_site_time((int) $tst['at'], 'j M Y, H:i T')) ?>.<?php else: ?><span class="pt-err">Last try <?= e(m3d_site_time((int) $tst['at'], 'j M Y, H:i T')) ?> failed: <?= e((string) ($tst['err'] ?? '')) ?></span><?php endif ?></span>
+          <?php if ($hasTok): ?><button class="btn btn-ghost btn-sm">Read Tiers Now</button><?php endif ?>
+        </div>
       </form>
     </section>
 
@@ -833,12 +830,45 @@ admin_start('Settings', 'settings');
       </form>
     </section>
 
+    <?php /* rarely changed: folded at the bottom, open while a key is missing or just saved */ ?>
+    <details style="margin-top:20px" class="sec fold" id="patreon"<?= $ptMiss ? ' open' : $open('patreon') ?>>
+      <summary><h2 class="small-h">Patreon Keys <span class="badge tone-<?= $ptMiss ? 'red' : 'green' ?>"><?= $ptMiss ? $ptMiss . ' Missing' : 'Saved' ?></span><?= tip('The keys of your Patreon client (patreon.com/portal/registration/register-clients). Change them only when you move the site or make a new client.') ?></h2></summary>
+      <div class="fold-body">
+      <form method="post" class="pt-form" autocomplete="off" onsubmit="return confirm(<?= e(json_encode('Save the Patreon keys? If they are wrong, nobody can log in (you stay logged in here). Test in a private window afterwards.')) ?>)">
+        <?= form_keys('patreon') ?>
+        <div class="id-grid">
+          <label class="field"><span class="lbl">Client ID <?= $ptFrom('client_id') ?><?= tip('From patreon.com/portal/registration/register-clients → your client → “Client ID”.') ?></span>
+            <?= key_field('Client ID', $ptReal('client_id'), $ptReal('client_id') ? $ptVal('client_id') : '', 'name="pt_client_id" spellcheck="false" autocomplete="off"') ?></label>
+          <label class="field"><span class="lbl">Client Secret <?= $ptFrom('client_secret') ?></span>
+            <?= key_field('Client Secret', $ptReal('client_secret'), null, 'type="password" name="pt_client_secret" placeholder="Paste the client secret" spellcheck="false" autocomplete="new-password"') ?></label>
+          <label class="field id-wide"><span class="lbl">Redirect URI <?= $ptFrom('redirect_uri') ?><?= tip('Must match one of your Patreon client’s “Redirect URIs” exactly.') ?></span>
+            <span class="pt-row"><?= key_field('Redirect URI', $ptReal('redirect_uri'), $ptReal('redirect_uri') ? $ptVal('redirect_uri') : '', 'name="pt_redirect_uri" placeholder="' . e($callback) . '" spellcheck="false" data-pt-redirect') ?>
+              <?php if ($ptVal('redirect_uri') !== $callback): ?><button type="button" class="btn btn-ghost btn-sm" data-pt-use="<?= e($callback) ?>" title="<?= e($callback) ?>">Use This Site’s Address</button><?php endif ?></span></label>
+          <label class="field"><span class="lbl">Campaign ID <?= $ptFrom('campaign_id') ?></span>
+            <?= key_field('Campaign ID', $ptReal('campaign_id'), $ptReal('campaign_id') ? $ptVal('campaign_id') : '', 'name="pt_campaign_id" inputmode="numeric" spellcheck="false"') ?></label>
+        </div>
+        <div class="pt-sub">
+          <h3>Creator Token <span class="badge tone-<?= $tokBadge[0] ?>"><?= e($tokBadge[1]) ?></span><?= tip('Optional. Lets the site read your campaign: patrons’ pledge history at login (months as a patron) and the paid tiers. Both are on your Patreon client’s page, under the Client Secret.') ?></h3>
+          <div class="id-grid">
+          <?php foreach (['creator_token' => 'Creator’s Access Token', 'creator_refresh' => 'Creator’s Refresh Token'] as $k => $label): $has = !empty($pt[$k]); ?>
+            <label class="field"><span class="lbl"><?= e($label) ?></span>
+              <?= key_field($label, $has, null, 'type="password" name="pt_' . $k . '" placeholder="' . e('Paste the ' . mb_strtolower($label)) . '" spellcheck="false" autocomplete="new-password"') ?></label>
+          <?php endforeach ?>
+          </div>
+        </div>
+        <div class="form-actions">
+          <button class="btn btn-primary btn-sm">Save Patreon Keys</button>
+        </div>
+      </form>
+      </div>
+    </details>
+
     <?php endif ?>
 
     <?php if ($tab === 'features'): ?>
     <?php $bl = m3d_blog_settings(); $blRaw = m3d_settings()['blog'] ?? []; ?>
     <section class="sec" id="blog">
-      <h2 class="small-h">Blog <span class="badge tone-<?= $bl['on'] ? 'green' : 'grey' ?>"><?= $bl['on'] ? 'On' : 'Off' ?></span><?= tip('News, works in progress and tutorials at /blog/, written in Admin → Blog. Patrons can like posts.') ?></h2>
+      <h2 class="small-h">Blog <span class="badge tone-<?= $bl['on'] ? 'green' : 'grey' ?>"><?= $bl['on'] ? 'On' : 'Off' ?></span></h2>
       <form method="post" class="set-list">
         <?= form_keys('blog') ?>
         <label class="toggle"><input type="checkbox" class="switch" name="blog_on" value="1" <?= $bl['on'] ? 'checked' : '' ?> /><span>Enable Blog<?= tip('Adds “Blog” to the menu and the footer once there is a post. Off: /blog/ returns “not found” (admins still see it).') ?></span></label>
@@ -861,12 +891,12 @@ admin_start('Settings', 'settings');
         <label class="toggle"><input type="checkbox" class="switch" name="bugs_on" value="1" <?= $bs['on'] ? 'checked' : '' ?> /><span>Enable Bug Reports<?= tip('Adds “Bug Reports” to the footer and a “Found a bug?” box on model and accessory pages. Off: /bugs/ returns “not found” (admins still see it).') ?></span></label>
         <div class="set-grps">
           <div class="set-grp"><h3>Posting</h3>
-            <div class="field"><span class="lbl">Who Can Post<?= tip('Reports and comments. Everyone can read reports, logged in or not.') ?></span>
+            <div class="field"><span class="lbl">Who Can Post</span>
               <div class="vis-seg bugs-who">
                 <label class="vis-opt"><input type="radio" name="bugs_who" value="any" <?= $bs['who'] === 'any' ? 'checked' : '' ?> />Any Account</label>
                 <label class="vis-opt"><input type="radio" name="bugs_who" value="paying" <?= $bs['who'] === 'paying' ? 'checked' : '' ?> />Paying Patrons</label>
               </div></div>
-            <label class="field bugs-num"><span class="lbl">Reports per Day<?= tip('How many reports one person can send in a day. Comments don’t count.') ?></span>
+            <label class="field bugs-num"><span class="lbl">Reports per Day</span>
               <input class="input" type="number" name="bugs_per_day" min="1" max="50" value="<?= (int) $bs['per_day'] ?>" /></label>
             <label class="toggle"><input type="checkbox" class="switch" name="bugs_moderate" value="1" <?= $bs['moderate'] ? 'checked' : '' ?> /><span>Review Before Publishing<?= tip('New reports stay hidden (visible only to their author) until you press Publish on the report’s page.') ?></span></label>
           </div>
@@ -884,7 +914,7 @@ admin_start('Settings', 'settings');
 
     <?php $cs = m3d_comment_settings(); $cmCount = m3d_comments_count(); $cmWait = m3d_comments_pending(); ?>
     <section style="margin-top:20px" class="sec" id="comments">
-      <h2 class="small-h">Comments <span class="badge tone-<?= $cs['on'] ? 'green' : 'grey' ?>"><?= $cs['on'] ? 'On' : 'Off' ?></span><?= tip('Logged-in patrons write comments under model, accessory and blog post pages, shown with their Patreon name. Each page can turn them off with “Allow Comments” in its editor.') ?></h2>
+      <h2 class="small-h">Comments <span class="badge tone-<?= $cs['on'] ? 'green' : 'grey' ?>"><?= $cs['on'] ? 'On' : 'Off' ?></span><?= tip('Each page can turn them off with “Allow Comments” in its editor.') ?></h2>
       <form method="post" autocomplete="off" class="set-list">
         <?= form_keys('comments') ?>
         <label class="toggle"><input type="checkbox" class="switch" name="cm_on" value="1" <?= $cs['on'] ? 'checked' : '' ?> /><span>Enable Comments<?= tip('Off: no comments are shown anywhere and nobody can write one. They are kept, and come back when you turn this on again.') ?></span></label>
@@ -895,14 +925,15 @@ admin_start('Settings', 'settings');
             <?php endforeach ?>
           </div>
           <div class="set-grp"><h3>Posting</h3>
-            <div class="field"><span class="lbl">Who Can Comment<?= tip('Everyone who can see the page can read its comments, logged in or not.') ?></span>
+            <div class="field"><span class="lbl">Who Can Comment</span>
               <div class="vis-seg bugs-who">
                 <label class="vis-opt"><input type="radio" name="cm_who" value="any" <?= $cs['who'] === 'any' ? 'checked' : '' ?> />Any Account</label>
                 <label class="vis-opt"><input type="radio" name="cm_who" value="paying" <?= $cs['who'] === 'paying' ? 'checked' : '' ?> />Paying Patrons</label>
               </div></div>
-            <label class="field bugs-num"><span class="lbl">Comments per Day<?= tip('How many comments one person can write in 24 hours, on all pages together. Yours don’t count.') ?></span>
+            <label class="field bugs-num"><span class="lbl">Comments per Day</span>
               <input class="input" type="number" name="cm_per_day" min="1" max="100" value="<?= (int) $cs['per_day'] ?>" /></label>
             <label class="toggle"><input type="checkbox" class="switch" name="cm_moderate" value="1" <?= $cs['moderate'] ? 'checked' : '' ?> /><span>Check Before Showing<?= tip('New comments are visible only to their author (and you) until you publish them, here or with ⋯ → Publish on the page.') ?></span></label>
+            <label class="toggle"><input type="checkbox" class="switch" name="cm_paid_skip" value="1" <?= $cs['paid_skip'] ? 'checked' : '' ?> /><span>Skip for Paying Patrons<?= tip('With Check Before Showing on: comments from patrons on a paid tier show at once, comments from other accounts (free members) still wait for you. Banned people still can’t comment.') ?></span></label>
           </div>
           <?= notify_group('comments') ?>
         </div>
@@ -929,13 +960,13 @@ admin_start('Settings', 'settings');
 
     <?php $sc = m3d_showcase_settings(); ?>
     <section style="margin-top:20px" class="sec" id="showcase">
-      <h2 class="small-h">Patron Renders <span class="badge tone-<?= $sc['on'] ? 'green' : 'grey' ?>"><?= $sc['on'] ? 'On' : 'Off' ?></span><?= tip('Paying patrons share renders they made with a model or accessory from its page (the “Made a Render?” box). You approve each one in Admin → Gallery → From Patrons; approved ones show in the page’s gallery, after your pictures.') ?></h2>
+      <h2 class="small-h">Patron Renders <span class="badge tone-<?= $sc['on'] ? 'green' : 'grey' ?>"><?= $sc['on'] ? 'On' : 'Off' ?></span><?= tip('Paying patrons share renders they made with a model or accessory from its page (the “Made a Render?” box). You approve each one in Media → From Patrons; approved ones show in the page’s gallery, after your pictures.') ?></h2>
       <form method="post" autocomplete="off" class="set-list">
         <?= form_keys('showcase') ?>
         <label class="toggle"><input type="checkbox" class="switch" name="sc_on" value="1" <?= $sc['on'] ? 'checked' : '' ?> /><span>Enable Patron Renders<?= tip('Off: nobody can share new renders and none show on the pages. They are kept, and come back when you turn this on again.') ?></span></label>
         <label class="field bugs-num"><span class="lbl">Renders per Day<?= tip('How many renders one patron can send in 24 hours, on all pages together. 0 = no limit. A patron never has more than ' . SHOWCASE_WAITING . ' waiting for your approval at once.') ?></span>
           <input class="input" type="number" name="sc_per_day" min="0" max="<?= SHOWCASE_PER_DAY_MAX ?>" value="<?= (int) $sc['per_day'] ?>" /></label>
-        <div class="form-actions"><?php if ($sc['on'] || m3d_showcase_stored()): ?><a class="btn btn-ghost btn-sm" href="/admin/showcase.php">Open From Patrons</a><?php endif ?><button class="btn btn-primary btn-sm">Save</button></div>
+        <div class="form-actions"><?php if ($sc['on'] || m3d_showcase_stored()): ?><a class="btn btn-ghost btn-sm" href="<?= e(m3d_showcase_admin_url()) ?>">Open From Patrons</a><?php endif ?><button class="btn btn-primary btn-sm">Save</button></div>
       </form>
     </section>
 
@@ -975,11 +1006,11 @@ admin_start('Settings', 'settings');
 
     <?php $wl = m3d_welcome(); ?>
     <section style="margin-top:20px" class="sec" id="welcome">
-      <h2 class="small-h">Welcome Page <span class="badge tone-<?= $wl['on'] ? 'green' : 'grey' ?>"><?= $wl['on'] ? 'On' : 'Off' ?></span><?= tip('A page that shows new patrons around the site, once, right after their first login: how downloads and unlocks work (from your rules), updates and help. Then it sends them where they were going.') ?></h2>
+      <h2 class="small-h">Welcome Page <span class="badge tone-<?= $wl['on'] ? 'green' : 'grey' ?>"><?= $wl['on'] ? 'On' : 'Off' ?></span></h2>
       <form method="post" class="set-list">
         <?= form_keys('welcome') ?>
         <label class="toggle"><input type="checkbox" class="switch" name="welcome_on" value="1" <?= $wl['on'] ? 'checked' : '' ?> /><span>Show After the First Login<?= tip('Paying patrons and people with a Bypass Tier exception. Admins never get it. Patrons can open it again from My Account.') ?></span></label>
-        <label class="toggle"><input type="checkbox" class="switch" name="welcome_skip_old" value="1" <?= $wl['skip_old'] ? 'checked' : '' ?> /><span>Skip Patrons Who Downloaded Before<?= tip('People with a download from before you turned the page on don’t get it.') ?></span></label>
+        <label class="toggle"><input type="checkbox" class="switch" name="welcome_skip_old" value="1" <?= $wl['skip_old'] ? 'checked' : '' ?> /><span>Skip Patrons Who Downloaded Before</span></label>
         <label class="field"><span class="lbl">Intro Text<?= tip('Under the title. Empty = “Thanks for supporting ' . site_name() . ' on Patreon. Here’s a quick tour, so you know where everything is.”') ?></span>
           <textarea class="input" name="welcome_text" rows="3" data-img-drop="misc" maxlength="<?= WELCOME_TEXT_MAX ?>" placeholder="<?= e(m3d_welcome_text()) ?>"><?= e($wl['text']) ?></textarea></label>
         <label class="field"><span class="lbl">Before Your First Download<?= tip('The line next to the Getting Started links of Admin → Models. The box shows only while there are links.') ?></span>
@@ -1005,7 +1036,7 @@ admin_start('Settings', 'settings');
         <div class="id-grid">
           <label class="field"><span class="lbl">Access Key ID<?= tip('In MEGA, open Object Storage (S4) → Access Keys and create a key. Paste its access key ID here.') ?></span>
             <?= key_field('Access Key ID', $s4['key'] !== '', $s4['key'], 'name="s4_key" maxlength="128" spellcheck="false" autocomplete="off"') ?></label>
-          <label class="field"><span class="lbl">Secret Key<?= tip('Shown by MEGA when you create the key. Never shown again here once saved.') ?></span>
+          <label class="field"><span class="lbl">Secret Key</span>
             <?= key_field('Secret Key', $s4['secret'] !== '', null, 'type="password" name="s4_secret" maxlength="200" placeholder="Paste the secret key" spellcheck="false" autocomplete="new-password"') ?></label>
           <?php $inHours = $s4['minutes'] % 60 === 0; ?>
           <div class="field"><label class="lbl" for="s4-life">Link Lifetime<?= tip('How long a download address works after the patron starts the download. A download already running finishes; resuming it later needs a new click. From ' . S4_MINUTES_MIN . ' minutes to 7 days.') ?></label>
@@ -1016,16 +1047,10 @@ admin_start('Settings', 'settings');
           <label class="field"><span class="lbl">Download Domain<?= tip('Optional. Your own address for downloads, e.g. files.example.com: a proxy on it (e.g. a CDN worker) passes each temporary address on to the bucket’s host unchanged. Downloads of files in the bucket above then show your address instead of MEGA’s. Empty: downloads go straight to MEGA.') ?></span>
             <?= key_field('Download Domain', $s4['domain'] !== '', $s4['domain'], 'name="s4_domain" maxlength="253" placeholder="files.example.com" spellcheck="false" autocomplete="off"') ?></label>
         </div>
-        <?php $s4TestVal = m3d_s4_short($s4['test']) ? ltrim(substr($s4['test'], 3), '/') : $s4['test']; ?>
-        <details class="s4-more"<?= $s4TestVal !== '' ? ' open' : '' ?>>
-          <summary>Test a Specific File</summary>
-          <label class="field"><span class="lbl">Test File<?= tip('Optional. Without it, “Save and Test” lists the bucket and reads the first byte of its first file. With it, only this file is read: its name (model.zip) or its full address.') ?></span>
-            <input class="input" name="s4_test" value="<?= e($s4TestVal) ?>" maxlength="1000" placeholder="model.zip" spellcheck="false" /></label>
-        </details>
         <div class="form-actions">
           <?php if ($s4Test !== null): ?>
             <p class="act-left dc-last small"><?php if ($s4Test['ok']): $tf = (string) ($s4Test['file'] ?? ''); $tp = $tf !== '' ? m3d_s4_parse($tf) : null; $try = $tp ? m3d_s4_presign($tf) : null; $try = $try !== null ? m3d_s4_domain_url($try) : null; ?>
-              <b class="res-ok">✓ Works:</b> <?= isset($s4Test['list']) ? 'bucket ' . e((string) (m3d_s4_parse($s4['bucket'] . 'x')[1] ?? '')) . ', ' . e($s4Test['list']) . ($tp ? ' · ' : '') : '' ?><?= $tp ? e(basename((string) $tp[2])) : '' ?><?= $tp && $s4['bucket'] !== '' && !isset($s4Test['list']) ? ' · in a download link: <code>s4:' . e((string) $tp[2]) . '</code>' : '' ?><?= ($s4Test['size'] ?? 0) > 0 ? ' · ' . e(m3d_size((int) $s4Test['size'])) : '' ?>.
+              <b class="res-ok">✓ Works:</b> bucket <?= e((string) (m3d_s4_parse($s4['bucket'] . 'x')[1] ?? '')) ?>, <?= e((string) $s4Test['list']) ?><?= $tp ? ' · ' . e((string) $tp[2]) : '' ?><?= ($s4Test['size'] ?? 0) > 0 ? ' · ' . e(m3d_size((int) $s4Test['size'])) : '' ?>.
               <?php if (isset($s4Test['via'])): $via = $s4Test['via']; ?>
                 <?php if ($via['ok']): ?><b class="res-ok">✓ Through <?= e($s4['domain']) ?> too.</b>
                 <?php else: ?><b class="res-err">✗ Not through <?= e($s4['domain']) ?>:</b> <?= e($via['code'] === 0 ? 'no answer (' . $via['err'] . ')' : (!str_starts_with($via['err'], 'HTTP ') ? m3d_s4_error_text($via['err']) : ($via['code'] === 404 ? 'it answered “Not found” (check the bucket name in the Worker’s code)' : 'it answered ' . $via['err']))) ?>. Downloads use this address anyway: fix the Worker, or empty the Download Domain.<?php endif ?>
@@ -1066,7 +1091,7 @@ admin_start('Settings', 'settings');
       <?php if ($maintOn && ($since = m3d_site_time((string) ($maint['since'] ?? ''), 'j F Y, H:i T')) !== ''): ?><p class="muted small sec-hint">On since <?= e($since) ?>.</p><?php endif ?>
       <form method="post" class="maint-form"<?= $maintOn ? '' : ' onsubmit="return confirm(' . e(json_encode('Turn on maintenance mode? Visitors will see the “Back Soon” page until you turn it off.')) . ')"' ?>>
         <?= form_keys('maintenance') ?>
-        <label class="field"><span class="lbl">Visitor Message<?= tip('Optional. Shown on the “Back Soon” page.') ?></span>
+        <label class="field"><span class="lbl">Visitor Message</span>
           <textarea class="input" name="message" rows="2" maxlength="1000" placeholder="The website is being updated. Please come back in a little while."><?= e($maint['message'] ?? '') ?></textarea>
         </label>
         <div class="form-actions">
@@ -1155,9 +1180,9 @@ admin_start('Settings', 'settings');
         <?= form_keys('legal') ?>
         <div class="id-grid">
           <label class="field"><span class="lbl">Full Name</span><input class="input" name="legal_name" value="<?= e($lg['name']) ?>" maxlength="120" /></label>
-          <label class="field"><span class="lbl">Privacy Email<?= tip('Shown on the privacy page.') ?></span><input class="input" type="email" name="legal_email" value="<?= e($lg['email']) ?>" maxlength="120" /></label>
+          <label class="field"><span class="lbl">Privacy Email</span><input class="input" type="email" name="legal_email" value="<?= e($lg['email']) ?>" maxlength="120" /></label>
           <label class="field id-wide"><span class="lbl">Postal Address</span><textarea class="input" name="legal_address" rows="3" maxlength="300"><?= e($lg['address']) ?></textarea></label>
-          <label class="field id-wide"><span class="lbl">Support Email<?= tip('Shown on the Contacts page for legal matters about the website’s content.') ?></span><input class="input" type="email" name="support_email" value="<?= e(m3d_support_email()) ?>" maxlength="120" /></label>
+          <label class="field id-wide"><span class="lbl">Support Email</span><input class="input" type="email" name="support_email" value="<?= e(m3d_support_email()) ?>" maxlength="120" /></label>
         </div>
         <div class="form-actions"><a class="btn btn-ghost btn-sm" href="/privacy/" target="_blank">View the Privacy Page ↗</a><button class="btn btn-primary btn-sm">Save</button></div>
       </form>

@@ -80,7 +80,7 @@ function m3d_still_view(array $s): string
 {
     $admin = m3d_is_admin($GLOBALS['M3D']);
     $own = (string) ($s['visibility'] ?? 'public');
-    if ($own === 'draft' && !$admin) return 'hidden';
+    if (($own === 'draft' || (!empty($s['from']) && m3d_render_hidden((string) $s['from']))) && !$admin) return 'hidden';   // a patron render the creator hid: its copy too
     $blur = $own === 'blurred' || ($own === 'blurred-patrons' && !m3d_sees_patron_pics());
     foreach (m3d_still_chars($s) as $c) {
         if (!$c['model']) continue;
@@ -94,7 +94,7 @@ function m3d_still_view(array $s): string
 function m3d_still_public_view(array $s): string
 {
     $own = (string) ($s['visibility'] ?? 'public');
-    if ($own === 'draft') return 'hidden';
+    if ($own === 'draft' || (!empty($s['from']) && m3d_render_hidden((string) $s['from']))) return 'hidden';
     $blur = $own === 'blurred' || $own === 'blurred-patrons';
     foreach (m3d_still_chars($s) as $c) {
         if (!$c['model']) continue;
@@ -261,7 +261,7 @@ function still_slide(array $s): array
     $cap = trim((string) ($s['caption'] ?? ''));
     $slide = ['src' => (string) $s['src'], 'caption' => $cap, 'like' => (string) $s['id']];
     // a patron render (`from`) whose author linked their profile: its "By Name" at the end of the caption becomes that link
-    $r = !empty($s['from']) && function_exists('m3d_render') ? m3d_render((string) $s['from']) : null;
+    $r = !empty($s['from']) ? m3d_render((string) $s['from']) : null;
     if ($r && ($link = m3d_render_link($r))) {
         $tail = 'By ' . $link['name'];
         if ($cap === $tail || str_ends_with($cap, ' · ' . $tail)) $slide = ['caption' => trim(substr($cap, 0, -strlen($tail)), ' ·'), 'by' => render_slide_by($link)] + $slide;
@@ -282,8 +282,24 @@ function still_tile(array $s, ?int $n, bool $eager = false): string
     [$w, $h] = img_dims((string) $s['src']) ?: [3, 2];
     $r = $h > 0 ? round($w / $h, 4) : 1.5;
     $tags = '';
-    foreach ($chars as $c) $tags .= '<span class="g-tag">' . char_avatar($c, 18) . e($c['name']) . '</span>';
+    // a face each; its name grows out of it while the pointer is on the tile (site.css), the viewer always names them; a model this
+    // visitor can open is a link to its page (site.js keeps the viewer from opening on it)
+    foreach ($chars as $c) {
+        $in = char_avatar($c, 22) . '<span class="g-tag-n">' . e($c['name']) . '</span>';
+        $tags .= $c['model'] && m3d_can_view('models', $c['model'])
+            ? '<a class="g-tag" href="' . e(m3d_item_url('models', $c['model']['slug'])) . '" title="' . e($c['name']) . '">' . $in . '</a>'
+            : '<span class="g-tag">' . $in . '</span>';
+    }
     $cap = trim((string) ($s['caption'] ?? ''));
+    $capHtml = e($cap);
+    // a patron render whose author linked their profile: "By Name" at the end of the caption links to it, as in the viewer (still_slide())
+    $render = !$blur && !empty($s['from']) ? m3d_render((string) $s['from']) : null;
+    if ($render && ($link = m3d_render_link($render))) {
+        $tail = 'By ' . $link['name'];
+        if ($cap === $tail || str_ends_with($cap, ' · ' . $tail)) {
+            $capHtml = e(substr($cap, 0, -strlen($link['name']))) . '<a href="' . e($link['url']) . '" target="_blank" rel="nofollow ugc noopener" title="' . e($link['label']) . '">' . e($link['name']) . render_link_icon($link['net']) . '</a>';
+        }
+    }
     $search = implode(' ', array_merge([$cap], array_column($chars, 'name'), array_column($chars, 'franchise')));
     $pills = '';
     if ($blur) {   // "Teaser" when nobody sees it clear yet, "Patrons" when patrons do
@@ -293,7 +309,7 @@ function still_tile(array $s, ?int $n, bool $eager = false): string
     elseif (!empty($s['link']['url'])) {   // the lock only while this visitor can't download it yet (like the viewer's button)
         $pat = ($s['link']['access'] ?? 'patrons') === 'patrons';
         $locked = $pat && !m3d_sees_patron_pics();
-        $pills .= '<span class="g-full' . ($pat ? ' pat' : '') . '" title="' . ($locked ? 'Full size for patrons (any paid tier)' : 'A full size file can be downloaded') . '">' . ($locked ? LOCK_ICON : DOWNLOAD_ICON) . 'Full Size</span>';
+        $pills .= '<span class="g-full' . ($pat ? ' pat' : '') . '" title="' . ($locked ? 'Full size for patrons (any paid tier)' : 'A full size file can be downloaded') . '">' . ($locked ? LOCK_ICON : DOWNLOAD_ICON) . '<span class="sr-only">Full size</span></span>';   // the icon alone, round like the heart
     }
     if (($s['visibility'] ?? 'public') === 'draft') $pills .= '<span class="lock-pill">Draft</span>';   // only admins see drafts
     $attrs = ' class="g-tile' . ($blur ? ' is-blurred' : '') . '" style="--r:' . $r . '" data-tile data-chars="' . e(implode(' ', array_column($chars, 'key'))) . '"'
@@ -305,7 +321,7 @@ function still_tile(array $s, ?int $n, bool $eager = false): string
     $sizes = '(max-width: 720px) ' . (int) ceil(150 * $r * 1.2) . 'px, ' . (int) ceil(260 * $r * 1.2) . 'px';
     $img = '<img src="' . e($src) . '"' . ($set !== '' ? ' srcset="' . e($set) . '" sizes="' . $sizes . '"' : '') . ' alt="' . e($alt) . '"' . ($eager ? ' fetchpriority="high"' : ' loading="lazy"') . ' decoding="async" />';
     $over = ($pills !== '' ? '<span class="cover-tags">' . $pills . '</span>' : '')
-        . '<span class="g-cap">' . ($cap !== '' ? '<span class="g-title">' . e($cap) . '</span>' : '') . ($tags !== '' ? '<span class="g-tags">' . $tags . '</span>' : '') . '</span>';
+        . '<span class="g-cap">' . ($cap !== '' ? '<span class="g-title">' . $capHtml . '</span>' : '') . ($tags !== '' ? '<span class="g-tags">' . $tags . '</span>' : '') . '</span>';
     if ($n === null) return '<figure' . $attrs . '>' . $img . $over . '</figure>';   // blurred: no viewer, no likes
     // clear: the picture is the viewer's button, the heart its own button next to it (buttons can't hold buttons)
     $likes = m3d_like_count((string) $s['id'], 'stills');

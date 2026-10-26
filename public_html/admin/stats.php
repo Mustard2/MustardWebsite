@@ -388,7 +388,7 @@ admin_start($item ? $name($kind, $item) . ' · Stats' : 'Stats', 'stats');
       </nav>
     </div>
 
-    <?php if ($item): $vis = m3d_visibility($item); ?>
+    <?php if ($item): ?>
     <div class="sp-item">
       <?= $thumb($kind, $item, 'sp-cover') ?>
       <div class="sp-item-txt">
@@ -451,7 +451,7 @@ admin_start($item ? $name($kind, $item) . ' · Stats' : 'Stats', 'stats');
         <div class="table-wrap sp-scroll">
         <table class="sp-vt">
           <colgroup><col /><col class="n" /><col class="up" /><col class="n" /><?php if ($refs): ?><col class="fx" /><?php endif ?></colgroup>
-          <thead><tr><th>Version</th><th class="c-num">Downloads<?= tip('Downloads of that version in the download log.') ?></th><th>Patrons With It<?= tip('Patrons whose last download of it is that version.') ?></th><th class="c-num">Ignored<?= tip('Patrons who pressed “Ignore this update” on that version.') ?></th><?php if ($refs): ?><th>Fixes</th><?php endif ?></tr></thead>
+          <thead><tr><th>Version</th><th class="c-num">Downloads</th><th>Patrons With It<?= tip('Patrons whose last download of it is that version.') ?></th><th class="c-num">Ignored</th><?php if ($refs): ?><th>Fixes</th><?php endif ?></tr></thead>
           <tbody>
             <?php foreach ($log as $i => $en): $vk = m3d_ver_key(m3d_version_label($en)); $t = m3d_changelog_ts((string) ($en['date'] ?? '')); $out = !$t || $t <= $now; $n = $lastKeys[$vk] ?? 0; ?>
             <tr<?= $out ? '' : ' class="is-soon"' ?>>
@@ -512,7 +512,7 @@ admin_start($item ? $name($kind, $item) . ' · Stats' : 'Stats', 'stats');
     $maxPer = max(1, ...array_column($tableRows, 'period') ?: [0]);
 ?>
       <section class="sec <?= $series ? 'sp-w8' : '' ?> sp-tot">
-        <h2><?= $scope === 'site' ? 'Models &amp; Accessories' : ($kind === 'outfits' ? 'Accessories' : 'Models') ?> <span class="sp-legend">Click one to see its stats</span></h2>
+        <h2><?= $scope === 'site' ? 'Models &amp; Accessories' : ($kind === 'outfits' ? 'Accessories' : 'Models') ?></h2>
         <?php if (!$tableRows): ?><p class="muted">Nothing here yet.</p><?php else: ?>
         <div class="tot-bar">
           <?php if ($scope === 'site' && count($kinds) > 1): ?>
@@ -540,7 +540,7 @@ admin_start($item ? $name($kind, $item) . ' · Stats' : 'Stats', 'stats');
               <?php foreach ($tableRows as $r): $it = $r['it']; $k = $r['kind']; $tg = $tag($k, $it); ?>
               <tr class="<?= $r['total'] || $r['period'] ? '' : 'tot-zero' ?>" data-kind="<?= e($k) ?>" data-name="<?= e(mb_strtolower($it['name'] . ' ' . $tg)) ?>" data-search="<?= e(implode(' ', [$it['name'], $tg, $it['franchise'] ?? '', $k === 'outfits' ? 'accessory' : 'model', $it['slug']])) ?>"
                 data-period="<?= $r['period'] ?>" data-total="<?= $r['total'] ?>" data-likes="<?= $r['likes'] ?>" data-latest="<?= $r['latest'] ?>" data-bugs="<?= $r['bugs'] ?>">
-                <td><a class="tot-item sp-go" href="<?= e($itemUrl($k, $it)) ?>"><?= $thumb($k, $it, 'tot-pic') ?><span class="tot-name"><b><?= e($name($k, $it)) ?></b><?php if ($tg !== ''): ?><span class="tot-tag tot-tag-<?= e($k) ?>"><?= e($tg) ?></span><?php endif ?></span></a></td>
+                <td><a class="tot-item sp-go" href="<?= e($itemUrl($k, $it)) ?>"><?= $thumb($k, $it, 'tot-pic') ?><span class="tot-name"><b title="<?= e($name($k, $it)) ?>"><?= e($name($k, $it)) ?></b><?= $tg !== '' ? '<span class="tot-tag tot-tag-' . e($k) . '">' . e($tg) . '</span>' : '<span class="tot-tag is-none" aria-hidden="true">&nbsp;</span>' ?></span></a></td>
                 <td><span class="tot-dl"><span class="tot-meter" aria-hidden="true"><i style="width:<?= round($r['period'] / $maxPer * 100, 1) ?>%"></i></span><b class="num"><?= number_format($r['period']) ?></b></span></td>
                 <td class="c-num" title="<?= e(number_format($r['patrons']) . ' by patrons · ' . number_format($r['public']) . ' free') ?>"><?= number_format($r['total']) ?></td>
                 <td class="c-num"><?= $r['likes'] ? '<span class="likes-num">♥ ' . $r['likes'] . '</span>' : '<span class="muted">0</span>' ?></td>

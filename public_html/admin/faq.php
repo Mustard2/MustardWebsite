@@ -18,7 +18,7 @@ admin_start('FAQ', 'faq');
       </div>
     </div>
 
-    <?= format_help('How to Format Answers', ['box', 'image', 'card'],
+    <?= format_help('How to Format Answers', ['box', 'fold', 'image', 'carousel', 'card'],
         'Pictures and boxes can also be added with <i>Add image</i> and <i>Box…</i> under each answer.') ?>
 
     <form class="editor" data-editor novalidate></form>

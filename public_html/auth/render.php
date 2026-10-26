@@ -56,9 +56,7 @@ if (count(array_filter($mine, fn($r) => empty($r['ok']))) >= SHOWCASE_WAITING) $
 
 [$src, $err] = m3d_session_pause(fn() => m3d_showcase_save_pic($_FILES['pic'] ?? null));   // resizing a 4K render takes a moment
 if ($err !== '') $back($kind, $slug, 'rendererr=' . $err);
-$cap = mb_scrub(is_string($_POST['caption'] ?? null) ? $_POST['caption'] : '', 'UTF-8');   // one line: no control or direction characters, like names
-$cap = (string) preg_replace('/[\x{200E}\x{200F}\x{202A}-\x{202E}\x{2066}-\x{2069}\x{061C}]/u', '', $cap);
-$cap = rtrim(mb_substr(trim((string) preg_replace('/[\p{Cc}\s]+/u', ' ', $cap)), 0, SHOWCASE_CAPTION));
+$cap = m3d_render_caption($_POST['caption'] ?? '');
 $r = ['id' => '', 'kind' => $kind, 'slug' => $slug, 'src' => $src, 'by' => $me, 'name' => (string) ($p['name'] ?? ''), 'named' => $named] + ($link ? ['link' => $link] : []) + ($full !== '' ? ['full' => $full] : []) + ['caption' => $cap, 'at' => time()];
 // the limits again inside the lock: two sends at once must not both pass
 $res = m3d_renders_update(function (array $rs) use (&$r, $me) {

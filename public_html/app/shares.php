@@ -154,13 +154,6 @@ function m3d_share_use(string $code, string $key): array
     return is_array($out) ? $out : ['ok' => false, 'why' => 'save'];
 }
 
-/** A model / accessory renamed in the admin (m3d_rename_counts()): its temporary links follow it. */
-function m3d_shares_rename(string $kind, string $old, string $new): void
-{
-    if (!is_file(M3D_PRIVATE . '/data/shares.json')) return;
-    m3d_shares_change(fn($list) => array_map(fn($s) => ($s['kind'] ?? '') === $kind && ($s['slug'] ?? '') === $old ? ['slug' => $new] + $s : $s, $list));
-}
-
 /**
  * Items deleted in the admin (admin_forget_items()): their links end for good, so a new item made later at the same address
  * doesn't inherit them (the link was given for the deleted one's files).

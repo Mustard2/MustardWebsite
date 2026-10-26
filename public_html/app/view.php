@@ -299,6 +299,7 @@ function layout_start(string $title = '', string $description = '', string $body
     m3d_discord_stills_tick();   // new Gallery pictures waiting for their Discord post
     m3d_blog_discord_tick();   // a blog post went out (published, or its date reached): its Discord post after this page
     lc_auto_tick();   // Link check's automatic check (only when switched on): a few due links after this page
+    m3d_tiers_tick();   // the campaign's tiers read from Patreon once a day (with the creator token)
     $locked = !age_confirmed();
     if ($locked) $bodyClass = trim($bodyClass . ' age-locked');
     $full = $title !== '' ? $title . ' · ' . site_name() : site_name() . ' · ' . site_tagline();
@@ -347,19 +348,16 @@ function layout_start(string $title = '', string $description = '', string $body
       <a class="brand" href="/" aria-label="<?= e(site_name()) ?> home"><?= brand() ?></a>
       <nav class="nav" aria-label="Main">
 <?php
-    // the creator (not while previewing as a patron): the bell instead of numbers in the menu (app/notify.php)
+    // news (followed bug reports, updates…) is in the bells, not as numbers in the menu: the creator's (not while previewing as a
+    // patron, app/notify.php), everyone else's when logged in (app/bell.php)
     $creatorBell = m3d_is_admin($GLOBALS['M3D']) && empty(m3d_patron($GLOBALS['M3D'])['preview']);
-    foreach (site_menu() as [$label, $href, $cur, $kind]):
-        if ($kind === 'bugs'):
-            // the number: news on the reports a patron follows
-            $bugNews = $creatorBell ? 0 : m3d_bug_news_count(m3d_patron($GLOBALS['M3D']));
-            $bugTip = m3d_plural($bugNews, 'report') . ' you follow ' . ($bugNews === 1 ? 'has' : 'have') . ' news'; ?>        <a href="/bugs/<?= $bugNews ? '?status=following' : '' ?>"<?= str_starts_with($path, '/bugs') ? ' aria-current="page"' : '' ?>><?= e($label) ?><?= $bugNews ? '<span class="nav-new" title="' . e($bugTip) . '">' . $bugNews . '</span>' : '' ?></a>
-<?php else: ?>        <?= menu_link($label, $href, $cur, $kind, $path) ?>
+    $userBell = !$creatorBell && m3d_ubell_for(m3d_patron($GLOBALS['M3D']));
+    foreach (site_menu() as [$label, $href, $cur, $kind]): ?>        <?= menu_link($label, $href, $cur, $kind, $path) ?>
 
-<?php endif; endforeach ?>
+<?php endforeach ?>
       </nav>
       <div class="nav-more" data-nav-more hidden><button type="button" class="nav-more-btn" aria-expanded="false" aria-haspopup="true">More<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 10 5 5 5-5"/></svg></button><div class="nav-more-list" hidden></div></div>
-<?= header_search() ?><?= $creatorBell ? quick_add() . notify_bell() : '' ?><?= account_box($path) ?>    </div>
+<?= header_search() ?><?= $creatorBell ? quick_add() . notify_bell() : ($userBell ? ubell_html(m3d_patron($GLOBALS['M3D'])) : '') ?><?= account_box($path) ?>    </div>
   </header>
 <?= site_notice($path) ?>
   <main id="main">
@@ -600,10 +598,9 @@ function m3d_status_data(?array $p): array
         foreach (array_keys(m3d_free_items()) as $key) { [$k, $slug] = explode(':', $key, 2); if ($seen($k, $slug)) $left['free'][$k][] = $slug; }
     }
     return ['loggedIn' => true, 'name' => $p['name'], 'access' => (bool) $p['access'], 'admin' => m3d_is_admin($GLOBALS['M3D']),
-            'owner' => ($p['reason'] ?? '') === 'owner',
             'left' => $left,
             // newer versions of what they downloaded, as codes "kind:slug@version", without the ones they ignored: the "↑ Update"
-            // tags on catalog cards and the dot on the account button (until downloaded or ignored)
+            // tags on catalog cards (until downloaded or ignored; the bell lists them too)
             'updates' => m3d_update_codes(m3d_updates_shown($p))];
 }
 
@@ -647,7 +644,7 @@ function account_box(string $path): string
         . "      </div>\n";
     $ok = !empty($p['access']);
     $me = m3d_status_data($p);
-    if (!empty($p['access'])) $me['csrf'] = m3d_csrf();   // "Ignore this update" (cards, My account → /auth/ignore-update.php) and the My Models hearts; only this visitor gets the page
+    if (!empty($p['access'])) $me['csrf'] = m3d_csrf();   // My account's "Ignore this update" (/auth/ignore-update.php) and the My Models hearts; only this visitor gets the page
     return '      <div class="account" data-account' . $join . ' data-session data-me="' . e(json_encode($me, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE)) . '">'
         . '<a class="btn btn-sm btn-who' . ($ok ? ' ok' : '') . '" href="/account/" title="My account' . ($ok ? ' · Patron' : '') . '"><span class="who-name">' . e((string) ($p['name'] ?? '')) . '</span></a>'
         . (m3d_is_admin($GLOBALS['M3D']) ? '<a class="btn btn-primary btn-sm" href="/admin/">Admin</a>' : '')
@@ -747,7 +744,6 @@ function visibility_pill_only(string $kind, array $item): string
 }
 
 const LOCK_ICON = '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>';
-const CHECK_ICON = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12.5 4.5 4.5L19 7.5"/></svg>';
 
 /** The Filters button (catalogs, Gallery, bug reports): opens the panel with the id $panel (site.js); the badge counts the filters in use. */
 function filter_toggle(string $panel, bool $open = false, int $active = 0): string
@@ -990,7 +986,7 @@ function preview_bar(string $return): string
         . '<label title="Total support given over all the months."><span>Total (' . e(m3d_currency()) . ')</span><input type="number" name="total" min="0" step="any" value="' . e($amt($total)) . '" /></label>'
         . '<label title="Models downloaded: counted as downloaded a minute ago (other models than the one you look at), so they count in every limit period."><span>Models</span><input type="number" name="dl_models" min="0" max="99" value="' . (int) ($pv['dl_models'] ?? 0) . '" /></label>'
         . '<label title="Accessories downloaded: counted as downloaded a minute ago, so they count in every limit period."><span>Accessories</span><input type="number" name="dl_outfits" min="0" max="99" value="' . (int) ($pv['dl_outfits'] ?? 0) . '" /></label>'
-        . '<label title="This many of your latest updated models/accessories count as downloaded before their latest version: the account button gets the dot and My Models shows them as updates."><span>Updates</span><input type="number" name="updates" min="0" max="20" value="' . (int) ($pv['updates'] ?? 0) . '" /></label>'
+        . '<label title="This many of your latest updated models/accessories count as downloaded before their latest version: the bell and My Models show them as updates."><span>Updates</span><input type="number" name="updates" min="0" max="20" value="' . (int) ($pv['updates'] ?? 0) . '" /></label>'
         . '<label class="pv-who" title="Optional: a real patron, by Patreon user ID or name (names of people who downloaded or wrote a bug report). Adds that patron’s real downloads (limits, Unlocked) and their special access (Admin → Access)."><span>Patreon ID or Name</span><input name="as" maxlength="80" placeholder="optional" list="pv-known" autocomplete="off" value="' . e($asVal) . '"' . ($miss !== '' ? ' class="is-miss" aria-describedby="pv-miss"' : '') . ' /></label>'
         . ($miss !== '' ? '<span class="pv-miss" id="pv-miss">' . ($many ? 'Several match: pick one' : 'Not found: type the ID') . '</span>' : '')
         . '<datalist id="pv-known">' . m3d_patron_options() . '</datalist>'
@@ -2039,39 +2035,166 @@ function md_callout(string $inner, array $opts = []): string
 {
     $type = 'note';
     $title = null;
-    if (preg_match('/^\[!(\w+)\][ ]*(.*)$/', strtok(ltrim($inner), "\n"), $m)) {   // the first line only
+    $fold = '';   // "-" = folded, "+" = open: an expandable box (Obsidian's syntax)
+    if (preg_match('/^\[!(\w+)\]([+-]?)[ ]*(.*)$/', strtok(ltrim($inner), "\n"), $m)) {   // the first line only
         $t = strtolower($m[1]);
         $t = CALLOUT_ALIASES[$t] ?? $t;
         if (isset(CALLOUTS[$t])) {
             $type = $t;
-            $title = trim($m[2]) !== '' ? trim($m[2]) : CALLOUTS[$t][0];
+            $fold = $m[2];
+            $title = trim($m[3]) !== '' ? trim($m[3]) : CALLOUTS[$t][0];
             $inner = ltrim(substr(ltrim($inner), strlen($m[0])), "\n");
         }
     } elseif (preg_match('/^\*\*(warning|caution|important|tip|note)\b/i', ltrim($inner), $m)) {
         $type = strtolower($m[1]);   // "> **Warning:** …": typed by hand
     }
-    $head = $title !== null
-        ? '<p class="callout-title"><svg viewBox="0 0 24 24" aria-hidden="true">' . CALLOUTS[$type][1] . '</svg>' . md_inline($title) . '</p>'
-        : '';
+    $icon = $title !== null ? '<svg viewBox="0 0 24 24" aria-hidden="true">' . CALLOUTS[$type][1] . '</svg>' . md_inline($title) : '';
     // the content can hold several paragraphs (an empty "> " line between them), lists, code…
     $body = trim($inner) !== '' ? md_html($inner, array_intersect_key($opts, ['noImages' => 1, 'picLinks' => 1])) : '';
+    if ($fold !== '') {
+        return '<details class="callout callout-' . $type . ' md-fold"' . ($fold === '+' ? ' open' : '') . '><summary class="callout-title">' . $icon . MD_FOLD_ICON . '</summary>'
+            . '<div class="md-fold-body">' . $body . '</div></details>';
+    }
+    $head = $title !== null ? '<p class="callout-title">' . $icon . '</p>' : '';
     return '<div class="callout callout-' . $type . ($title === null ? ' untitled' : '') . '" role="note">' . $head . $body . '</div>';
+}
+
+/** The chevron at the right end of an expandable box's title line (turned up while open, CSS). */
+const MD_FOLD_ICON = '<svg class="md-fold-chev" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>';
+
+/**
+ * Expandable boxes: "+++ Title" starts one, a line with only "+++" (or the end of the text) closes it; a box can hold anything
+ * (blank lines, tabs, other boxes: "+++ Title" lines inside count up, "+++" lines count down). Folded until clicked: a <details>,
+ * so it works without JavaScript and the browser's find-in-page opens it. Like tabs, headings inside get no id (not in "On this page").
+ * Each box becomes a placeholder line (md_hold()). A box of the Note / Tip… kind is "> [!TIP]- Title" (md_callout()).
+ */
+function md_folds(string $text, array $opts): string
+{
+    if (!preg_match('/^\+\+\+[ ]+\S/m', $text)) return $text;
+    $inner = array_diff_key($opts, ['docs' => 1]);
+    $code = md_code_lines($text);   // "+++" lines inside code stay code
+    $out = $body = [];
+    $depth = 0;
+    $title = '';
+    $close = function () use (&$out, &$body, &$title, $inner) {
+        array_push($out, '', md_hold('<details class="md-fold"><summary>' . md_inline(mb_substr($title, 0, 120)) . MD_FOLD_ICON . '</summary>'
+            . '<div class="md-fold-body">' . md_html(implode("\n", $body), $inner) . '</div></details>'), '');
+    };
+    foreach (explode("\n", $text) as $i => $line) {
+        $open = !isset($code[$i]) && preg_match('/^\+\+\+[ ]+(\S.*?)[ ]*$/', $line, $m);
+        if ($depth === 0) {
+            if ($open) { $depth = 1; $title = $m[1]; $body = []; }
+            else $out[] = $line;
+            continue;
+        }
+        if ($open) $depth++;
+        elseif (!isset($code[$i]) && rtrim($line) === '+++' && --$depth === 0) { $close(); continue; }
+        $body[] = $line;
+    }
+    if ($depth > 0) $close();
+    return implode("\n", $out);
+}
+
+/** "::: carousel" (any case) starts a carousel, a line with only ":::" (or the end of the text) closes it. */
+const MD_CAROUSEL_OPEN = '/^:::[ ]*carousel[ ]*$/iD';
+
+/**
+ * Carousels: the picture lines between "::: carousel" and ":::" become one slideshow (md_carousel()), held as a placeholder line
+ * (md_hold()); other lines inside (text, videos) follow it as written. One picture = a plain picture; with noImages / picLinks
+ * the marker lines just go, so the pictures are left out or become links as anywhere else. Marker lines inside code stay code.
+ */
+function md_carousels(string $text, array $opts): string
+{
+    if (!preg_match('/^:::[ ]*carousel[ ]*$/im', $text)) return $text;
+    $code = md_code_lines($text);
+    $plain = !empty($opts['noImages']) || !empty($opts['picLinks']);
+    $out = $body = [];
+    $in = false;
+    $close = function () use (&$out, &$body, $plain) {
+        $imgs = $rest = [];
+        foreach ($body as $l) {
+            if (!$plain && preg_match(MD_IMG, trim($l), $m) && !preg_match('/\.(mp4|webm)(?:[?#]|$)/i', $m[2])) $imgs[] = $m;
+            else $rest[] = $l;
+        }
+        if ($imgs) array_push($out, '', md_hold(count($imgs) > 1 ? md_carousel($imgs) : md_images($imgs)), '');
+        array_push($out, '', ...$rest);
+        $out[] = '';
+    };
+    foreach (explode("\n", $text) as $i => $line) {
+        $mark = !isset($code[$i]);
+        if (!$in && $mark && preg_match(MD_CAROUSEL_OPEN, $line)) { $in = true; $body = []; continue; }
+        if ($in && $mark && rtrim($line) === ':::') { $close(); $in = false; continue; }
+        if ($in) $body[] = $line;
+        else $out[] = $line;
+    }
+    if ($in) $close();
+    return implode("\n", $out);
+}
+
+/**
+ * One carousel: a picture at a time in a box of the text column's width (a picture of another shape gets a blurred copy of itself in
+ * the bands, like the Media cards), its caption under it; the slides scroll sideways (swipe, snap), so it works without JavaScript.
+ * site.js ([data-carousel]) adds ‹ ›, the "2 / 5" count and the dots, going round at the ends; a click opens the viewer ([data-slides]).
+ */
+function md_carousel(array $imgs): string
+{
+    $n = count($imgs);
+    $slides = $dots = '';
+    foreach ($imgs as $i => $m) {
+        [, $cap, $src] = $m;
+        $small = img_small($src);
+        $big = img_dims($src);
+        $dim = $small !== $src ? img_dims($small) : $big;
+        $show = $big ?: $dim;
+        $srcset = '';
+        if ($small !== $src && $big && $dim) {
+            // shown at most 760 px wide and 480 px tall (.md-carousel in site.css): a tall render shows narrower
+            $w = (int) min(760, ceil(480 * $big[0] / max(1, $big[1])));
+            $srcset = ' srcset="' . e(img_srcset($src, ['sm', 'md', ''])) . '" sizes="(max-width: ' . ($w + 32) . 'px) 100vw, ' . $w . 'px"';
+        }
+        $wh = $show ? ' width="' . $show[0] . '" height="' . $show[1] . '"' : '';
+        $label = 'Picture ' . ($i + 1) . ' of ' . $n;
+        $slides .= '<figure class="mc-slide" role="group" aria-roledescription="slide" aria-label="' . $label . '">'
+            . '<button type="button" class="mc-zoom" data-slide="' . $i . '" aria-label="Enlarge image">'
+            . '<img class="mc-bg" src="' . e(img_thumb($src)) . '" alt="" aria-hidden="true" loading="lazy" decoding="async" />'
+            . '<img src="' . e($small) . '"' . $srcset . $wh . ' alt="' . e($cap) . '" loading="lazy" decoding="async" /></button>'
+            . ($cap !== '' ? '<figcaption>' . e($cap) . '</figcaption>' : '') . '</figure>';
+        $dots .= '<button type="button" data-car-dot="' . $i . '" aria-label="' . $label . '"' . ($i ? '' : ' aria-current="true"') . '></button>';
+    }
+    $set = slides_attr(array_map(fn($m) => ['src' => $m[2], 'caption' => $m[1]], $imgs));
+    return '<div class="md-carousel" data-carousel data-slides="' . $set . '" role="region" aria-roledescription="carousel" aria-label="Pictures">'
+        . '<span class="mc-count" data-car-count hidden>1 / ' . $n . '</span>'
+        . '<button type="button" class="strip-arrow mc-prev" data-car-prev aria-label="Previous picture" hidden>‹</button>'
+        . '<div class="mc-track" data-car-track>' . $slides . '</div>'
+        . '<button type="button" class="strip-arrow mc-next" data-car-next aria-label="Next picture" hidden>›</button>'
+        . '<div class="mc-dots" data-car-dots hidden>' . $dots . '</div></div>';
+}
+
+/** Keeps a piece of HTML made before the blocks are split (tabs, expandable boxes) and returns its placeholder line; md_blocks() puts
+ *  the HTML back where the placeholder stands, also inside a tab or box rendered later. Kept for the outermost md_html() call only. */
+function md_hold(?string $html = null, ?int $n = null): string
+{
+    static $held = [];
+    if ($html !== null) { $held[] = $html; return "\x03" . (count($held) - 1) . "\x03"; }
+    if ($n !== null) return $held[$n] ?? '';
+    $held = [];   // neither: the outermost md_html() is done
+    return '';
 }
 
 /**
  * Tab groups: "=== Name" starts a tab, a line with only "===" (or the end of the text) closes the group.
- * Each group becomes a placeholder block; $tabs gets its HTML. The tab's content is rendered by md_html() again,
+ * Each group becomes a placeholder line (md_hold()). The tab's content is rendered by md_html() again,
  * without heading ids (a heading inside a tab is not in "On this page": its link would point into a hidden tab).
  * Without JavaScript every tab shows, one under the other, with its name; site.js turns the group into tabs.
  */
-function md_tabs(string $text, array $opts, array &$tabs): string
+function md_tabs(string $text, array $opts): string
 {
     if (!preg_match('/^===[ ]+\S/m', $text)) return $text;
     $inner = array_diff_key($opts, ['docs' => 1]);
     $out = [];
     $group = null;   // [[name, lines], …] while inside a group
     $code = md_code_lines($text);   // "=== …" lines inside code stay code
-    $close =function () use (&$group, &$out, &$tabs, $inner) {
+    $close = function () use (&$group, &$out, $inner) {
         $list = $panels = '';
         foreach ($group as [$name, $lines]) {
             $key = mb_strtolower($name);
@@ -2079,10 +2202,7 @@ function md_tabs(string $text, array $opts, array &$tabs): string
             $panels .= '<div class="md-tab-panel" role="tabpanel" data-tab-panel="' . e($key) . '"><p class="md-tab-name">' . e($name) . '</p>'
                 . md_html(implode("\n", $lines), $inner) . '</div>';
         }
-        $tabs[] = '<div class="md-tabs" data-md-tabs><div class="md-tab-list" role="tablist" hidden>' . $list . '</div>' . $panels . '</div>';
-        $out[] = '';
-        $out[] = "\x03" . (count($tabs) - 1) . "\x03";
-        $out[] = '';
+        array_push($out, '', md_hold('<div class="md-tabs" data-md-tabs><div class="md-tab-list" role="tablist" hidden>' . $list . '</div>' . $panels . '</div>'), '');
         $group = null;
     };
     foreach (explode("\n", $text) as $i => $line) {
@@ -2120,12 +2240,15 @@ function md_code_lines(string $text): array
  */
 function md_html(string $text, array $opts = [], ?array &$toc = null): string
 {
+    static $depth = 0;
     $was = md_ugc();
     if (!empty($opts['picLinks'])) md_ugc(true);
+    $depth++;
     try {
         return md_blocks($text, $opts, $toc);
     } finally {
         md_ugc($was);
+        if (--$depth === 0) md_hold();
     }
 }
 
@@ -2145,8 +2268,9 @@ function md_blocks(string $text, array $opts, ?array &$toc): string
     $ids = ['main' => true];   // the layout's <main id="main">: a heading "Main" becomes main-2
     $code = [];
     $text = str_replace(["\r\n", "\t"], ["\n", '    '], $text);
-    $tabs = [];
-    $text = md_tabs($text, $opts, $tabs);   // "=== Name" tab groups first: a tab can hold anything, blank lines too
+    $text = md_folds($text, $opts);   // "+++ Title" expandable boxes first: a box can hold anything, tabs too
+    $text = md_tabs($text, $opts);   // then "=== Name" tab groups: a tab can hold anything, blank lines too
+    $text = md_carousels($text, $opts);   // then "::: carousel" picture lines
     // fenced code blocks first: they may contain blank lines
     $text = preg_replace_callback(MD_FENCE, function ($m) use (&$code) {
         $code[] = [$m[1], $m[2]];
@@ -2160,7 +2284,7 @@ function md_blocks(string $text, array $opts, ?array &$toc): string
     foreach (preg_split('/\n\s*\n/', trim($text)) as $block) {
         $block = rtrim($block);
         if (trim($block) === '') continue;
-        if (preg_match('/^\x03(\d+)\x03$/', trim($block), $m)) { $out .= $tabs[(int) $m[1]]; continue; }
+        if (preg_match('/^\x03(\d+)\x03$/', trim($block), $m)) { $out .= md_hold(null, (int) $m[1]); continue; }
         if (preg_match('/^\x02(\d+)\x02$/', trim($block), $m)) {
             [$lang, $src] = $code[(int) $m[1]];
             $lines = explode("\n", $src);
@@ -2307,14 +2431,24 @@ function md_paywall(): string
 
 /**
  * The first plain paragraph of a text in the md_html() format, as written (for md_inline()): headings, lists, boxes, tables,
- * code, pictures and tabs are skipped; '' when there is none. The homepage slideshow shows it on one line under the name.
+ * code, pictures, tabs and expandable boxes are skipped; '' when there is none. The homepage slideshow shows it on one line under the name.
  */
 function md_first_text(string $text): string
 {
     $text = preg_replace('/^```.*?^```[ ]*$/ms', '', str_replace("\r\n", "\n", $text));   // code blocks may hold blank lines
     $text = preg_replace('/^' . MD_HR . '$/m', "\n", $text);   // a divider line ends the paragraph above it
+    if (preg_match('/^\+\+\+[ ]+\S/m', $text)) {   // expandable boxes: their text is folded away, so never the first paragraph
+        $keep = [];
+        $depth = 0;
+        foreach (explode("\n", $text) as $l) {
+            if (preg_match('/^\+\+\+[ ]+\S/', $l)) { $depth++; $keep[] = ''; }
+            elseif ($depth > 0 && rtrim($l) === '+++') $depth--;
+            elseif ($depth === 0) $keep[] = $l;
+        }
+        $text = implode("\n", $keep);
+    }
     foreach (preg_split('/\n\s*\n/', trim((string) $text)) as $block) {
-        $lines = array_values(array_filter(explode("\n", rtrim($block)), fn($l) => !preg_match('/^===(\s|$)/', $l)));   // tab names and ends
+        $lines = array_values(array_filter(explode("\n", rtrim($block)), fn($l) => !preg_match('/^(===(\s|$)|:::)/', $l)));   // tab names and ends, carousel marks
         while ($lines && preg_match('/^#{1,6}\s/', $lines[0])) array_shift($lines);   // a heading, then text: the text
         if (!$lines || trim($lines[0]) === '' || preg_match('/^(-|\d+\.)\s|^\s*[>|]|^```|^\s/', $lines[0])) continue;
         if (!array_filter($lines, fn($l) => !preg_match(MD_IMG, trim($l)))) continue;   // only pictures

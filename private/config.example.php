@@ -20,7 +20,7 @@ return [
     // Re-checking is invisible to patrons: Patreon sends them straight back.
     'recheck_after' => 12 * 3600,
 
-    // How long patrons stay logged in on the site (seconds); Admin → Settings → Login Duration overrides it
+    // How long patrons stay logged in on the site (seconds); Admin → Settings → Patreon → Logins overrides it
     'session_lifetime' => 30 * 24 * 3600,
 
     // Write one line per download to logs/downloads.csv (date, Patreon id, name, model)

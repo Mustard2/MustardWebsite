@@ -62,8 +62,6 @@ $pic = function (?array $it, string $kind, string $icon): string {
         ? '<img src="' . e(img_thumb($src)) . '" alt="" loading="lazy" decoding="async" />'
         : '<svg viewBox="0 0 24 24">' . $icon . '</svg>') . '</span>';
 };
-$patrons = [];
-foreach ($rows as [, $id]) $patrons[$id] = true;
 
 // ── Filters (all in the address, so a filtered view can be bookmarked and exported) ──
 $date = fn($v) => is_string($v) && preg_match('/^\d{4}-\d{2}-\d{2}$/', $v) ? $v : '';

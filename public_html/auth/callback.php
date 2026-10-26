@@ -46,7 +46,7 @@ if ($me['status'] !== 200 || !$me['json']) {
 }
 
 // the pledge history, read with the creator's token (Patreon leaves it out of the patron's own answer): a patron who came back counts
-// from the new pledge (m3d_pledge_restart()); without a token, or when Patreon refuses, Patreon's start date counts
+// from the new pledge, unless it came back within the grace period (m3d_pledge_since()); without a token, or when Patreon refuses, Patreon's start date counts
 $events = m3d_session_pause(fn() => m3d_member_pledge_events(m3d_identity_member_id($me['json'], $M3D)));
 $result = m3d_evaluate_identity($me['json'], $M3D, $events);
 if ($setup && $result['id'] !== '') {

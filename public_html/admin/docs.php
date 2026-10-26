@@ -44,7 +44,7 @@ admin_start('Docs', 'docs');
       </form>
     </details>
 
-    <?= format_help('How to Format Pages', ['box', 'image', 'card', 'tabs'],
+    <?= format_help('How to Format Pages', ['box', 'fold', 'image', 'carousel', 'card', 'tabs'],
         'The toolbar above the text inserts most of them for you. Headings appear in <i>On this page</i> (not those inside tabs), and tabs with the same names on a page switch together.', true) ?>
 
     <form class="docs-editor" data-editor novalidate></form>

@@ -584,7 +584,9 @@ function clean_model(array $in, ?array $existing): array
 const FORMAT_EXAMPLES = [
     'box'     => ['Box', "> [!TIP] Faster posing\n> Use the pose library.\n\n> [!WARNING]\n> Save your file first."],
     'image'   => ['Picture', "![Caption](/media/…)"],
+    'carousel' => ['Carousel', "::: carousel\n![Front](/media/…)\n![Back](/media/…)\n:::"],
     'card'    => ['Card', "[Get the Pose Library](/accessories/pose-library/)"],
+    'fold'    => ['Expandable Box', "+++ Texture sizes\nAll textures are 4K.\n+++\n\n> [!TIP]- Faster posing\n> Use the pose library."],
     'tabs'    => ['Tabs', "=== Manual\n1. Open the Outliner\n=== With MustardUI\n1. Press N, open MustardUI\n==="],
     'paywall' => ['Patrons Only from Here', "Everyone reads this.\n\n--- Patreon ---\n\nOnly patrons read this."],
 ];
@@ -610,6 +612,7 @@ function format_help(string $title, array $keys, string $intro = '', bool $docs 
         $out = match (true) {
             $k === 'card' && $src === FORMAT_EXAMPLES['card'][1] => '<p class="muted small">A link to a model, accessory or docs page alone on its line shows as a card with its picture and description.</p>',
             $k === 'image' => '<p class="muted small">On its own line. Several lines together make a gallery. Drop or paste a picture into the text to upload it.</p>',
+            $k === 'carousel' => '<p class="muted small">One picture at a time, with ‹ › and dots (swipe on phones). A click opens it big.</p>',
             default => md_html($src, ['docs' => $docs, 'paywall' => true]),
         };
         $rows .= '<div class="fmt-row"><div class="fmt-label">' . e($label) . '</div><pre class="fmt-src"><code>' . e($src) . '</code></pre><div class="fmt-out md">' . $out . '</div></div>';
@@ -750,7 +753,7 @@ function admin_start_box(string $kind, bool $open = false): string
         . '<div class="start-rows" data-rows>' . implode('', array_map(fn($l) => $row($l[0], $l[1]), $box['links'])) . '</div>'
         . '<template data-row-template>' . $row() . '</template>'
         . '<div><button type="button" class="btn btn-ghost btn-sm" data-row-add>+ Add Link</button></div>'
-        . '<label class="field"><span class="lbl">Note' . tip('Line under the links.') . '</span><textarea class="input" name="start_note" rows="2" maxlength="400" placeholder="Empty = no line">' . e($box['note']) . '</textarea></label>'
+        . '<label class="field"><span class="lbl">Note</span><textarea class="input" name="start_note" rows="2" maxlength="400" placeholder="Empty = no line">' . e($box['note']) . '</textarea></label>'
         . '<label class="toggle"><input type="checkbox" class="switch" name="start_note_on" value="1"' . ($box['note_on'] ? ' checked' : '') . ' /><span>Show Note</span></label>'
         . '<div class="form-actions"><button class="btn btn-primary btn-sm">Save Links</button></div></form>'
         . '</details>';
@@ -978,7 +981,7 @@ function admin_forget_items(string $kind, array $gone, array $vis = []): void
             return [$bugs, $next, null];
         });
     }
-    foreach ($slugs as $s) m3d_blog_rename_item($kind, $s, '');   // posts showing it leave it out
+    m3d_blog_forget_items($kind, $slugs);   // posts showing them leave them out
     m3d_comments_forget($kind, $slugs);
     m3d_showcase_forget($kind, $slugs);   // patrons' renders of them (and their stills in the Gallery)
     m3d_shares_forget($kind, $slugs);     // their temporary links end (a new item at that address doesn't take them over)
@@ -1001,7 +1004,7 @@ function admin_forget_items(string $kind, array $gone, array $vis = []): void
         foreach ($slugs as $s) unset($d[$kind][$s]);
         return [$d, null];
     });
-    foreach ($slugs as $s) m3d_ignored_move($kind, $s, null);
+    m3d_ignored_forget($kind, $slugs);
     if (!is_file(m3d_log_file())) return;
     $pre = $kind === 'outfits' ? 'outfit:' : '';
     $date = m3d_today();
@@ -1049,7 +1052,7 @@ function media_library(): array
         if (isset($videos[substr($url, 0, strrpos($url, '.'))])) continue;   // a video's cover
         if (str_starts_with($url, '/media/site/')) continue;   // the site logo and icons (Settings → Site identity)
         if (str_starts_with($url, '/media/bugs/')) continue;   // pictures of bug reports (Admin → Bugs)
-        if (str_starts_with($url, '/media/showcase/')) continue;   // renders patrons shared (Admin → Gallery → From Patrons)
+        if (str_starts_with($url, '/media/showcase/')) continue;   // renders patrons shared (Media → From Patrons)
         $small = img_small($url);
         $versions = img_versions($url);
         $dim = img_dims($url) ?: [0, 0];
@@ -1161,6 +1164,64 @@ function usage_map(array $models, ?array $outfits = null): array
         $use[$st['src']]['gallery:' . $st['id']] = 'Gallery' . ($who !== '' ? ' (' . $who . ')' : '');
     }
     return $use;
+}
+
+/** $models (any data) with the picture addresses in $map (old => new) replaced: whole values, and ![caption](old) inside texts. */
+function replace_everywhere(array $models, array $map): array
+{
+    $inText = [];   // pictures written in texts (descriptions, notes…): ![caption](old) → ![caption](new), old = /media/… or another website's address
+    foreach ($map as $old => $new) $inText['](' . $old . ')'] = '](' . $new . ')';
+    array_walk_recursive($models, function (&$v) use ($map, $inText) {
+        if (!is_string($v)) return;
+        if (isset($map[$v])) $v = $map[$v];
+        elseif (str_contains($v, '](')) $v = strtr($v, $inText);
+    });
+    return $models;
+}
+
+/** Points every use of the pictures in $map (old address => new) to the new one: models, accessories, FAQ / docs texts, blog posts, gallery. */
+function media_replace(array $map): bool
+{
+    $ok = true;
+    foreach (['models', 'outfits'] as $kind) {
+        $items = m3d_items($kind, true);   // fresh: optimize / outside images ran for a while, edits saved meanwhile stay
+        $new = replace_everywhere($items, $map);
+        if ($new !== $items) $ok = m3d_save_items($kind, $new) && $ok;
+    }
+    $ok = m3d_texts_replace($map) && $ok;
+    $intro = (string) (m3d_settings(true)['outfits_intro'] ?? '');   // Admin → Accessories → Page text
+    if (($new = replace_everywhere([$intro], $map)[0]) !== $intro) $ok = m3d_save_settings(['outfits_intro' => $new]) && $ok;
+    $welcome = (array) (m3d_settings(true)['welcome'] ?? []);   // Settings → Features → Welcome Page
+    $wt = (string) ($welcome['text'] ?? '');
+    if (($new = replace_everywhere([$wt], $map)[0]) !== $wt) $ok = m3d_save_settings(['welcome' => ['text' => $new] + $welcome]) && $ok;
+    return m3d_gallery_replace($map) && $ok;
+}
+
+/** The admin page where a use (a usage_map() key: 'models:<slug>', 'docs:<slug>', 'faq:<n>'…) is changed. */
+function use_href(string $key): string
+{
+    [$k, $sl] = explode(':', $key, 2) + [1 => ''];
+    return match ($k) {
+        'faq' => '/admin/faq.php', 'other' => '/admin/outfits.php', 'gallery' => '/admin/gallery.php?still=' . rawurlencode($sl),
+        'docs' => '/admin/docs.php?page=' . rawurlencode($sl), 'blog' => '/admin/blog.php?post=' . rawurlencode($sl), default => '/admin/edit.php?kind=' . rawurlencode($k) . '&slug=' . rawurlencode($sl),
+    };
+}
+
+/** Which part of a model / accessory uses each picture: url => [ 'models:<slug>' => ['Main image', …] ] (the image window's "Used by"). */
+function use_fields(array $models, array $outfits): array
+{
+    $labels = ['thumb' => 'Catalog Image', 'cover' => 'Main Image', 'gallery' => 'Gallery', 'images' => 'Pictures', 'notes' => 'Notes',
+               'changelog' => 'Changelog', 'description' => 'Description', 'extra' => 'Sidebar'];
+    $out = [];
+    foreach (['models' => $models, 'outfits' => $outfits] as $kind => $items) foreach ($items as $it) {
+        foreach ($it as $field => $v) {
+            $v = [$v];
+            array_walk_recursive($v, function ($x) use (&$out, $kind, $it, $field, $labels) {
+                foreach (media_in($x) as $u) $out[$u][$kind . ':' . $it['slug']][$labels[$field] ?? 'Text'] = true;
+            });
+        }
+    }
+    return $out;
 }
 
 /** Images (large file + its versions) that nothing uses: no model, outfit, FAQ answer or docs page points to any of them. */
@@ -1299,16 +1360,6 @@ function clean_still_link(mixed $l): array
     return $link;
 }
 
-/** The tabs over Admin → Gallery: Renders (the Gallery's pictures) · From Patrons (admin/showcase.php), only while patron renders are on or stored. */
-function admin_gallery_tabs(string $current): string
-{
-    if (!m3d_showcase_on() && !m3d_showcase_stored()) return '';
-    $wait = count(m3d_showcase_summary()['waiting']);
-    $cur = fn(string $k) => $current === $k ? ' aria-current="page"' : '';
-    return '<nav class="lib-tabs g-tabs" aria-label="Sections"><a href="/admin/gallery.php"' . $cur('gallery') . '>Renders <span>' . count(m3d_gallery()['stills']) . '</span></a>'
-        . '<a href="/admin/showcase.php"' . $cur('patrons') . '>From Patrons' . ($wait ? ' <span class="g-tab-wait">' . $wait . ' waiting</span>' : '') . '</a></nav>';
-}
-
 /** Everything Admin → Gallery shows: the stills (with their pictures' sizes and characters), the characters, the models to pick. */
 function admin_gallery_payload(): array
 {
@@ -1318,6 +1369,7 @@ function admin_gallery_payload(): array
     foreach ($g['stills'] as $s) {
         [$w, $h] = img_dims((string) $s['src']) ?: [0, 0];
         $stills[] = $s + ['small' => img_small((string) $s['src']), 'w' => $w, 'h' => $h, 'dls' => m3d_downloads('stills', $s['id'], $stats)['total'], 'likes' => m3d_like_count((string) $s['id'], 'stills'),
+            'rhidden' => !empty($s['from']) && m3d_render_hidden((string) $s['from']),   // a patron render hidden in From Patrons: its copy is hidden too
             'who' => array_map(fn($c) => ['key' => (string) $c['key'], 'name' => $c['name'], 'model' => $c['model'] ? $c['model']['slug'] : null, 'vis' => $c['model'] ? (m3d_release_hidden($c['model']) && m3d_visibility($c['model']) !== 'draft' ? 'soon' : m3d_visibility($c['model'])) : ''], m3d_still_chars($s))];   // soon: hidden until its release date, like a draft
     }
     $chars = [];
@@ -1346,7 +1398,7 @@ const FEATURE_SWITCHES = [
 const SETTINGS_TABS = [
     'site' => ['Site', ['identity', 'social', 'menu', 'homepage', 'notice', 'timezone']],
     'features' => ['Features', ['blog', 'bugs', 'comments', 'showcase', 'discord', 'welcome', 's4', 'mustardui']],
-    'patreon' => ['Patreon', ['patreon', 'logins']],
+    'patreon' => ['Patreon', ['campaign', 'logins', 'patreon']],
     'notify' => ['Notifications', ['notify']],
     'maintenance' => ['Maintenance', ['maintenance', 'problems', 'tools', 'system']],
     'privacy' => ['Privacy', ['legal', 'personal-data']],   // last, after Update: rarely used
@@ -1366,7 +1418,7 @@ function notify_group(string ...$events): string
     $h = '<div class="set-grp nt-grp"><h3>Notifications</h3><ul class="nt-grp-list">';
     foreach ($events as $ev) {
         $to = array_filter(['Bell' => $s['bell'][$ev], 'Discord' => $s['discord'][$ev]]);
-        $h .= '<li><span>' . e(NOTIFY_EVENTS[$ev][0]) . '</span><span class="muted">' . ($to ? implode(' · ', array_keys($to)) : 'Off') . '</span></li>';
+        $h .= '<li><span>' . e(NOTIFY_EVENTS[$ev]) . '</span><span class="muted">' . ($to ? implode(' · ', array_keys($to)) : 'Off') . '</span></li>';
     }
     return $h . '</ul><a class="btn btn-ghost btn-sm" href="' . e(settings_url('notify')) . '">Change in Notifications</a></div>';
 }
@@ -1451,6 +1503,7 @@ function admin_start(string $title, string $active = ''): void
     m3d_discord_stills_tick();   // new Gallery pictures waiting for their Discord post (also while only the admin is on the site)
     m3d_blog_discord_tick();   // a blog post went out: its Discord post
     lc_auto_tick();   // Link check's automatic check, when on
+    m3d_tiers_tick();   // the campaign's tiers read from Patreon once a day
     m3d_session_release();   // the page only reads the login from here: a slow page (big lists, the Images library) holds up nothing else
     header('Content-Type: text/html; charset=utf-8');
     ?>

@@ -275,7 +275,7 @@ admin_start('Backups', 'backups');   // part of Settings: its menu links here
     </section>
 
     <section class="sec bk-sec" id="history">
-      <h2 class="small-h">Change History<?= tip('The previous version of each save (last 50 of each). Restoring one only changes that part.') ?></h2>
+      <h2 class="small-h">Change History</h2>
       <?php if (!$history): ?><p class="muted">Nothing saved yet.</p><?php endif ?>
       <?php foreach ($history as $name => $list): ?>
         <details class="bk-group">

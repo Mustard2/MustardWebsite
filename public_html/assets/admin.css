@@ -313,8 +313,8 @@ select.input { appearance: auto; }
 
 /* FAQ editor */
 .format-help { padding: 14px 18px; margin-bottom: 4px; }
-.format-help summary { cursor: pointer; }
-.format-help[open] summary { margin-bottom: 10px; }
+.format-help > summary { cursor: pointer; }
+.format-help[open] > summary { margin-bottom: 10px; }
 .fmt-intro { margin: 0 0 12px; }
 .fmt-intro code { background: rgb(255 255 255 / .07); padding: 1px 6px; border-radius: 6px; }
 .fmt-head, .fmt-row { display: grid; grid-template-columns: 170px minmax(0, 1fr) minmax(0, 1fr); gap: 16px; align-items: start; }
@@ -459,8 +459,6 @@ th[aria-sort='ascending'] .tot-sort::after { content: '↑'; opacity: 1; color: 
 .tot-dl .num { min-width: 2.5ch; }
 .tot-zero td { color: var(--muted); }
 .tot-zero .tot-name a { color: var(--muted); }
-.log-jump { color: var(--muted); font-size: 13px; text-decoration: none; white-space: nowrap; }
-.log-jump:hover { color: var(--mustard); }
 .tot-empty td { text-align: center; padding: 22px 14px; }
 @media (max-width: 640px) {
   .tot-table { min-width: 600px; }   /* the box scrolls sideways; the name column keeps ~200 px */
@@ -670,7 +668,6 @@ textarea.img-drop-on, textarea.img-drop-on:focus { outline: 2px dashed var(--mus
 .ban-reason .input { width: 100%; }
 .ex-top { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 .ex-top .ex-name { width: 220px; font-weight: 600; }
-.ex-top .ex-added { margin-left: auto; }
 .ex-top .row-btns { flex-wrap: nowrap; }
 .ex-opts { display: grid; grid-template-columns: repeat(3, 170px) minmax(0, 1fr); gap: 12px; }
 .ex-opt { display: grid; gap: 5px; min-width: 0; }
@@ -696,7 +693,7 @@ textarea.img-drop-on, textarea.img-drop-on:focus { outline: 2px dashed var(--mus
 .ex-form > .btn { justify-self: end; }   /* Add user: bottom right, like every Save */
 @media (max-width: 760px) {   /* phones: the menus as label | menu rows, each custom rule on two lines */
   .ex-top .ex-name { width: 100%; }
-  .ex-top .ex-added { margin-left: 0; }
+  .ex-top .ex-on + .ex-name { width: auto; flex: 1 1 0; min-width: 0; }   /* the switch stays next to the name */
   .ex-top .row-btns { margin-left: auto; }
   .ex-opts, .ex-form .ex-opts { grid-template-columns: 1fr; gap: 8px; }
   .ex-opt { grid-template-columns: minmax(0, 1fr) 150px; align-items: center; }
@@ -1074,7 +1071,24 @@ html:has(.iw[open]) { overflow: hidden; }
 .pt-form .lbl .badge { margin-left: 6px; font-size: 11px; padding: 2px 8px; vertical-align: 1px; }
 .pt-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .pt-row .input { flex: 1 1 280px; }
-.pt-cur { margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--line); }
+/* Settings → Patreon: Campaign (currency + the paid tiers as a price list), Logins, Patreon Keys folded with the creator token as its sub-part */
+.pt-cur .field { flex: 0 1 360px; }
+.pt-cur > .btn { margin-left: auto; }
+.pt-tiers { display: grid; gap: 8px; margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--line); }
+.pt-tier-list { list-style: none; margin: 0; padding: 0; border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
+.pt-tier-list li { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; padding: 10px 14px; }
+.pt-tier-list li + li { border-top: 1px solid var(--line); }
+.pt-tier-name { font-weight: 600; min-width: 0; overflow-wrap: anywhere; }
+.pt-tier-price { flex: none; color: var(--mustard); font-weight: 700; font-variant-numeric: tabular-nums; }
+.pt-tier-price small { color: var(--muted); font-weight: 400; }
+.pt-tier-none { margin: 0; }
+.pt-tiers-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px 12px; flex-wrap: wrap; margin-top: 4px; }
+.pt-tiers-foot > .btn { margin-left: auto; }
+.pt-tiers .pt-err { color: #ff8f80; }
+.pt-form { display: grid; gap: 14px; }
+.pt-sub { display: grid; gap: 14px; padding-top: 16px; border-top: 1px solid var(--line); }
+.pt-sub h3 { margin: 0; font-size: 15px; display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.pt-sub h3 .tip { margin-left: 0; }
 
 /* ── Models / Accessories lists: search (in the Select row, right) ── */
 .batch-search { position: relative; margin-left: auto; flex: 0 1 280px; min-width: 180px; }
@@ -1338,7 +1352,6 @@ html:has(.iw[open]) { overflow: hidden; }
   .vd-file { flex-direction: column; align-items: stretch; }
   .vd-thumb { width: 100%; }
 }
-.lib-up-prog { margin: 0 0 16px; }
 
 /* Admin home (admin/index.php): tiles, a 30-day chart, latest downloads, "Needs a look", most downloaded this week */
 .hm-board { --hm-gap: 16px; position: relative; display: grid; grid-template-columns: repeat(12, minmax(0, 1fr)); grid-auto-flow: row dense; gap: var(--hm-gap); }
@@ -1477,6 +1490,7 @@ body.is-resizing-xy, body.is-resizing-xy * { cursor: nwse-resize !important; }
 .lc-host a { color: var(--text); text-decoration: none; white-space: nowrap; font-size: 14px; }
 .lc-host a:hover { color: var(--mustard); }
 .lc-at { white-space: nowrap; }
+.lc-table .c-actions .btn-sm { width: auto; padding-inline: 12px; }   /* Remove Link / Replace… / Check Again / Edit keep their words (the lists' square icon buttons rule) */
 .lc-box { margin-top: 28px; }
 .lc-box + .lc-box { margin-top: 16px; }
 .lc-every { max-width: 220px; }
@@ -1568,13 +1582,6 @@ body.is-resizing-xy, body.is-resizing-xy * { cursor: nwse-resize !important; }
 .s4-life > :first-child { flex: 1; min-width: 0; display: flex; }
 .s4-life select.input { width: auto; flex: 0 0 auto; }
 /* Settings → MEGA S4: the optional test file, folded */
-.s4-more { margin: 14px 0 0; }
-.s4-more > summary { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; color: var(--muted); font-size: 14px; list-style: none; }
-.s4-more > summary::-webkit-details-marker { display: none; }
-.s4-more > summary::before { content: '▸'; transition: transform .15s; }
-.s4-more[open] > summary::before { transform: rotate(90deg); }
-.s4-more > summary:hover { color: var(--text); }
-.s4-more .field { margin-top: 10px; max-width: 420px; }
 .s4-dlg { width: min(680px, calc(100vw - 32px)); }
 .s4-crumbs { display: flex; flex-wrap: wrap; align-items: center; gap: 2px; font-size: 14px; }
 .s4-crumbs .linklike { background: none; border: 0; padding: 2px 4px; color: var(--mustard); cursor: pointer; font: inherit; border-radius: 6px; }
@@ -1883,6 +1890,11 @@ body.is-resizing-xy, body.is-resizing-xy * { cursor: nwse-resize !important; }
 .sp-table { min-width: 620px; }
 .sp-table col.sp-w-dl { width: 140px; }
 .sp-table col.tot-w { width: 100px; }
+/* every row the same height: the name on one line (cut with …), the Gen / type tag always under it; a row without a tag keeps its room (.is-none) */
+.sp-table .tot-name { flex-direction: column; align-items: flex-start; flex-wrap: nowrap; gap: 4px; }
+.sp-table .tot-tag.is-none { visibility: hidden; }
+.sp-table .tot-name b, .sp-table .tot-tag { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sp-table .tot-tag { display: block; }
 .sp-go { color: var(--text); text-decoration: none; }
 .sp-go b { font-weight: 500; }
 .sp-go:hover b { color: var(--mustard); text-decoration: underline; }
@@ -1984,27 +1996,75 @@ body.is-resizing-xy, body.is-resizing-xy * { cursor: nwse-resize !important; }
   .sh-table .c-actions { grid-column: 1 / -1; text-align: right; }
 }
 
-/* Admin → Gallery → From Patrons (admin/showcase.php): the renders patrons shared */
-.lib-tabs a .g-tab-wait { color: var(--mustard); font-weight: 700; }
-.sc-h { display: flex; align-items: baseline; gap: 10px; margin: 26px 0 12px; font-size: 20px; }
-.sc-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 16px; }
-@media (min-width: 900px) { .sc-grid { grid-template-columns: repeat(auto-fill, minmax(200px, 230px)); } }
-.sc-card { display: grid; grid-template-rows: auto 1fr; border: 1px solid var(--line); border-radius: 14px; overflow: hidden; background: var(--card); scroll-margin-top: 90px; }
-.sc-card.is-wait { border-color: color-mix(in srgb, var(--mustard) 45%, var(--line)); }
-.sc-card:target { box-shadow: 0 0 0 2px var(--mustard); }
-.sc-card-pic img { display: block; width: 100%; aspect-ratio: 4 / 5; object-fit: cover; background: #111; }
-.sc-card-body { padding: 10px 12px 12px; display: grid; gap: 5px; align-content: start; font-size: 14px; min-width: 0; }
-.sc-card-item { font-weight: 700; color: var(--text); text-decoration: none; }
-.sc-card-item:hover { color: var(--mustard); }
-.sc-card-by { overflow-wrap: anywhere; }
-.sc-card-cap { overflow-wrap: anywhere; }
-.sc-card-link { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; overflow-wrap: anywhere; }
-.sc-card-link a { display: inline-flex; align-items: center; gap: 6px; }
-.sc-card-link form { display: inline; }
-.sc-card-act { display: flex; justify-content: flex-end; gap: 8px; margin-top: 6px; }
-.sc-card-act form, .sc-card-body > form { margin: 0; }
-.sc-card-act > form:has(.sc-ban) { margin-right: auto; }   /* Ban: on the left, away from Approve / Remove */
-.sc-card-gal { margin-top: 4px; font-size: 14px; }
+/* Media → From Patrons (admin/_showcase.php): the renders patrons shared */
+.lib-tabs a .tab-wait { color: var(--mustard); font-weight: 700; }
+/* every render is a Media card (.lib-card): waiting ones dashed and greyed like on the item's page (.sc-tile.is-waiting in site.css), hidden ones grey */
+.sc-lib { position: relative; overflow: visible; scroll-margin-top: 90px; }   /* visible: the ⋯ menu may leave the card */
+.sc-lib .lib-img { border-radius: 13px 13px 0 0; }
+.sc-lib.is-wait { border: 2px dashed color-mix(in srgb, var(--mustard) 75%, transparent); }
+.sc-lib.is-wait .lib-img img:not(.lib-bg) { filter: grayscale(.55) brightness(.62); }
+.sc-lib.is-hidden { border-style: dashed; }
+.sc-lib.is-hidden .lib-img img:not(.lib-bg) { filter: grayscale(1) brightness(.55); }
+.sc-lib:target { box-shadow: 0 0 0 2px var(--mustard); }
+.sc-gal { position: absolute; right: 8px; top: 8px; padding: 3px 9px; border-radius: 999px; background: rgb(15 14 12 / .85); color: var(--text); font: 600 12px var(--body); pointer-events: none; }
+.sc-who { display: flex; align-items: center; gap: 4px; min-width: 0; }
+.sc-who > span:first-child { overflow: hidden; text-overflow: ellipsis; }
+.sc-who .badge { flex: none; }
+.sc-ico { flex: none; display: inline-grid; place-items: center; width: 22px; height: 22px; border-radius: 999px; color: var(--muted); }
+.sc-ico:first-of-type { margin-left: 2px; }
+.sc-ico:hover, .sc-ico:focus-visible { color: var(--mustard); background: rgb(255 255 255 / .06); }
+.sc-ico.is-dead { color: #ff7b7b; background: rgb(255 80 80 / .12); }
+.sc-ico .sc-net { width: 13px; height: 13px; }
+.sc-lib .lib-meta a { color: inherit; text-decoration: none; }
+.sc-lib .lib-meta a:hover { color: var(--mustard); }
+.sc-lib .row-btns form { margin: 0; display: contents; }
+.sc-lib .row-btns .pmenu { margin-left: auto; }
+.sc-lib .row-btns .pmenu + form .del { margin-left: 0; }
+.sc-lib .pm-pop { top: auto; bottom: 36px; }   /* opens upward, over the picture */
+.sc-lib .pm-pop form { display: grid; }
+.sc-drag { position: absolute; top: 8px; left: 8px; z-index: 2; width: 32px; height: 36px; color: #fff; background: rgb(15 15 15 / .72); box-shadow: 0 1px 4px rgb(0 0 0 / .4); }
+.sc-drag:hover, .sc-drag:focus-visible { color: var(--mustard); background: rgb(15 15 15 / .85); }
+.lib-filters .sc-reset { margin-left: auto; }
+.sc-lib-grid:not(.can-drag) .sc-drag { display: none; }   /* only with one item picked in the menu, nothing else filtering (admin.js) */
+.sc-lib.dragging { border-color: var(--mustard); box-shadow: 0 0 0 1px var(--mustard), 0 18px 40px rgb(0 0 0 / .5); opacity: .85; }
+.sc-lib .lib-img { cursor: pointer; }
+/* a render's window (showcase_edit_dialog()): the Media picture window (.iw) with the render's settings on the right */
+.sc-eform { display: contents; }
+.sc-iw .iw-scroll { gap: 8px; padding-top: 14px; padding-bottom: 8px; }
+.sc-iw .field { gap: 4px; }
+.sc-iw .input { padding: 8px 12px; font-size: 14px; border-radius: 10px; }
+.sc-iw .fp-btn { padding-top: 5px; padding-bottom: 5px; }
+.sc-iw .toggle { display: flex; align-items: center; gap: 10px; width: fit-content; max-width: 100%; cursor: pointer; }
+.sc-e-state { display: flex; align-items: center; gap: 10px; margin: 0; font-size: 14px; }
+.sc-e-state a { color: var(--mustard); text-decoration: none; } .sc-e-state a:hover { text-decoration: underline; }
+.sc-e-pill { font-size: 12.5px; font-weight: 700; padding: 3px 10px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); }
+.sc-e-pill.is-ok { color: #6ee7a8; border-color: color-mix(in srgb, #6ee7a8 45%, transparent); }
+.sc-e-pill.is-wait { color: var(--mustard); border: 1px dashed color-mix(in srgb, var(--mustard) 75%, transparent); }
+.sc-e-sw { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 4px 0 6px; }   /* On the Page / In Gallery: icon toggle buttons, lit while on */
+.sc-e-tog { position: relative; display: flex; align-items: center; justify-content: center; gap: 8px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 10px;
+  color: var(--muted); font-size: 13.5px; font-weight: 700; cursor: pointer; user-select: none; }
+.sc-e-tog svg, .sc-e-eye svg { width: 18px; height: 18px; flex: none; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.sc-e-tog:hover { border-color: color-mix(in srgb, var(--mustard) 45%, var(--line)); }
+.sc-e-tog:has(:checked) { color: var(--mustard); border-color: color-mix(in srgb, var(--mustard) 70%, transparent); background: color-mix(in srgb, var(--mustard) 12%, transparent); }
+.sc-e-tog:has(:focus-visible), .sc-e-eye:has(:focus-visible) { outline: 2px solid var(--mustard); outline-offset: 2px; }
+.sc-e-in { position: relative; }   /* Made By: Show Name is the eye at the field's right end; crossed and grey = the name isn't shown */
+.sc-e-in .input { padding-right: 42px; }
+.sc-e-eye { position: absolute; top: 50%; right: 6px; transform: translateY(-50%); display: grid; place-items: center; width: 30px; height: 30px; border-radius: 8px;
+  color: var(--muted); cursor: pointer; }
+.sc-e-eye:hover { background: rgb(255 255 255 / .06); }
+.sc-e-eye:has(:checked) { color: var(--mustard); }
+.sc-e-eye:has(:checked) svg + svg, .sc-e-eye:not(:has(:checked)) svg:first-of-type { display: none; }
+.sc-e-in:has([data-e-named]:not(:checked)) .input { color: var(--muted); }
+.sc-e-when { color: var(--muted); font-size: 12.5px; flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sc-e-dels { display: flex; align-items: center; gap: 6px; margin-right: auto; }
+.sc-iw .iw-foot { gap: 6px; padding-left: 14px; padding-right: 14px; }
+.sc-iw .iw-foot .btn-primary { padding: 9px 16px; font-size: 14px; }
+.sc-e-ban { border: 1px solid color-mix(in srgb, #ff6b5b 55%, transparent); background: color-mix(in srgb, #ff6b5b 12%, transparent); color: #ff6b5b; border-radius: 999px; padding: 5px 12px; font: inherit; font-size: 13px; font-weight: 700; cursor: pointer; }
+.sc-e-ban:hover { background: color-mix(in srgb, #ff6b5b 22%, transparent); }
+.sc-e-ban.is-on { border-color: var(--line); background: transparent; color: var(--muted); }
+.sc-e-dead { color: #ff6b5b; }
+.sc-iw .input.is-dead { border-color: #ff6b5b; }
+.sc-iw .iw-del { color: #ff6b5b; }
 .sh-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 12px; }   /* Access → Temporary Links: the title, its buttons at the right end */
 .sh-head .small-h { margin: 0; }
 .sh-head .sh-bar-end { margin-left: auto; display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; min-width: 0; }
@@ -2023,3 +2083,39 @@ body.is-resizing-xy, body.is-resizing-xy * { cursor: nwse-resize !important; }
 .sf-ok { flex: none; color: var(--green); font-size: 13px; font-weight: 600; white-space: nowrap; }
 .sf-btn { position: absolute; right: 6px; top: 0; bottom: 0; height: fit-content; margin: auto 0; padding: 6px 12px; font-size: 13px; }   /* centred without a transform: .btn:hover lifts it with one */
 .pt-row > .sf { flex: 1 1 280px; }
+
+/* Media → Find Duplicates (admin/duplicates.php): one box per group, its pictures as Media cards with "Keep" on the picture */
+.dup-bar { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 16px; }
+.dup-bar .chip { padding: 5px 12px; font-size: 13px; }
+.dup-list { display: flex; flex-wrap: wrap; gap: 16px; }   /* each group only as wide as its pictures, several a row, the boxes of a row equally tall */
+.dup-group { flex: 0 1 auto; max-width: 100%; margin: 0; padding: 14px; display: flex; flex-direction: column; gap: 12px; }
+.dup-h { margin: 0; font-size: 16px; display: flex; align-items: baseline; gap: 8px; }
+.dup-h .muted { font-size: 13px; font-weight: 500; }
+.dup-cards { flex: 1; display: flex; flex-wrap: wrap; justify-content: center; gap: 10px; }
+.dup-card { width: 168px; }
+.dup-card figcaption { padding: 8px 10px 10px; }
+.dup-group .form-actions { margin: auto 0 0; padding: 0; border: 0; gap: 8px; }   /* at the bottom of the box, level with the boxes beside it */
+.dup-card { position: relative; transition: border-color .15s, box-shadow .15s; }
+.dup-card:has(input:checked) { border-color: var(--mustard); box-shadow: 0 0 0 1px var(--mustard); }
+.dup-card:not(:has(input:checked)) .lib-img img:not(.lib-bg) { opacity: .62; }
+.dup-keep { position: absolute; top: 8px; left: 8px; display: inline-flex; align-items: center; gap: 6px; padding: 5px 11px 5px 8px; border-radius: 999px; background: rgb(0 0 0 / .62); color: #fff; font-size: 13px; font-weight: 600; cursor: pointer; }
+.dup-keep input { appearance: none; margin: 0; color: inherit; width: 14px; height: 14px; border: 2px solid currentColor; border-radius: 50%; display: grid; place-items: center; cursor: pointer; }
+.dup-keep input:checked::after { content: ''; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.dup-keep:has(:focus-visible) { outline: 2px solid var(--mustard); outline-offset: 2px; }
+.dup-card:has(input:checked) .dup-keep { background: var(--mustard); color: var(--mustard-ink); }
+.dup-tag { position: absolute; bottom: 8px; right: 8px; padding: 4px 9px; border-radius: 999px; background: rgb(0 0 0 / .62); color: #fff; font-size: 12px; font-weight: 600; }
+.dup-use { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.dup-use a { color: var(--mustard); text-decoration: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dup-use a:hover { text-decoration: underline; }
+.dup-scan { display: grid; gap: 4px; }
+@media (max-width: 720px) {
+  .dup-group { flex-basis: 100%; }
+  .dup-cards { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .dup-card { width: auto; }
+  .dup-group .form-actions { flex-wrap: wrap; }
+}
+/* an exception switched off (Access → Exceptions): kept, not applied; its tags greyed after "Paused" */
+.exl-tg.is-paused { background: none; box-shadow: inset 0 0 0 1px var(--line); color: var(--muted); }
+.exl-tg.is-off { color: var(--muted); text-decoration: line-through; opacity: .7; }
+.exl-row.is-paused .exl-nm { color: var(--muted); }
+.ex-on { display: inline-flex; align-items: center; }

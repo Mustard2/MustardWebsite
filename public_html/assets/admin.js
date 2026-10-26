@@ -326,41 +326,42 @@ function autoGrow(ta) {
   return ta;
 }
 
-// "#" in a changelog line lists the bug reports, like GitHub: as you type, the number or words of the title narrow it; ↑ ↓ choose,
-// Enter / Tab / a click insert "#6", Esc closes. Right after a "Fix" tag at the start ("Fix #") it inserts "#6: ", the line's usual form.
-// o = {bugs: [{n, t (title), s (status), mine (about this item), a (about name), f (fixed in)}], statuses: {key: [label, colour]}, name: () => item name}
-const CHANGE_TAG_RE = /^\s*(New|Feature|Fix|Bug|Enhancement|Improvement|Optimization|Removal|UI|Outfits?|Physics|Note)(\s*\([^)]*\))?(\s*,?\s*#\d+)*\s*,?\s*$/;   // case-sensitive, like change_line()
-function bugMention(ta, o) {
-  let pop = null, items = [], sel = 0, skip = false;
-  const done = (b) => b.s === 'fixed' || b.s === 'closed';
-  const rank = (a, b) => (b.mine - a.mine) || (done(a) - done(b)) || (b.n - a.n);   // this item first, open first, newest first
-  const token = () => {   // the "#…" just before the caret: [index of the #, what follows it]
+// An editor's Save button ([data-save] in its header) and Ctrl+S / ⌘S: work() runs once at a time ("Saving…"), a failure shows as a
+// toast; work() returning true keeps the button greyed (the page is going to another address).
+function saveButton(work) {
+  const btn = document.querySelector('[data-save]');
+  const save = async () => {
+    if (btn.disabled) return;   // already saving (Ctrl+S pressed twice)
+    btn.disabled = true; btn.textContent = 'Saving…';
+    try { if (await work() === true) return; } catch (e) { toast(e.message, 'err'); }
+    btn.disabled = false; btn.textContent = 'Save';
+  };
+  btn.addEventListener('click', save);
+  document.addEventListener('keydown', (e) => { if ((e.ctrlKey || e.metaKey) && e.key === 's') { e.preventDefault(); save(); } });
+}
+
+// The list under a sign typed in a text, like GitHub: "#" for bug reports (bugMention()), "@" for models, accessories and docs pages
+// (itemMention()). As you type, what follows the sign narrows it; ↑ ↓ choose, Enter / Tab / a click insert, Esc closes. o = {sign, re (the
+// sign and what follows it just before the caret: group 2), label (the list's name), find(q) → [[title or null, [item…]]…] (may be a
+// promise), row(item, q) → the row's content, none(q) (no match), foot() (the hint after "Enter"), insert(item, at, pos) → [before, text, after]}
+const mentionMark = (text, q) => {   // the typed word lit in a name (or number)
+  const i = q ? fold(text).indexOf(fold(q)) : -1;   // fold() keeps the length of plain text; accented names just go unlit
+  return i < 0 || fold(text).length !== text.length ? [text] : [text.slice(0, i), el('span', { class: 'bm-mark' }, text.slice(i, i + q.length)), text.slice(i + q.length)];
+};
+function mentionList(ta, o) {
+  let pop = null, items = [], sel = 0, skip = false, asked = 0;
+  const token = () => {   // [index of the sign, what follows it]
     const pos = ta.selectionStart;
     if (pos !== ta.selectionEnd) return null;
-    const m = /(^|[\s(,;])#([^\s#,;:()]{0,40})$/.exec(ta.value.slice(0, pos));
+    const m = o.re.exec(ta.value.slice(0, pos));
     return m ? [pos - m[2].length - 1, m[2]] : null;
   };
-  const find = (q) => {   // [[header or null, [bug…]]…]
-    if (q === '') {
-      const mine = o.bugs.filter((b) => b.mine && !done(b)).sort(rank).slice(0, 6);
-      const rest = o.bugs.filter((b) => !mine.includes(b)).sort(rank).slice(0, 8 - mine.length);
-      return mine.length ? [[o.name() + ' · Open', mine], ['Other Reports', rest]] : [[null, rest]];
-    }
-    const num = /^\d+$/.test(q);
-    const words = foldWords(q);
-    const hits = o.bugs.filter((b) => num ? String(b.n).startsWith(q) || words.every((w) => fold(b.t).includes(w)) : words.every((w) => fold(b.t).includes(w)));
-    return [[null, hits.sort((a, b) => (num ? (b.n === Number(q)) - (a.n === Number(q)) : 0) || rank(a, b)).slice(0, 8)]];
-  };
-  const mark = (text, q) => {   // the typed word lit in the title (or number)
-    const i = q ? fold(text).indexOf(fold(q)) : -1;   // fold() keeps the length of plain text; accented titles just go unlit
-    return i < 0 || fold(text).length !== text.length ? [text] : [text.slice(0, i), el('span', { class: 'bm-mark' }, text.slice(i, i + q.length)), text.slice(i + q.length)];
-  };
-  const place = (at) => {   // under the # (a hidden copy of the field finds where it is)
+  const place = (at) => {   // under the sign (a hidden copy of the field finds where it is)
     const cs = getComputedStyle(ta);
     const m = el('div', { 'aria-hidden': 'true' });
     for (const k of ['boxSizing', 'width', 'fontFamily', 'fontSize', 'fontWeight', 'letterSpacing', 'lineHeight', 'paddingTop', 'paddingRight', 'paddingBottom', 'paddingLeft', 'borderTopWidth', 'borderRightWidth', 'borderBottomWidth', 'borderLeftWidth', 'borderStyle', 'textIndent', 'wordSpacing', 'tabSize']) m.style[k] = cs[k];
     Object.assign(m.style, { position: 'absolute', top: '0', left: '-9999px', visibility: 'hidden', whiteSpace: 'pre-wrap', overflowWrap: 'break-word' });
-    const mk = el('span', {}, '#');
+    const mk = el('span', {}, o.sign);
     m.append(ta.value.slice(0, at), mk);
     document.body.append(m);
     const r = ta.getBoundingClientRect();
@@ -375,45 +376,40 @@ function bugMention(ta, o) {
     pop.style.top = (up ? top - pop.offsetHeight : y) + scrollY + 'px';
   };
   const close = () => { pop?.remove(); pop = null; items = []; };
-  const pick = (b) => {
+  const pick = (it) => {
     const t = token();
     if (!t) return close();
-    const pos = ta.selectionStart, before = ta.value.slice(0, t[0]), after = ta.value.slice(pos).replace(/^[^\s#,;:()]*/, '');   // the rest of a word the caret is in goes too
-    const ins = '#' + b.n + (CHANGE_TAG_RE.test(before) && !after.trim() ? ': ' : /^[\s,.;:)]/.test(after) ? '' : ' ');
+    const [before, ins, after] = o.insert(it, t[0], ta.selectionStart);
     ta.value = before + ins + after;
     ta.setSelectionRange(before.length + ins.length, before.length + ins.length);
     close();
-    skip = true;   // "#6" with nothing after it would open the list again
-    ta.dispatchEvent(new Event('input', { bubbles: true }));   // grows the field, marks the editor unsaved
+    skip = true;   // what was just inserted would open the list again
+    ta.dispatchEvent(new Event('input', { bubbles: true }));   // grows the field, marks the editor unsaved, redraws a preview
   };
   const show = () => {
     if (!pop) return;
     pop.querySelectorAll('.bm-row').forEach((r, i) => { r.classList.toggle('on', i === sel); r.setAttribute('aria-selected', String(i === sel)); if (i === sel) r.scrollIntoView({ block: 'nearest' }); });
   };
-  const update = () => {
+  const update = async () => {
     const t = token();
     if (!t) return close();
-    const groups = find(t[1]);
+    const n = ++asked;
+    const groups = (await o.find(t[1])).filter((g) => g[1].length);
+    if (n !== asked || !token()) return;   // typed on meanwhile
     items = groups.flatMap((g) => g[1]);
     sel = 0;
-    const q = t[1], num = /^\d+$/.test(q);
-    const row = (b) => {
-      const [label, color] = o.statuses[b.s] || o.statuses.new;
-      const sub = [b.mine ? '' : b.a, b.f ? 'fixed in ' + b.f : ''].filter(Boolean).join(' · ');
-      const r = el('div', { class: 'bm-row', role: 'option' },
-        el('span', { class: 'bm-n' }, '#', mark(String(b.n), num ? q : '')),
-        el('span', { class: 'bm-t' }, el('b', {}, mark(b.t, num ? '' : q)), sub && el('small', {}, sub.charAt(0).toUpperCase() + sub.slice(1))),
-        el('span', { class: 'bm-st', style: '--c:' + color }, label));
+    const row = (it) => {
+      const r = o.row(it, t[1]);
       r.addEventListener('pointerdown', (e) => e.preventDefault());   // keeps the caret in the field
-      r.addEventListener('click', () => pick(b));
-      r.addEventListener('pointermove', () => { if (sel !== items.indexOf(b)) { sel = items.indexOf(b); show(); } });
+      r.addEventListener('click', () => pick(it));
+      r.addEventListener('pointermove', () => { if (sel !== items.indexOf(it)) { sel = items.indexOf(it); show(); } });
       return r;
     };
     pop?.remove();
-    pop = el('div', { class: 'bm-pop', role: 'listbox', 'aria-label': 'Bug reports' },
-      items.length ? groups.filter((g) => g[1].length).flatMap(([h, list], i) => [i ? el('div', { class: 'bm-sep' }) : null, h && el('div', { class: 'bm-head' }, h), ...list.map(row)])
-        : el('div', { class: 'bm-none' }, 'No report matches “' + q + '”.'),
-      items.length ? el('div', { class: 'bm-foot' }, el('kbd', {}, '↑'), ' ', el('kbd', {}, '↓'), ' to choose · ', el('kbd', {}, 'Enter'), ' to insert · ', el('kbd', {}, 'Esc'), ' to close') : null);
+    pop = el('div', { class: 'bm-pop', role: 'listbox', 'aria-label': o.label },
+      items.length ? groups.flatMap(([h, list], i) => [i ? el('div', { class: 'bm-sep' }) : null, h && el('div', { class: 'bm-head' }, h), ...list.map(row)])
+        : el('div', { class: 'bm-none' }, o.none(t[1])),
+      items.length ? el('div', { class: 'bm-foot' }, el('kbd', {}, '↑'), ' ', el('kbd', {}, '↓'), ' to choose · ', el('kbd', {}, 'Enter'), o.foot()) : null);
     pop.addEventListener('pointerdown', (e) => e.preventDefault());
     document.body.append(pop);
     place(t[0]);
@@ -431,6 +427,44 @@ function bugMention(ta, o) {
   ta.addEventListener('click', () => { if (pop && !token()) close(); });
   ta.addEventListener('blur', close);
   window.addEventListener('resize', close);
+}
+
+// "#" in a changelog line lists the bug reports: the number or words of the title narrow it; it inserts "#6", and right after a "Fix"
+// tag at the start ("Fix #") "#6: ", the line's usual form.
+// o = {bugs: [{n, t (title), s (status), mine (about this item), a (about name), f (fixed in)}], statuses: {key: [label, colour]}, name: () => item name}
+const CHANGE_TAG_RE = /^\s*(New|Feature|Fix|Bug|Enhancement|Improvement|Optimization|Removal|UI|Outfits?|Physics|Note)(\s*\([^)]*\))?(\s*,?\s*#\d+)*\s*,?\s*$/;   // case-sensitive, like change_line()
+function bugMention(ta, o) {
+  const done = (b) => b.s === 'fixed' || b.s === 'closed';
+  const rank = (a, b) => (b.mine - a.mine) || (done(a) - done(b)) || (b.n - a.n);   // this item first, open first, newest first
+  mentionList(ta, {
+    sign: '#', re: /(^|[\s(,;])#([^\s#,;:()]{0,40})$/, label: 'Bug reports',
+    find: (q) => {
+      if (q === '') {
+        const mine = o.bugs.filter((b) => b.mine && !done(b)).sort(rank).slice(0, 6);
+        const rest = o.bugs.filter((b) => !mine.includes(b)).sort(rank).slice(0, 8 - mine.length);
+        return mine.length ? [[o.name() + ' · Open', mine], ['Other Reports', rest]] : [[null, rest]];
+      }
+      const num = /^\d+$/.test(q);
+      const words = foldWords(q);
+      const hits = o.bugs.filter((b) => num ? String(b.n).startsWith(q) || words.every((w) => fold(b.t).includes(w)) : words.every((w) => fold(b.t).includes(w)));
+      return [[null, hits.sort((a, b) => (num ? (b.n === Number(q)) - (a.n === Number(q)) : 0) || rank(a, b)).slice(0, 8)]];
+    },
+    row: (b, q) => {
+      const num = /^\d+$/.test(q);
+      const [label, color] = o.statuses[b.s] || o.statuses.new;
+      const sub = [b.mine ? '' : b.a, b.f ? 'fixed in ' + b.f : ''].filter(Boolean).join(' · ');
+      return el('div', { class: 'bm-row', role: 'option' },
+        el('span', { class: 'bm-n' }, '#', mentionMark(String(b.n), num ? q : '')),
+        el('span', { class: 'bm-t' }, el('b', {}, mentionMark(b.t, num ? '' : q)), sub && el('small', {}, sub.charAt(0).toUpperCase() + sub.slice(1))),
+        el('span', { class: 'bm-st', style: '--c:' + color }, label));
+    },
+    none: (q) => 'No report matches “' + q + '”.',
+    foot: () => [' to insert · ', el('kbd', {}, 'Esc'), ' to close'],
+    insert: (b, at, pos) => {
+      const before = ta.value.slice(0, at), after = ta.value.slice(pos).replace(/^[^\s#,;:()]*/, '');   // the rest of a word the caret is in goes too
+      return [before, '#' + b.n + (CHANGE_TAG_RE.test(before) && !after.trim() ? ': ' : /^[\s,.;:)]/.test(after) ? '' : ' '), after];
+    },
+  });
 }
 
 // Model, accessory and docs links for the texts (md_html() shows a link alone on its line as a card, md_link_cards()): the list comes from
@@ -456,110 +490,40 @@ const cardThumb = (i) => i.p ? el('img', { src: i.p, alt: '', loading: 'lazy' })
 
 // "@" in a text (itemMention(), every text in the md_html() format through imageDrop()): "@tifa" lists the models, accessories and docs pages;
 // Enter / a click puts the link in its place: on a line of its own it becomes a card (a blank line before it when the line above is text, a new
-// line after it for the next one), inside a sentence a plain link. Same keys and look as the # list of bug reports (bugMention()).
+// line after it for the next one), inside a sentence a plain link.
 function itemMention(ta) {
   if (ta.dataset.mention) return;
   ta.dataset.mention = '1';
-  let pop = null, items = [], sel = 0, skip = false, asked = 0;
-  const token = () => {   // the "@…" just before the caret: [index of the @, what follows it]
-    const pos = ta.selectionStart;
-    if (pos !== ta.selectionEnd) return null;
-    const m = /(^|[\s(])@([^\s@()[\]]{0,40})$/.exec(ta.value.slice(0, pos));
-    return m ? [pos - m[2].length - 1, m[2]] : null;
-  };
-  const close = () => { pop?.remove(); pop = null; items = []; };
-  const place = (at) => {   // under the @ (a hidden copy of the field finds where it is), like bugMention()
-    const cs = getComputedStyle(ta);
-    const m = el('div', { 'aria-hidden': 'true' });
-    for (const k of ['boxSizing', 'width', 'fontFamily', 'fontSize', 'fontWeight', 'letterSpacing', 'lineHeight', 'paddingTop', 'paddingRight', 'paddingBottom', 'paddingLeft', 'borderTopWidth', 'borderRightWidth', 'borderBottomWidth', 'borderLeftWidth', 'borderStyle', 'textIndent', 'wordSpacing', 'tabSize']) m.style[k] = cs[k];
-    Object.assign(m.style, { position: 'absolute', top: '0', left: '-9999px', visibility: 'hidden', whiteSpace: 'pre-wrap', overflowWrap: 'break-word' });
-    const mk = el('span', {}, '@');
-    m.append(ta.value.slice(0, at), mk);
-    document.body.append(m);
-    const r = ta.getBoundingClientRect();
-    const x = r.left + mk.offsetLeft - ta.scrollLeft - 12, y = Math.min(r.top + mk.offsetTop + mk.offsetHeight - ta.scrollTop + 8, r.bottom + 6);
-    const top = Math.max(r.top, r.top + mk.offsetTop - ta.scrollTop) - 6;   // the typed line's top, for a list above it
-    m.remove();
-    const vw = document.documentElement.clientWidth;
-    pop.style.left = Math.max(12, Math.min(x, vw - pop.offsetWidth - 12)) + scrollX + 'px';
-    // no room under the line (end of the page): above it, when there is more room there (under the header); shorter when neither fits
-    const below = innerHeight - 8 - y, above = top - headBottom() - 8, up = pop.offsetHeight > below && above > below;
-    if (pop.offsetHeight > (up ? above : below)) pop.style.maxHeight = Math.max(120, up ? above : below) + 'px';
-    pop.style.top = (up ? top - pop.offsetHeight : y) + scrollY + 'px';
-  };
-  const pick = (it) => {
-    const t = token();
-    if (!t) return close();
-    const v = ta.value, pos = ta.selectionStart;
-    let before = v.slice(0, t[0]), after = v.slice(pos);
-    const lineStart = before.lastIndexOf('\n') + 1, lineEnd = after.indexOf('\n');
-    const alone = before.slice(lineStart).trim() === '' && (lineEnd < 0 ? after : after.slice(0, lineEnd)).trim() === '';
-    let ins = cardLink(it);
-    if (alone) {   // a card: a block of its own (cards on the lines right under each other sit side by side), the caret after a blank line
-      before = before.slice(0, lineStart);
-      after = lineEnd < 0 ? '' : after.slice(lineEnd + 1);
-      const above = before.replace(/\n+$/, '').split('\n').pop().trim();
-      if (CARD_LINE_RE.test(above)) before = before.replace(/\n+$/, '\n');   // right under the card above: the two sit side by side
-      else if (before !== '' && !before.endsWith('\n\n')) before = before.replace(/\n?$/, '\n\n');
-      const next = after.replace(/^\n+/, '');
-      if (CARD_LINE_RE.test(next.split('\n')[0].trim())) { ins += '\n'; after = next; }
-      else { ins += '\n\n'; after = next; }
-    } else if (!/^[\s,.;:!?)]/.test(after)) ins += ' ';
-    ta.value = before + ins + after;
-    ta.setSelectionRange(before.length + ins.length, before.length + ins.length);
-    close();
-    skip = true;
-    ta.dispatchEvent(new Event('input', { bubbles: true }));   // grows the field, marks the editor unsaved, redraws a preview
-  };
-  const show = () => {
-    if (!pop) return;
-    pop.querySelectorAll('.bm-row').forEach((r, i) => { r.classList.toggle('on', i === sel); r.setAttribute('aria-selected', String(i === sel)); if (i === sel) r.scrollIntoView({ block: 'nearest' }); });
-  };
-  const mark = (text, q) => {
-    const i = q ? fold(text).indexOf(fold(q)) : -1;
-    return i < 0 || fold(text).length !== text.length ? [text] : [text.slice(0, i), el('span', { class: 'bm-mark' }, text.slice(i, i + q.length)), text.slice(i + q.length)];
-  };
-  const update = async () => {
-    const t = token();
-    if (!t) return close();
-    const n = ++asked;
-    const list = await loadCards();
-    if (n !== asked || !token()) return;   // typed on meanwhile
-    const q = t[1];
-    items = cardFind(list, q, 9);
-    sel = 0;
-    const row = (it) => {
-      const r = el('div', { class: 'bm-row cm-row', role: 'option' }, cardThumb(it),
-        el('span', { class: 'bm-t' }, el('b', {}, mark(it.t, q.split(/\s+/)[0])), it.s && el('small', {}, it.s)));
-      r.addEventListener('pointerdown', (e) => e.preventDefault());   // keeps the caret in the field
-      r.addEventListener('click', () => pick(it));
-      r.addEventListener('pointermove', () => { if (sel !== items.indexOf(it)) { sel = items.indexOf(it); show(); } });
-      return r;
-    };
-    const groups = [];
-    for (const it of items) { const g = cardGroup(it); if (groups.at(-1)?.[0] !== g) groups.push([g, []]); groups.at(-1)[1].push(it); }
-    pop?.remove();
-    pop = el('div', { class: 'bm-pop', role: 'listbox', 'aria-label': 'Models, accessories and docs pages' },
-      items.length ? groups.flatMap(([h, list], i) => [i ? el('div', { class: 'bm-sep' }) : null, el('div', { class: 'bm-head' }, h), ...list.map(row)])
-        : el('div', { class: 'bm-none' }, q ? 'Nothing matches “' + q + '”.' : 'No models, accessories or docs pages yet.'),
-      items.length ? el('div', { class: 'bm-foot' }, el('kbd', {}, '↑'), ' ', el('kbd', {}, '↓'), ' to choose · ', el('kbd', {}, 'Enter'), ' to add · alone on its line it shows as a card') : null);
-    pop.addEventListener('pointerdown', (e) => e.preventDefault());
-    document.body.append(pop);
-    place(t[0]);
-    show();
-  };
-  ta.addEventListener('input', () => { if (skip) { skip = false; return; } update(); });
-  ta.addEventListener('keydown', (e) => {
-    if (!pop) return;
-    const stop = () => { e.preventDefault(); e.stopImmediatePropagation(); };
-    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { if (items.length) { sel = (sel + (e.key === 'ArrowDown' ? 1 : items.length - 1)) % items.length; show(); } stop(); }
-    else if ((e.key === 'Enter' || e.key === 'Tab') && items.length && !e.shiftKey) { stop(); pick(items[sel]); }
-    else if (e.key === 'Escape') { stop(); close(); }
+  mentionList(ta, {
+    sign: '@', re: /(^|[\s(])@([^\s@()[\]]{0,40})$/, label: 'Models, accessories and docs pages',
+    find: async (q) => {
+      const groups = [];
+      for (const it of cardFind(await loadCards(), q, 9)) { const g = cardGroup(it); if (groups.at(-1)?.[0] !== g) groups.push([g, []]); groups.at(-1)[1].push(it); }
+      return groups;
+    },
+    row: (it, q) => el('div', { class: 'bm-row cm-row', role: 'option' }, cardThumb(it),
+      el('span', { class: 'bm-t' }, el('b', {}, mentionMark(it.t, q.split(/\s+/)[0])), it.s && el('small', {}, it.s))),
+    none: (q) => q ? 'Nothing matches “' + q + '”.' : 'No models, accessories or docs pages yet.',
+    foot: () => ' to add · alone on its line it shows as a card',
+    insert: (it, at, pos) => {
+      const v = ta.value;
+      let before = v.slice(0, at), after = v.slice(pos);
+      const lineStart = before.lastIndexOf('\n') + 1, lineEnd = after.indexOf('\n');
+      const alone = before.slice(lineStart).trim() === '' && (lineEnd < 0 ? after : after.slice(0, lineEnd)).trim() === '';
+      let ins = cardLink(it);
+      if (alone) {   // a card: a block of its own (cards on the lines right under each other sit side by side), the caret after a blank line
+        before = before.slice(0, lineStart);
+        after = lineEnd < 0 ? '' : after.slice(lineEnd + 1);
+        const above = before.replace(/\n+$/, '').split('\n').pop().trim();
+        if (CARD_LINE_RE.test(above)) before = before.replace(/\n+$/, '\n');   // right under the card above: the two sit side by side
+        else if (before !== '' && !before.endsWith('\n\n')) before = before.replace(/\n?$/, '\n\n');
+        const next = after.replace(/^\n+/, '');
+        ins += CARD_LINE_RE.test(next.split('\n')[0].trim()) ? '\n' : '\n\n';
+        after = next;
+      } else if (!/^[\s,.;:!?)]/.test(after)) ins += ' ';
+      return [before, ins, after];
+    },
   });
-  ta.addEventListener('keyup', (e) => { if (['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(e.key)) { if (token()) update(); else close(); } });
-  ta.addEventListener('click', () => { if (pop && !token()) close(); });
-  ta.addEventListener('blur', close);
-  window.addEventListener('resize', close);
 }
 
 // The Card button of the docs and blog toolbars (mdTools()): a window to search and tick models, accessories and docs pages; resolves to the
@@ -1345,13 +1309,51 @@ function folderPicker(sel) {
 }
 document.querySelectorAll('select[data-folder-pick]').forEach((s) => { if (!s.hidden) folderPicker(s); });
 
+// ── Picture files dragged from the computer anywhere on the page (Admin → Gallery, Media): an overlay while over it, dropping
+// calls onDrop(pictures). Only files: reordering by ⠿ uses pointer events, not drag and drop. While a window is open (the picker
+// has its own drop area) nothing happens, but a file dropped next to it never opens in the tab. where: "added to the gallery". ──
+function pageDrop({ hint, where, onDrop }) {
+  let inPage = false;   // a picture or link dragged from this page itself (some browsers offer it as a file too)
+  document.addEventListener('dragstart', () => { inPage = true; });
+  document.addEventListener('dragend', () => { inPage = false; });
+  const hasFiles = (e) => !inPage && [...(e.dataTransfer?.types || [])].includes('Files');
+  const veil = el('div', { class: 'g-page-drop', hidden: true, 'aria-hidden': 'true' }, el('div', {}, el('b', {}, 'Drop Pictures to Upload'), el('span', {}, 'JPG, PNG, WebP, GIF · ' + hint)));
+  document.body.append(veil);
+  let veilOff = 0;
+  const hideVeil = () => { clearTimeout(veilOff); veil.hidden = true; };
+  document.addEventListener('dragover', (e) => {
+    if (!hasFiles(e)) return;
+    if (document.querySelector('dialog[open]')) {   // the picker's drop area took it already (defaultPrevented); anywhere else: no drop
+      if (!e.defaultPrevented) { e.preventDefault(); e.dataTransfer.dropEffect = 'none'; }
+      return;
+    }
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'copy';
+    veil.hidden = false;
+    clearTimeout(veilOff);   // dragover repeats while the pointer is over the page, even standing still: once it stops, the pointer left (or Esc)
+    veilOff = setTimeout(hideVeil, 200);
+  });
+  document.addEventListener('drop', (e) => {
+    if (!hasFiles(e)) return;
+    e.preventDefault();
+    hideVeil();
+    if (document.querySelector('dialog[open]')) return;
+    const all = [...e.dataTransfer.files];
+    const pics = all.filter((f) => DROP_IMG_TYPES.includes(f.type));
+    const other = all.filter((f) => !pics.includes(f)).map((f) => f.name);
+    if (other.length) toast((pics.length ? (other.length > 3 ? `${other.length} files` : other.join(', ')) + ' left out: only' : 'Only') + ` pictures (JPG, PNG, WebP, GIF) can be ${where}.`, 'err');
+    if (pics.length) onDrop(pics);
+  });
+}
+
 // ── Picture picker: one window to pick pictures from the Media library or upload new ones (every image field in the admin) ──
 // pickImages({ multiple, folder, title, exclude, excludeLabel, note, files }) → Promise of the chosen addresses ([] = cancelled; .uploaded = new files).
 // folder: where uploads go (a model's media folder, docs, faq…), also the library's first filter when it has pictures.
 // files: pictures dropped outside the window (Admin → Gallery's page): it opens on Upload New and uploads them, as if dropped there.
+// uploadOnly: no library tab, "Done" instead of "Add N Pictures", and it resolves to the uploaded addresses however it is closed (the Media page).
 // exclude: addresses shown greyed out with excludeLabel (Admin → Gallery: pictures already in it). Library from admin/library.php.
 let pickLib = null;   // the library, loaded once per page (an upload clears it)
-function pickImages({ multiple = false, folder = 'misc', title = '', exclude = [], excludeLabel = 'Already Added', note = '', files: dropped = [] } = {}) {
+function pickImages({ multiple = false, folder = 'misc', title = '', exclude = [], excludeLabel = 'Already Added', note = '', files: dropped = [], uploadOnly = false } = {}) {
   return new Promise((resolve) => {
     const LIB_MAX = 120;   // pictures drawn at once: a search or a folder narrows the rest
     const excluded = new Set(exclude);
@@ -1370,6 +1372,7 @@ function pickImages({ multiple = false, folder = 'misc', title = '', exclude = [
     const drop = el('label', { class: 'g-drop' }, upFiles, el('b', {}, multiple ? 'Choose Pictures' : 'Choose a Picture'), el('span', { class: 'muted small' }, 'or drop ' + (multiple ? 'them' : 'it') + ' here · JPG, PNG, WebP, GIF'));
     const picked = el('div', { class: 'g-picked' });
     const go = el('button', { type: 'button', class: 'btn btn-primary btn-sm', disabled: true });
+    const cancel = el('button', { type: 'button', class: 'btn btn-ghost btn-sm', onclick: () => close([]) }, 'Cancel');
     const libPane = el('div', { class: 'g-modal-body' },
       el('div', { class: 'g-lib-tools' }, libFolder, search, excluded.size ? el('label', { class: 'toggle' }, onlyNew, el('span', {}, 'Hide ' + excludeLabel)) : null),
       msg, grid, note ? el('p', { class: 'muted small g-lib-note' }, note) : null);
@@ -1377,10 +1380,14 @@ function pickImages({ multiple = false, folder = 'misc', title = '', exclude = [
       el('label', { class: 'field' }, lbl('Upload Into'), upFolder), drop, prog.node, upMsg));
     const dlg = el('dialog', { class: 'g-modal', 'aria-label': title || 'Pictures' },
       el('div', { class: 'g-modal-head' }, el('h2', {}, title || (multiple ? 'Add Pictures' : 'Choose a Picture')), el('button', { type: 'button', class: 'icon-btn', 'aria-label': 'Close', onclick: () => close([]) }, '✕')),
-      el('nav', { class: 'lib-tabs g-modal-tabs', 'aria-label': 'Where from' }, tabBtn('library', 'From the Media Library'), tabBtn('upload', 'Upload New')),
+      uploadOnly ? null : el('nav', { class: 'lib-tabs g-modal-tabs', 'aria-label': 'Where from' }, tabBtn('library', 'From the Media Library'), tabBtn('upload', 'Upload New')),
       libPane, upPane,
-      el('div', { class: 'g-modal-foot' }, picked, el('div', { class: 'row-btns' }, el('button', { type: 'button', class: 'btn btn-ghost btn-sm', onclick: () => close([]) }, 'Cancel'), go)));
-    const close = (v) => { if (busy) return; files.forEach((f) => URL.revokeObjectURL(f.preview)); dlg.close(); dlg.remove(); resolve(v); };
+      el('div', { class: 'g-modal-foot' }, picked, el('div', { class: 'row-btns' }, cancel, go)));
+    const close = (v) => {
+      if (busy) return;
+      files.forEach((f) => URL.revokeObjectURL(f.preview)); dlg.close(); dlg.remove();
+      resolve(uploadOnly ? Object.assign([...done], { uploaded: true }) : v);
+    };
     dlg.addEventListener('cancel', (e) => { e.preventDefault(); close([]); });
     const drawPicked = () => {
       const n = pane === 'library' ? chosen.length : busy ? files.length : done.length;
@@ -1388,8 +1395,9 @@ function pickImages({ multiple = false, folder = 'misc', title = '', exclude = [
       picked.replaceChildren(...thumbs, n ? el('b', {}, multiple ? `${n} ${pane === 'upload' && !busy ? 'uploaded' : 'selected'}` : '') : el('span', { class: 'muted small' }, pane === 'library' ? (multiple ? 'Click pictures to pick them.' : 'Click a picture to pick it.') : (multiple ? 'Pictures upload as soon as you choose or drop them.' : 'The picture uploads as soon as you choose or drop it.')));
       go.disabled = !n || busy;
       go.hidden = pane === 'upload' && !busy && !done.length;   // uploads start by themselves
-      go.textContent = !multiple ? 'Use This Picture' : n ? `Add ${n} ${n === 1 ? 'Picture' : 'Pictures'}` : 'Add Pictures';
+      go.textContent = uploadOnly ? 'Done' : !multiple ? 'Use This Picture' : n ? `Add ${n} ${n === 1 ? 'Picture' : 'Pictures'}` : 'Add Pictures';
       if (busy) go.textContent = 'Uploading…';
+      cancel.hidden = uploadOnly && done.length > 0;   // they are in the library already: nothing to cancel
     };
     const drawLib = () => {
       if (!lib) return;
@@ -1455,7 +1463,7 @@ function pickImages({ multiple = false, folder = 'misc', title = '', exclude = [
     });
     document.body.append(dlg);
     dlg.showModal();
-    if (dropped.length) setPane('upload');
+    if (dropped.length || uploadOnly) setPane('upload');
     drawPicked();
     (async () => {
       try {
@@ -1819,24 +1827,24 @@ function videoCoverDialog(video, current) {
 
 // ── Image library: filter, upload, copy address, delete ──────────────────────
 const lib = document.querySelector('[data-lib]');
-const libUpload = document.querySelector('[data-upload-files]');
-const libProg = uploadProgress();
-if (libUpload) {
-  libUpload.addEventListener('change', async () => {
-    const folder = document.querySelector('[data-upload-folder]').value;
-    const files = [...libUpload.files];
-    const label = libUpload.closest('label');
-    if (!libProg.node.isConnected) { libProg.node.classList.add('lib-up-prog'); (label.closest('.admin-head') || label).after(libProg.node); }
-    label.classList.add('is-busy');
-    libUpload.disabled = true;
-    label.firstChild.textContent = 'Uploading…';
-    const done = (await libProg.run(files, folder)).length;
-    libUpload.value = '';
-    libUpload.disabled = false;
-    label.classList.remove('is-busy');
-    if (done) fpRemember(folder);
-    if (done) location.reload(); else { libProg.hide(); label.firstChild.textContent = 'Upload Images'; }
-  });
+// Upload Images (and picture files dropped anywhere on the page) open the upload window (pickImages(), "Upload Into" inside it) on the
+// folder the page shows: the folder filter's, else the one uploaded into last when it is of the tab's kind (model / accessory), else
+// the tab's own first choice ([data-upload-folder], hidden); the page reloads with the new pictures once it is closed
+const libUpload = document.querySelector('[data-upload-open]');
+if (libUpload && !libUpload.closest('[hidden]')) {   // not on the 3D / Videos tabs
+  const upSel = document.querySelector('[data-upload-folder]');
+  const has = (v) => [...upSel.options].some((o) => o.value === v);
+  const kind = (v) => (v.startsWith('outfit-') ? 'outfit' : [...upSel.querySelectorAll('optgroup[label="Models"] option')].some((o) => o.value === v) ? 'model' : 'other');
+  const first = upSel.value;
+  const last = fpRecent().find((v) => has(v) && kind(v) === kind(first) && kind(v) !== 'other');
+  if (last) upSel.value = last;
+  const openUpload = async (files = []) => {
+    const f = document.querySelector('[data-lib-folder]')?.value.replace(/:.*/, '');   // a docs page / FAQ question: its folder
+    const urls = await pickImages({ multiple: true, uploadOnly: true, title: 'Upload Images', folder: f && has(f) ? f : upSel.value, files });
+    if (urls.length) location.reload();
+  };
+  libUpload.addEventListener('click', () => openUpload());
+  pageDrop({ hint: 'they upload into the folder you pick', where: 'uploaded here', onDrop: openUpload });
 }
 if (lib) {
   const cards = [...lib.querySelectorAll('.lib-card')];
@@ -1900,8 +1908,6 @@ if (lib) {
     }
   }
   [search, folder, unused].forEach((x) => x.addEventListener('input', () => apply()));
-  // looking at one folder: the upload goes there too
-  folder.addEventListener('input', () => { if (folder.value) document.querySelector('[data-upload-folder]')?.fp?.set(folder.value.replace(/:.*/, '')); });   // a docs page / FAQ question: its folder
   apply(true);   // the first page (or ?page=), and ?unused=1 (kept across the tabs)
   const info = JSON.parse(document.getElementById('lib-info')?.textContent || '{}');
   const delCard = (card) => {   // only unused ones can be deleted: one less in both counts of its tab
@@ -2086,6 +2092,64 @@ if (lib) {
   }
 }
 
+// ── Media → Find Duplicates (admin/duplicates.php): the first visit reads the pictures a share at a time, then the groups:
+// chips, "Keep Selected, Remove the Others" (confirm, then the group goes) and "Not Duplicates" ──
+const dupScan = document.querySelector('[data-dup-scan]');
+if (dupScan) (async () => {
+  const tx = dupScan.querySelector('[data-dup-tx]'), fill = dupScan.querySelector('.up-prog-fill');
+  let last = -1, still = 0;   // a share that reads nothing new twice in a row (the cache folder isn't writable): stop instead of asking forever
+  for (let fails = 0; fails < 3;) {
+    try {
+      const r = await post('/admin/duplicates.php', { action: 'scan' });
+      tx.textContent = `${r.done} of ${r.total}`;
+      fill.style.width = Math.round(r.done / Math.max(1, r.total) * 100) + '%';
+      if (r.done >= r.total) { location.reload(); return; }
+      still = r.done > last ? 0 : still + 1;
+      last = r.done;
+      if (still >= 2) { toast(`Reading stopped with ${r.total - r.done} ${r.total - r.done === 1 ? 'picture' : 'pictures'} left: the server couldn’t keep what it read. Reload to try again.`, 'err'); return; }
+      fails = 0;
+    } catch (e) { if (++fails >= 3) toast(e.message, 'err'); }
+  }
+})();
+const dupList = document.querySelector('[data-dups]');
+if (dupList) {
+  const chips = [...document.querySelectorAll('[data-dup-chip]')];
+  const none = document.querySelector('[data-dup-none]');
+  const show = (k) => {
+    chips.forEach((c) => c.setAttribute('aria-pressed', String(c.dataset.dupChip === k)));
+    dupList.querySelectorAll('[data-dup]').forEach((g) => { g.hidden = k !== '' && (k === 'gallery' ? g.dataset.dupGallery !== '1' : g.dataset.dup !== k); });
+  };
+  chips.forEach((c) => c.addEventListener('click', () => show(c.dataset.dupChip)));
+  // a group done: it goes, the chips' numbers follow (a chip left empty goes, back to All)
+  const gone = (g) => {
+    g.remove();
+    const left = [...dupList.querySelectorAll('[data-dup]')];
+    for (const c of chips) {
+      const k = c.dataset.dupChip;
+      const n = left.filter((x) => k === '' || (k === 'gallery' ? x.dataset.dupGallery === '1' : x.dataset.dup === k)).length;
+      c.querySelector('span').textContent = n;
+      if (k !== '' && !n) { if (c.getAttribute('aria-pressed') === 'true') show(''); c.remove(); }
+    }
+    if (!left.length) { document.querySelector('[data-dup-chips]')?.remove(); none.hidden = false; }
+  };
+  dupList.addEventListener('click', async (e) => {
+    const b = e.target.closest('[data-dup-merge], [data-dup-ok]');
+    if (!b) return;
+    const g = b.closest('[data-dup]');
+    const items = JSON.parse(g.dataset.items), keep = g.querySelector('input[type=radio]:checked')?.value;
+    const merge = b.matches('[data-dup-merge]'), others = items.length - 1;
+    if (merge && !confirm(g.dataset.dup === 'gallery'
+      ? `Remove the other ${others === 1 ? 'copy' : others + ' copies'} from the Gallery? The one kept gets their characters and likes.`
+      : `Keep the selected picture and delete the other ${others === 1 ? 'file' : others + ' files'}? Every place using ${others === 1 ? 'it' : 'them'} will show the kept one. This can’t be undone.`)) return;
+    g.querySelectorAll('button').forEach((x) => (x.disabled = true));
+    try {
+      const r = await post('/admin/duplicates.php', { action: merge ? 'merge' : 'ok', kind: g.dataset.dup, items, keep });
+      toast(r.msg || '✓ Marked as not duplicates. They won’t be shown again.');
+      gone(g);
+    } catch (err) { g.querySelectorAll('button').forEach((x) => (x.disabled = false)); toast(err.message, 'err'); }
+  });
+}
+
 // ── Key fields (key_field() in _admin.php): a saved webhook / secret / key shows locked; Change opens the field, Cancel or Esc locks it
 // again with its saved value (a secret's field is empty: the server keeps the saved one). keyField() gives an editor's field the same look. ──
 const KEY_LOCK_ICON = '<rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/>';   // KEY_LOCK_ICON in _admin.php
@@ -2185,6 +2249,15 @@ function mdTools(body, { folder = 'misc', imgTitle = 'Pictures', onEdit = () => 
     if (urls.length) { block(body, urls.map((u) => `![](${u})`).join('\n')); onEdit(); }
   } }, 'Image');
   const tb = (label, title, fn) => el('button', { type: 'button', class: 'tb', title, onclick: fn }, label);
+  // a carousel: the picture lines selected in the text, else pictures picked in the library (two or more)
+  const carouselBtn = tb('Carousel', 'Carousel: one picture at a time with ‹ › and dots (selected picture lines go inside, else pick the pictures)', async () => {
+    const sel = body.value.slice(body.selectionStart, body.selectionEnd).trim();
+    const pics = sel.split('\n').filter((l) => /^!\[[^\]]*\]\([^)\s]+\)$/.test(l.trim()));
+    const lines = pics.length >= 2 ? sel : (await pickImages({ multiple: true, folder, title: imgTitle })).map((u) => `![](${u})`).join('\n');
+    if (!lines) return;
+    block(body, `::: carousel\n${lines}\n:::`);
+    onEdit();
+  });
   const cardBtn = tb('Card', 'Cards of models, accessories or docs pages (or type @ in the text)', async () => {
     const its = await cardPicker();
     if (its.length) { block(body, its.map(cardLink).join('\n')); onEdit(); }
@@ -2200,11 +2273,18 @@ function mdTools(body, { folder = 'misc', imgTitle = 'Pictures', onEdit = () => 
     boxMenu(() => body),
     tb('Code', 'Code block', () => replaceSel(body, (t) => ['\n```\n' + (t || 'code') + '\n```\n'])),
     tb('Table', 'Table', () => block(body, '| Column | Column |\n|---|---|\n| Text | Text |')),
+    tb('Expandable', 'Expandable box: folded until clicked (the selected text goes inside)', () => {
+      const t = body.value.slice(body.selectionStart, body.selectionEnd).trim();
+      block(body, `+++ Title\n${t || 'Text shown when the box is opened'}\n+++`);
+      const at = body.value.lastIndexOf('+++ Title\n', body.selectionStart) + 4;
+      body.setSelectionRange(at, at + 5);   // the title selected, ready to type
+    }),
     tb('Tabs', 'Tabs: two or more ways to do the same steps (the selected text goes in the first tab)', () => {
       const t = body.value.slice(body.selectionStart, body.selectionEnd).trim();
       block(body, `=== Manual\n${t || '1. First step'}\n=== With MustardUI\n1. First step\n===`);
     }),
     imgBtn,
+    carouselBtn,
     video ? tb('Video', `A video (MP4 or WebM, up to ${fmtMB(video.bytes)}), checked before it uploads; videos can also be dropped on the text`, () => addVideo(null)) : null,
     cardBtn,
     paywall ? tb('Patreon', 'Patrons only from here: everyone reads the text above this line, patrons the rest', () => {
@@ -2358,7 +2438,7 @@ function initDocsEditor(data) {
         el('label', { class: 'field' }, el('span', { class: 'lbl' }, 'Title'), title),
         el('label', { class: 'field' }, el('span', { class: 'lbl' }, 'Section'), secSel),
         el('label', { class: 'field' }, lbl('Address', isHome ? 'The first non-draft page: shown at /docs/.' : ''), el('span', { class: 'prefixed' }, el('span', { class: 'muted' }, '/docs/'), slug, el('span', { class: 'muted' }, '/'))),
-        el('label', { class: 'field check dp-draft' }, draft, lbl('Draft', 'Only admins see it.')),
+        el('label', { class: 'field check dp-draft' }, draft, el('span', { class: 'lbl' }, 'Draft')),
         el('label', { class: 'field dp-wide' }, el('span', { class: 'lbl' }, 'Summary'), sum)),
       tabs, toolbar, body, preview,
       el('div', { class: 'dp-foot' },
@@ -2373,25 +2453,17 @@ function initDocsEditor(data) {
   form.addEventListener('submit', (e) => e.preventDefault());
   guardLeave(() => dirty);
 
-  const saveBtn = document.querySelector('[data-save]');
-  const save = async () => {
-    if (saveBtn.disabled) return;   // already saving (Ctrl+S pressed twice)
-    saveBtn.disabled = true; saveBtn.textContent = 'Saving…';
-    try {
-      const out = { sections: docs.sections.map((sec) => ({ title: sec.title.trim(), pages: sec.pages.map((p) => ({ slug: p.slug, title: p.title.trim(), summary: (p.summary || '').trim(), body: p.body || '', draft: !!p.draft })) })) };
-      const at = edits;
-      const sent = allPages();   // pages added while it saves keep following their title
-      data.rev = (await post('/admin/save.php', { kind: 'docs', docs: out, rev: data.rev })).rev;
-      sent.forEach((p) => delete p.isNew);
-      if (edits === at) dirty = false;
-      toast('Saved ✓ The docs are updated.');
-      const page = currentPage();
-      if (page) viewLink.href = urlOf(page);
-    } catch (e) { toast(e.message, 'err'); }
-    saveBtn.disabled = false; saveBtn.textContent = 'Save';
-  };
-  saveBtn.addEventListener('click', save);
-  document.addEventListener('keydown', (e) => { if ((e.ctrlKey || e.metaKey) && e.key === 's') { e.preventDefault(); save(); } });
+  saveButton(async () => {
+    const out = { sections: docs.sections.map((sec) => ({ title: sec.title.trim(), pages: sec.pages.map((p) => ({ slug: p.slug, title: p.title.trim(), summary: (p.summary || '').trim(), body: p.body || '', draft: !!p.draft })) })) };
+    const at = edits;
+    const sent = allPages();   // pages added while it saves keep following their title
+    data.rev = (await post('/admin/save.php', { kind: 'docs', docs: out, rev: data.rev })).rev;
+    sent.forEach((p) => delete p.isNew);
+    if (edits === at) dirty = false;
+    toast('Saved ✓ The docs are updated.');
+    const page = currentPage();
+    if (page) viewLink.href = urlOf(page);
+  });
 
   // open the page from ?page=…, otherwise the first one
   let start = null;
@@ -2610,7 +2682,7 @@ function initBlogEditor(data) {
       el('label', { class: 'toggle' }, change, el('span', {}, 'Patrons Can Change Their Vote')),
       p.votes ? el('p', { class: 'muted small' }, voters === 1 ? '1 patron voted so far.' : `${voters} patrons voted so far.`) : null);
     return el('div', { class: 'field ba-poll' },
-      el('label', { class: 'toggle' }, on, el('span', {}, 'Add a Poll to This Post'), tip('Paying patrons vote under the post (once each). Votes are kept under a scrambled code, like likes.')), body);
+      el('label', { class: 'toggle' }, on, el('span', {}, 'Add a Poll to This Post'), tip('Paying patrons vote under the post, once each.')), body);
   }
 
   const F = {};   // the open post's fields that a save writes back (address and date made by the server, the delete button)
@@ -2735,13 +2807,13 @@ function initBlogEditor(data) {
         el('label', { class: 'field' }, lbl('Address', 'Keep it once the post is out: links to the old address stop working.'), el('span', { class: 'prefixed' }, el('span', { class: 'muted' }, '/blog/'), F.slug, el('span', { class: 'muted' }, '/'))),
         field('Date', `Site time (${data.tz}). A later date publishes the post then; empty = when you save.`, F.date),
         el('div', { class: 'field dp-wide' }, el('span', { class: 'lbl' }, 'Visibility'), el('div', { class: 'ba-vis-row' }, vis,
-          el('label', { class: 'toggle' }, pinned, el('span', {}, 'Pinned'), tip('Shown big at the top of the blog, before newer posts.')),
-          data.comments ? el('label', { class: 'toggle' }, cmt, el('span', {}, 'Allow Comments'), tip('Comments under the post. Off: none are shown and nobody can write one (existing ones are kept).')) : null)), el('div', { class: 'dp-wide' }, hint),
-        el('div', { class: 'field dp-wide' }, lbl('Topics', 'Up to 6. Visitors can show one topic at a time.'), topics),
+          el('label', { class: 'toggle' }, pinned, el('span', {}, 'Pinned')),
+          data.comments ? el('label', { class: 'toggle' }, cmt, el('span', {}, 'Allow Comments')) : null)), el('div', { class: 'dp-wide' }, hint),
+        el('div', { class: 'field dp-wide' }, lbl('Topics'), topics),
         el('div', { class: 'dp-wide' }, coverField),
         el('label', { class: 'field dp-wide' }, el('span', { class: 'lbl' }, 'Summary'), sum)),
       tabs, toolbar, body, preview,
-      el('div', { class: 'field ba-items' }, lbl('Models and Accessories in This Post', 'Shown as cards under the post (only the ones visitors can see).'), items),
+      el('div', { class: 'field ba-items' }, lbl('Models and Accessories in This Post'), items),
       pollBox,
       el('div', { class: 'ba-discord' }, discord),
       el('div', { class: 'dp-foot' }, F.del = el('button', { type: 'button', class: 'btn btn-ghost btn-sm dp-del', onclick: del }, p.id ? 'Delete Post' : 'Discard')));
@@ -2861,20 +2933,12 @@ function initFaqEditor(data) {
   form.addEventListener('submit', (e) => e.preventDefault());
   guardLeave(() => dirty);
 
-  const saveBtn = document.querySelector('[data-save]');
-  const save = async () => {
-    if (saveBtn.disabled) return;   // already saving (Ctrl+S pressed twice)
-    saveBtn.disabled = true; saveBtn.textContent = 'Saving…';
-    try {
-      const at = edits;
-      data.rev = (await post('/admin/save.php', { kind: 'faq', faq: { intro: intro.value.trim(), sections: [...topics.children].map((n) => n.get()) }, rev: data.rev })).rev;
-      if (edits === at) dirty = false;
-      toast('Saved ✓ The FAQ is updated.');
-    } catch (e) { toast(e.message, 'err'); }
-    saveBtn.disabled = false; saveBtn.textContent = 'Save';
-  };
-  saveBtn.addEventListener('click', save);
-  document.addEventListener('keydown', (e) => { if ((e.ctrlKey || e.metaKey) && e.key === 's') { e.preventDefault(); save(); } });
+  saveButton(async () => {
+    const at = edits;
+    data.rev = (await post('/admin/save.php', { kind: 'faq', faq: { intro: intro.value.trim(), sections: [...topics.children].map((n) => n.get()) }, rev: data.rev })).rev;
+    if (edits === at) dirty = false;
+    toast('Saved ✓ The FAQ is updated.');
+  });
 }
 
 // Help texts behind a "?": tip(text) is the button, lbl(label, hint) a field label with one. One floating box shows the text
@@ -3448,7 +3512,7 @@ function initEditor(data) {
     fields.requireMode = select('', m.requireMode === 'or' ? 'or' : 'and', { and: 'and', or: 'or' }, { cls: 'req-mode' });
     fields.requireMode.node.querySelector('select').setAttribute('aria-label', 'Both requirements, or either one');
     fields.requireTotal.input.inputMode = 'decimal';
-    fields.noLimits = toggle('Exclude from Unlock Limits', m.noLimits, 'Downloads of this item never use an unlock and are never refused by the limits.');
+    fields.noLimits = toggle('Exclude from Unlock Limits', m.noLimits);
 
     // release dates (the site's time zone, Settings → Site → Time Zone): patrons from, everyone from; before the patrons date the page is hidden or "Coming soon"
     const rel = data.release || {};
@@ -3506,7 +3570,7 @@ function initEditor(data) {
     sec.addEventListener('change', sync);
     body.append(part('Release Dates', `Times are in the site’s time zone (${(rel.tz || 'Europe/Berlin').replace(/_/g, ' ')}); visitors see them in their own. Before “Patrons From” nobody can download it (admins can). From “Everyone From” every patron link works for anyone, with no login. Discord gets a post on each date.`,
         el('div', { class: 'grid2' }, fields.releasePatrons.node, fields.releasePublic.node), fields.releaseBefore.node, strip),
-      part('Tier', `Patrons below it see “You need the … tier or higher” with an Upgrade link. The tier buttons are the tiers seen when patrons log in.`,
+      part('Tier', `Patrons below it see “You need the … tier or higher” with an Upgrade link. The tier buttons are the campaign’s tiers (Settings → Patreon → Campaign).`,
         el('div', { class: 'field tier-pick' }, tierLbl, el('div', { class: 'tier-row' }, fields.requireTier.node, el('div', { class: 'chips' }, chips)))),
       part('Loyalty', '',
         el('div', { class: 'req-grid' }, fields.requireMonths.node, fields.requireMode.node, fields.requireTotal.node)),
@@ -3557,7 +3621,7 @@ function initEditor(data) {
     fields.password = text('Password', '', { max: 200, placeholder: 'At least 4 characters', hint: 'A new password locks out everyone who used the old one.' });
     fields.password.input.autocomplete = 'off';
     fields.password.lock = keyField(fields.password.input, 'Password', !!m.hasPassword);   // never sent to the page: locked while one is set
-    fields.unlisted = toggle('Hide from Catalog', m.unlisted, 'Reachable only by its address.');
+    fields.unlisted = toggle('Hide from Catalog', m.unlisted);
     const hints = {
       public: 'Everyone can see it.',
       blurred: 'Every picture is blurred (a teaser). Downloads work as usual.',
@@ -3571,7 +3635,7 @@ function initEditor(data) {
     fields.visibility.node.addEventListener('change', sync);
     sync();
     // comments under the page (app/comments.php): the switch only while they are on for this kind; otherwise the stored choice stays
-    fields.comments = data.comments ? toggle('Allow Comments', !m.noComments, 'Comments under the page. Off: none are shown and nobody can write one (existing ones are kept).') : { get: () => !m.noComments };
+    fields.comments = data.comments ? toggle('Allow Comments', !m.noComments) : { get: () => !m.noComments };
     form.append(section(statusRow ? 'Visibility & Status' : 'Visibility', null, fields.visibility.node, hint, pwBox, statusRow, data.comments ? el('div', { class: 'ed-comments' }, fields.comments.node) : null));
   };
 
@@ -3648,7 +3712,7 @@ function initEditor(data) {
         };
       },
     });
-    form.append(section('Changelog', 'The top entry is the latest version.', fields.changelogNote.node, fields.changelog.node));
+    form.append(section('Changelog', null, fields.changelogNote.node, fields.changelog.node));
     discordPill();
   };
 
@@ -3727,7 +3791,7 @@ function initEditor(data) {
 
   if (isOutfit) {
     // type: free text with suggestions (like a model's franchise); empty = Outfit. Catalog filter and the line above the name
-    fields.type = text('Type', m.type || 'Outfit', { placeholder: 'e.g. Hair', max: 40, hint: 'Outfit, Hair, Necklace… Pick one in the list or type a new one: the Accessories page gets a filter per type.',
+    fields.type = text('Type', m.type || 'Outfit', { placeholder: 'e.g. Hair', max: 40,
       suggest: { values: data.types, noun: 'type', unit: ['accessory', 'accessories'] } });
     form.append(section('Basics', null, el('div', { class: 'grid-acc' }, fields.name.node, fields.type.node, slugNode)));
     visibilitySection();
@@ -3819,7 +3883,7 @@ function initEditor(data) {
         return { body: el('div', { class: 'rep-body' }, t.node, groups.node), get: () => ({ title: t.get(), groups: groups.get() }), title: () => t.get() || 'New Section' };
       },
     });
-    form.append(section('Sidebar', 'Shown next to the changelog on the model page.', fields.futureIdeas.node, fields.knownIssues.node, fields.credits.node, fields.extra.node,
+    form.append(section('Sidebar', null, fields.futureIdeas.node, fields.knownIssues.node, fields.credits.node, fields.extra.node,
       optionalBlocks([[fields.futureIdeas, 'Future Ideas'], [fields.knownIssues, 'Known Issues'], [fields.credits, 'Credits'], [fields.extra, 'Other Section']])));
   }
 
@@ -3862,26 +3926,18 @@ function initEditor(data) {
   guardLeave(() => dirty);
 
   const listUrl = isOutfit ? '/admin/outfits.php' : '/admin/models.php';
-  const saveBtn = document.querySelector('[data-save]');
-  const save = async () => {
-    if (saveBtn.disabled) return;   // already saving (Ctrl+S pressed twice)
-    saveBtn.disabled = true; saveBtn.textContent = 'Saving…';
-    try {
-      const at = edits;
-      const r = await post('/admin/save.php', { kind: data.kind, action: 'save', originalSlug: data.isNew ? '' : m.slug, rev: data.isNew ? undefined : data.rev, item: collect() });
-      data.rev = r.rev;   // the next save checks against what this one stored
-      if (edits === at) dirty = false;
-      if (fields.password.get()) fields.password.lock();   // saved: locked like the stored one
-      if (r.created) { location.href = `/admin/edit.php?kind=${data.kind}&slug=${encodeURIComponent(r.slug)}&saved=1${r.discord ? '&dc=' + (r.discord.ok ? 1 : 0) : ''}`; return; }
-      if (r.discordState !== undefined) { data.discord = r.discordState; form.dispatchEvent(new Event('dc-sync')); }
-      if (r.discord?.ok) toast(`Saved ✓ Posted ${r.discord.what} on Discord.`);
-      else if (r.discord) toast(`Saved, but the Discord post failed: ${(r.discord.error || 'no answer').replace(/\.+$/, '')}. Saving again tries again.`, 'err');
-      else toast('Saved ✓ The site is updated.');
-    } catch (e) { toast(e.message, 'err'); }
-    saveBtn.disabled = false; saveBtn.textContent = 'Save';
-  };
-  saveBtn.addEventListener('click', save);
-  document.addEventListener('keydown', (e) => { if ((e.ctrlKey || e.metaKey) && e.key === 's') { e.preventDefault(); save(); } });
+  saveButton(async () => {
+    const at = edits;
+    const r = await post('/admin/save.php', { kind: data.kind, action: 'save', originalSlug: data.isNew ? '' : m.slug, rev: data.isNew ? undefined : data.rev, item: collect() });
+    data.rev = r.rev;   // the next save checks against what this one stored
+    if (edits === at) dirty = false;
+    if (fields.password.get()) fields.password.lock();   // saved: locked like the stored one
+    if (r.created) { location.href = `/admin/edit.php?kind=${data.kind}&slug=${encodeURIComponent(r.slug)}&saved=1${r.discord ? '&dc=' + (r.discord.ok ? 1 : 0) : ''}`; return true; }
+    if (r.discordState !== undefined) { data.discord = r.discordState; form.dispatchEvent(new Event('dc-sync')); }
+    if (r.discord?.ok) toast(`Saved ✓ Posted ${r.discord.what} on Discord.`);
+    else if (r.discord) toast(`Saved, but the Discord post failed: ${(r.discord.error || 'no answer').replace(/\.+$/, '')}. Saving again tries again.`, 'err');
+    else toast('Saved ✓ The site is updated.');
+  });
   if (new URLSearchParams(location.search).has('saved')) {
     const dc = new URLSearchParams(location.search).get('dc');   // the first save posted on Discord (1) or tried and failed (0)
     toast(`${isOutfit ? 'Accessory' : 'Model'} created ✓${dc === '1' ? ' Posted on Discord.' : ''}`);
@@ -4426,8 +4482,8 @@ document.querySelector('[data-pt-use]')?.addEventListener('click', (e) => {
 })();
 
 // ── Stats → the list of models and accessories: search (accents ignored, every word must match), Models / Accessories, sortable
-// columns (the first sort is the table's data-tot-default, else "total"). Tiles marked data-sum, if any, add up the rows shown; the
-// choices stay in the address (tq, tkind, tsort) so a reload keeps them.
+// columns (the first sort is the table's data-tot-default, else "total"); the choices stay in the address (tq, tkind, tsort) so a reload
+// keeps them.
 (() => {
   const table = document.querySelector('[data-tot-table]');
   if (!table) return;
@@ -4438,8 +4494,7 @@ document.querySelector('[data-pt-use]')?.addEventListener('click', (e) => {
   const search = document.querySelector('[data-tot-search]');
   const count = document.querySelector('[data-tot-count]');
   const kinds = [...document.querySelectorAll('[data-tot-kind]')];
-  const sums = [...document.querySelectorAll('[data-tot-sums] [data-sum]')];
-  rows.forEach((r, i) => { r.hay = fold(r.dataset.search || r.textContent); r.pos = i; });
+  rows.forEach((r) => { r.hay = fold(r.dataset.search || r.textContent); });
   const u0 = new URL(location.href).searchParams;
   let kind = u0.get('tkind') || '';
   let [key, dir] = (u0.get('tsort') || `${def}-desc`).split('-');
@@ -4457,15 +4512,11 @@ document.querySelector('[data-pt-use]')?.addEventListener('click', (e) => {
   const filter = () => {
     const q = search ? search.value.trim() : '';
     const words = foldWords(q);
-    const tot = Object.fromEntries(sums.map((b) => [b.dataset.sum, 0]));
     let shown = 0;
     rows.forEach((r) => {
       r.hidden = (kind && r.dataset.kind !== kind) || !words.every((w) => r.hay.includes(w));
-      if (r.hidden) return;
-      shown++;
-      for (const k in tot) tot[k] += +r.dataset[k] || 0;
+      if (!r.hidden) shown++;
     });
-    sums.forEach((b) => { b.textContent = tot[b.dataset.sum].toLocaleString('en-US'); });
     kinds.forEach((c) => c.setAttribute('aria-pressed', String(c.dataset.totKind === kind)));
     if (count) { count.hidden = shown === rows.length; count.textContent = `${shown} of ${rows.length} shown`; }
     empty.hidden = shown > 0;
@@ -4679,6 +4730,7 @@ function shareWindow({ item = null, items = null, unsaved = false, onDone = null
   const matches = (r) => {
     if (show === 'problems') return r.dataset.st === 'dead' || r.dataset.st === 'unknown';
     if (show.startsWith('st:')) return r.dataset.st === show.slice(3);
+    if (show === 'renders') return r.dataset.lcRender !== undefined;
     return !show || r.dataset.group === show;
   };
   const apply = () => {
@@ -4762,9 +4814,24 @@ function shareWindow({ item = null, items = null, unsaved = false, onDone = null
     input.focus();
   };
 
+  // "Remove Link" on a patron render's dead row: the render (and its Gallery copy) lose the link, its rows leave the table
+  const unfull = async (b) => {
+    if (!confirm('Remove this dead link from the patron’s render?\n\nThe render stays; the viewer’s Download Full Size goes, on its Gallery copy too.')) return;
+    b.disabled = true;
+    try {
+      const d = await post('/admin/links.php', { unfull: b.dataset.lcUnfull });
+      const h = b.closest('tr').dataset.lcRow;
+      tbody.querySelectorAll(`tr[data-lc-row="${CSS.escape(h)}"][data-lc-render="${CSS.escape(b.dataset.lcUnfull)}"]`).forEach((r) => r.remove());
+      apply();
+      toast(d.gallery ? 'Link removed from the render and its Gallery copy.' : 'Link removed from the render.', 'ok');
+    } catch (err) { b.disabled = false; toast(err.message, 'err'); }
+  };
+
   tbody.addEventListener('click', async (e) => {
     const rb = e.target.closest('[data-lc-replace]');
     if (rb) { replace(rb.closest('tr')); return; }
+    const ub = e.target.closest('[data-lc-unfull]');
+    if (ub) { if (!ub.disabled) unfull(ub); return; }
     const b = e.target.closest('[data-lc-one]');
     if (!b || b.disabled) return;
     try { await check(b.closest('tr')); } catch (err) { toast(err.message, 'err'); }
@@ -5075,6 +5142,7 @@ document.querySelectorAll('[data-log-rows]').forEach((form) => {
     const tags = [];
     if (s.visibility && s.visibility !== 'public') tags.push(el('span', { class: 'g-pill' }, G.visibility[s.visibility]));
     if (followNote(s)) tags.push(el('span', { class: 'g-pill g-pill-follow', title: followNote(s) }, 'Follows the Model'));
+    if (s.rhidden) tags.push(el('span', { class: 'g-pill', title: 'A patron render you hid in Media → From Patrons: not shown in the Gallery until you show it there again' }, 'Hidden'));
     if (s.link?.url) tags.push(el('span', { class: 'g-pill g-pill-dl', title: 'Full size download for ' + (s.link.access === 'public' ? 'everyone' : 'patrons') }, '↓ Full Size'));
     // a picture that isn't 9:16 leaves bands in the card: a blurred copy of it fills them (same file, nothing more to download)
     const bars = !(s.w && s.h) || Math.abs(s.w / s.h - 9 / 16) > 0.02;
@@ -5326,40 +5394,8 @@ document.querySelectorAll('[data-log-rows]').forEach((form) => {
   }
   document.querySelector('[data-g-add]').addEventListener('click', () => openAdd());
 
-  // ── Picture files dragged from the computer anywhere on the page: an overlay while over it, dropping opens "+ Add pictures"
-  // on Upload New with them. Only files: the cards' ⠿ reordering uses pointer events, not drag and drop. While a window is open
-  // (the picker has its own drop area) nothing happens, but a file dropped next to it never opens in the tab ──
-  let inPage = false;   // a picture or link dragged from this page itself (some browsers offer it as a file too)
-  document.addEventListener('dragstart', () => { inPage = true; });
-  document.addEventListener('dragend', () => { inPage = false; });
-  const hasFiles = (e) => !inPage && [...(e.dataTransfer?.types || [])].includes('Files');
-  const veil = el('div', { class: 'g-page-drop', hidden: true, 'aria-hidden': 'true' }, el('div', {}, el('b', {}, 'Drop Pictures to Upload'), el('span', {}, 'JPG, PNG, WebP, GIF · they open in Add Pictures')));
-  document.body.append(veil);
-  let veilOff = 0;
-  const hideVeil = () => { clearTimeout(veilOff); veil.hidden = true; };
-  document.addEventListener('dragover', (e) => {
-    if (!hasFiles(e)) return;
-    if (document.querySelector('dialog[open]')) {   // the picker's drop area took it already (defaultPrevented); anywhere else: no drop
-      if (!e.defaultPrevented) { e.preventDefault(); e.dataTransfer.dropEffect = 'none'; }
-      return;
-    }
-    e.preventDefault();
-    e.dataTransfer.dropEffect = 'copy';
-    veil.hidden = false;
-    clearTimeout(veilOff);   // dragover repeats while the pointer is over the page, even standing still: once it stops, the pointer left (or Esc)
-    veilOff = setTimeout(hideVeil, 200);
-  });
-  document.addEventListener('drop', (e) => {
-    if (!hasFiles(e)) return;
-    e.preventDefault();
-    hideVeil();
-    if (document.querySelector('dialog[open]')) return;
-    const all = [...e.dataTransfer.files];
-    const pics = all.filter((f) => DROP_IMG_TYPES.includes(f.type));
-    const other = all.filter((f) => !pics.includes(f)).map((f) => f.name);
-    if (other.length) toast((pics.length ? (other.length > 3 ? `${other.length} files` : other.join(', ')) + ' left out: only' : 'Only') + ' pictures (JPG, PNG, WebP, GIF) can be added to the gallery.', 'err');
-    if (pics.length) openAdd(pics);
-  });
+  // picture files dragged from the computer anywhere on the page open "+ Add pictures" on Upload New with them
+  pageDrop({ hint: 'they open in Add Pictures', where: 'added to the gallery', onDrop: openAdd });
 
   render();
 })();
@@ -5823,4 +5859,244 @@ document.querySelectorAll('[data-log-rows]').forEach((form) => {
     document.body.append(dlg);
     dlg.showModal();
   });
+})();
+
+// A tab row wider than the screen (phones): the current tab scrolled into view, so a tab at the end (From Patrons, 3D Files) isn't hidden
+document.querySelectorAll('nav.lib-tabs').forEach((n) => {
+  const cur = n.querySelector('[aria-current="page"]');
+  if (cur && n.scrollWidth > n.clientWidth) n.scrollLeft += cur.getBoundingClientRect().left - n.getBoundingClientRect().left - (n.clientWidth - cur.offsetWidth) / 2;
+});
+
+// ── Media → From Patrons (showcase_tab_html() in admin/_showcase.php): the filters of the other Media tabs (the search, every word, accents
+// ignored; the model / accessory menu; Waiting Only), and with one item picked (nothing else filtering) the ⠿ on its shown cards: their order
+// on its page, saved at once; Reset Order shows while that item has an order of its own. The ⋯ menus: one open at a time ──
+(() => {
+  const grid = document.querySelector('[data-sc-grid]');
+  if (!grid) return;
+  const search = document.querySelector('[data-sc-search]');
+  const none = document.querySelector('[data-sc-none]');
+  const folder = document.querySelector('[data-sc-folder]');
+  const wait = document.querySelector('[data-sc-wait]');
+  const reset = document.querySelector('[data-sc-reset]');
+  const key = (f) => (f.startsWith('outfit-') ? 'outfits:' + f.slice(7) : 'models:' + f);   // the folder → "kind:slug" (data-folder of the cards)
+  const shownOf = (f) => [...grid.querySelectorAll(':scope > .sc-sh')].filter((c) => c.dataset.folder === f);
+  const apply = () => {
+    const words = foldWords(search.value);
+    const on = words.length || folder.value || wait.checked;
+    let any = false;
+    grid.querySelectorAll(':scope > .sc-lib').forEach((c) => {
+      const t = fold(c.dataset.search);
+      const show = words.every((w) => t.includes(w)) && (!folder.value || c.dataset.folder === folder.value) && (!wait.checked || c.classList.contains('is-wait'));
+      c.hidden = !show;
+      any ||= show;
+    });
+    const one = folder.value && !words.length && !wait.checked ? shownOf(folder.value) : [];
+    grid.classList.toggle('can-drag', one.length > 1);
+    reset.hidden = !one.some((c) => c.hasAttribute('data-pos'));
+    reset.querySelector('[name=item]').value = folder.value ? key(folder.value) : '';   // not elements.item: that is the collection's item()
+    none.hidden = any || !on;
+  };
+  let saved = '';
+  const save = async (card) => {
+    const order = shownOf(card.dataset.folder).map((c) => c.id.slice(2));
+    if (order.join() === saved) return;
+    try {
+      await post('/admin/showcase.php', { item: key(card.dataset.folder), order });
+      saved = order.join();
+      shownOf(card.dataset.folder).forEach((c) => c.setAttribute('data-pos', ''));
+      reset.hidden = false;
+      toast('Order saved ✓');
+    } catch (err) { toast(err.message, 'err'); }
+  };
+  grid.querySelectorAll('.sc-drag').forEach((h) => {
+    h.addEventListener('pointerdown', () => { saved = shownOf(h.closest('.sc-lib').dataset.folder).map((c) => c.id.slice(2)).join(); }, true);
+    h.addEventListener('keydown', () => { saved = shownOf(h.closest('.sc-lib').dataset.folder).map((c) => c.id.slice(2)).join(); }, true);
+    wireDrag(h, (b) => b.closest('.sc-lib'), save);
+  });
+  [search, folder, wait].forEach((x) => x.addEventListener('input', apply));
+  search.addEventListener('keydown', (e) => { if (e.key === 'Escape' && search.value) { search.value = ''; search.dispatchEvent(new Event('input')); } });
+  apply();
+  const menus = [...grid.querySelectorAll('details.pmenu')];
+  const close = (keep) => menus.forEach((m) => { if (m !== keep) m.open = false; });
+  menus.forEach((m) => m.addEventListener('toggle', () => { if (m.open) close(m); }));
+  document.addEventListener('click', (e) => { if (!e.target.closest('details.pmenu')) close(); });
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') close(); });
+})();
+
+// ── Media → From Patrons → + Add Render (showcase_add_dialog() in admin/_showcase.php): the chosen picture shows before it is sent, a file over the
+// limit is refused here as on the server (the patrons' Share window does the same in site.js); the link on the name only once a name is typed ──
+(() => {
+  const dlg = document.querySelector('dialog[data-sc-add]');
+  const open = document.querySelector('[data-sc-add-open]');
+  if (!dlg || !open || !dlg.showModal) return;
+  const form = dlg.querySelector('form');
+  const file = dlg.querySelector('[data-sc-file]');
+  const drop = dlg.querySelector('[data-sc-drop]');
+  const img = dlg.querySelector('[data-sc-img]');
+  const name = dlg.querySelector('[data-sc-name]');
+  const meta = dlg.querySelector('[data-sc-meta]');
+  const hint = meta.textContent;
+  const MAX = Number(dlg.dataset.max) || 25 * 1024 * 1024;   // m3d_showcase_max()
+  const top = (Math.floor(MAX / 104857.6) / 10) + ' MB';
+  let url = '';
+  const pick = () => {
+    const f = file.files && file.files[0];
+    if (url) { URL.revokeObjectURL(url); url = ''; }
+    file.setCustomValidity('');
+    if (!f) { img.hidden = true; name.textContent = 'Choose a Picture…'; meta.textContent = hint; return; }
+    name.textContent = f.name;
+    const mb = f.size < 1048576 ? Math.max(1, Math.round(f.size / 1024)) + ' KB' : (f.size / 1048576).toFixed(1) + ' MB';
+    if (!/^image\/(jpeg|png|webp)$/.test(f.type)) { file.setCustomValidity('Pictures must be JPG, PNG or WebP.'); meta.textContent = 'Pictures must be JPG, PNG or WebP.'; img.hidden = true; return; }
+    if (f.size > MAX) { file.setCustomValidity('At most ' + top + '.'); meta.textContent = mb + ': too big, at most ' + top + '.'; img.hidden = true; return; }
+    url = URL.createObjectURL(f);
+    img.onload = () => { meta.textContent = img.naturalWidth + ' × ' + img.naturalHeight + ' · ' + mb; };
+    img.src = url;
+    img.hidden = false;
+    meta.textContent = mb;
+  };
+  file.addEventListener('change', pick);
+  ['dragenter', 'dragover'].forEach((t) => drop.addEventListener(t, () => drop.classList.add('is-over')));
+  ['dragleave', 'drop'].forEach((t) => drop.addEventListener(t, () => drop.classList.remove('is-over')));
+  const made = dlg.querySelector('[data-sc-made]');
+  const linkT = dlg.querySelector('[data-sc-link-t]');
+  const linkH = dlg.querySelector('[data-sc-link-h]');
+  const linkSync = () => {
+    const named = made.value.trim() !== '';
+    linkT.disabled = !named;
+    linkH.disabled = !named || !linkT.value;
+    const v = linkH.value.trim().replace(/^@/, '');
+    const bad = !linkH.disabled && v !== '' && !/[./]/.test(v) && !(linkT.value === 'x' ? /^[A-Za-z0-9_]{1,15}$/ : /^[A-Za-z0-9_-]{1,64}$/).test(v);
+    linkH.setCustomValidity(bad ? (linkT.value === 'x' ? 'X usernames have up to 15 letters, numbers or _.' : 'Use the name in their Patreon address, or paste the address.') : '');
+  };
+  [made, linkH].forEach((x) => x.addEventListener('input', linkSync));
+  linkT.addEventListener('change', () => { linkSync(); if (linkT.value) linkH.focus(); });
+  linkSync();
+  const item = dlg.querySelector('[data-sc-item]');   // a folderPicker() like every select[data-folder-pick]
+  open.addEventListener('click', () => dlg.showModal());
+  dlg.querySelector('[data-sc-close]').addEventListener('click', () => dlg.close());
+  dlg.addEventListener('click', (e) => { if (e.target === dlg) dlg.close(); });   // a click on the dark backdrop
+  form.addEventListener('submit', (e) => {
+    if (!item.value) {   // the menu is a picker button (the select is hidden): the browser can't point at it
+      e.preventDefault();
+      toast('Pick the model or accessory it was made with.', 'err');
+      item.nextElementSibling?.querySelector('.fp-btn')?.focus();
+      return;
+    }
+    form.querySelector('button[type=submit]').textContent = 'Adding…';
+  });
+  window.addEventListener('pageshow', () => { form.querySelector('button[type=submit]').textContent = 'Add Render'; pick(); linkSync(); });
+  if (dlg.hasAttribute('data-open')) dlg.showModal();   // a refused add: again, with what was typed
+})();
+
+// ── Media → From Patrons → a render's window (showcase_edit_dialog() in admin/_showcase.php): a click on a card's picture opens it, filled from the
+// card's data-sc (ctrl / middle click still opens the file); ‹ › and ← → go through the cards the filters show; leaving with changes asks first.
+// Save posts do=edit; a waiting render gets Approve (saves and approves) and Reject; Remove / Reject / Ban post their own `do` ──
+(() => {
+  const dlg = document.querySelector('dialog[data-sc-edit]');
+  const grid = document.querySelector('[data-sc-grid]');
+  if (!dlg || !grid || !dlg.showModal) return;
+  const $ = (s) => dlg.querySelector('[data-e-' + s + ']');
+  const form = $('form'), item = $('form').querySelector('[data-sc-item]');
+  const name = $('name'), named = $('named'), linkT = $('link-t'), linkH = $('link-h'), full = $('full-in'), caption = $('caption'), who = $('who');
+  const shown = $('shown'), gallery = $('gallery');
+  let cur = null, start = '';
+  const D = () => JSON.parse(cur.dataset.sc);
+  const snap = () => new URLSearchParams(new FormData(form)).toString();
+  const dirty = () => cur && snap() !== start;
+  const cards = () => [...grid.querySelectorAll(':scope > .sc-lib:not([hidden])')];
+  const linkSync = () => {
+    linkT.disabled = !named.checked;
+    linkH.disabled = !named.checked || !linkT.value;
+    const v = linkH.value.trim().replace(/^@/, '');
+    const bad = !linkH.disabled && v !== '' && !/[./]/.test(v) && !(linkT.value === 'x' ? /^[A-Za-z0-9_]{1,15}$/ : /^[A-Za-z0-9_-]{1,64}$/).test(v);
+    linkH.setCustomValidity(bad ? (linkT.value === 'x' ? 'X usernames have up to 15 letters, numbers or _.' : 'Use the name in their Patreon address, or paste the address.') : '');
+    name.required = named.checked;
+  };
+  const fill = () => {
+    const d = D();
+    $('title').textContent = (d.name || 'A patron') + ' · ' + d.iname;
+    const list = cards(), i = list.indexOf(cur);
+    $('pos').textContent = list.length > 1 && i >= 0 ? (i + 1) + ' of ' + list.length : '';
+    dlg.querySelectorAll('[data-e-go]').forEach((b) => { b.hidden = list.length < 2 || i < 0; });
+    $('img').src = d.src;
+    $('full').href = d.src;
+    $('id').value = d.id;
+    item.fp ? item.fp.set(d.item) : (item.value = d.item);
+    name.value = d.name;
+    named.checked = d.named;
+    linkT.value = d.link_t;
+    linkH.value = d.link_h;
+    full.value = d.full;
+    $('dead').hidden = !d.dead;
+    full.classList.toggle('is-dead', d.dead);
+    caption.value = d.caption;
+    who.value = d.by;
+    shown.checked = !d.hidden;
+    gallery.checked = d.gallery;
+    $('oks').hidden = !d.ok;   // a waiting one: Approve shows it (the switch stays on, so it is sent)
+    const sent = (d.added ? 'Added ' : 'Sent ') + d.sent, when = d.ok && !d.added ? 'Approved ' + d.okAt : sent;
+    $('state').replaceChildren(el('span', { class: 'sc-e-pill' + (d.ok ? (d.hidden ? ' is-hid' : ' is-ok') : ' is-wait'), text: d.ok ? (d.hidden ? 'Hidden' : 'Shown') : 'Waiting' }),
+      el('span', { class: 'sc-e-when', text: when, title: when === sent ? sent : sent + ' · ' + when.toLowerCase() }),
+      el('a', { href: d.url + (d.ok && !d.hidden ? '#r-' + d.id : '#patron-renders'), target: '_blank', title: 'View on the ' + d.what + '’s page', text: 'View ↗' }));
+    const ban = $('ban');   // a Renders ban of Access; none for a render that is nobody's, nor for an admin's
+    ban.hidden = !d.canBan;
+    ban.value = d.banned ? 'unban' : 'ban';
+    ban.textContent = d.banned ? 'Unban' : 'Ban';
+    ban.title = d.banned ? 'Banned from sharing renders: let them share again' : 'Ban them from sharing renders';
+    ban.classList.toggle('is-on', !!d.banned);
+    const del = $('del');
+    del.value = d.ok ? 'remove' : 'reject';
+    del.textContent = d.ok ? 'Remove' : 'Reject';
+    $('approve').hidden = d.ok;
+    linkSync();
+    eyeSync();
+    start = snap();
+  };
+  const ask = () => !dirty() || confirm('Leave without saving your changes?');
+  const open = (card) => { cur = card; fill(); if (!dlg.open) dlg.showModal(); };
+  const close = () => { if (!ask()) return; dlg.close(); cur = null; };
+  const go = (n) => {
+    const list = cards(), i = list.indexOf(cur);
+    if (list.length < 2 || i < 0 || !ask()) return;
+    open(list[(i + n + list.length) % list.length]);
+  };
+  grid.addEventListener('click', (e) => {
+    const a = e.target.closest('[data-sc-open]');
+    if (!a || e.ctrlKey || e.metaKey || e.shiftKey || e.button) return;
+    e.preventDefault();
+    open(a.closest('.sc-lib'));
+  });
+  $('close').addEventListener('click', close);
+  dlg.addEventListener('cancel', (e) => { e.preventDefault(); if (!e.target.closest?.('.fp')) close(); });
+  dlg.querySelectorAll('[data-e-go]').forEach((b) => b.addEventListener('click', () => go(Number(b.dataset.eGo))));
+  dlg.addEventListener('keydown', (e) => {
+    if (e.target.closest('input, textarea, select, .fp')) return;
+    if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') { e.preventDefault(); go(e.key === 'ArrowLeft' ? -1 : 1); }
+  });
+  const eyeSync = () => { $('eye').title = named.checked ? 'Name shown on the render: click to hide it' : 'Name hidden (“A patron”): click to show it'; };
+  named.addEventListener('change', eyeSync);
+  [named, linkH].forEach((x) => x.addEventListener('input', linkSync));
+  linkT.addEventListener('change', () => { linkSync(); if (linkT.value) linkH.focus(); });
+  form.addEventListener('submit', (e) => {
+    const b = e.submitter, d = D();
+    const say = {
+      reject: 'Reject this render? The uploaded picture and the request are deleted for good. This can’t be undone.',
+      remove: 'Remove this render?\n\nIt leaves the ' + d.what + '’s page and the Gallery, and the picture is deleted for good. This can’t be undone.',
+      ban: 'Ban ' + (d.name || 'them') + ' from sharing renders?\n\nThey won’t be able to share new renders until you unban them (here or in Access). The renders they already shared stay until you remove them.',
+    }[b?.value];
+    if (say && !confirm(say)) { e.preventDefault(); return; }
+    if (b?.name !== 'do' && !item.value) { e.preventDefault(); toast('Pick the model or accessory it was made with.', 'err'); return; }
+    start = snap();   // leaving the page now is the save itself
+  });
+  const again = dlg.dataset.again && JSON.parse(dlg.dataset.again);   // a refused save: the window again, with what was typed
+  const card = again && document.getElementById('r-' + again.id);
+  if (card) {
+    open(card);
+    item.fp ? item.fp.set(again.item) : (item.value = again.item);
+    [[name, 'name'], [linkT, 'link_t'], [linkH, 'link_h'], [full, 'full'], [caption, 'caption'], [who, 'who']].forEach(([f, k]) => { f.value = again[k]; });
+    [[named, 'named'], [shown, 'shown'], [gallery, 'gallery']].forEach(([f, k]) => { f.checked = !!again[k]; });
+    linkSync();
+    eyeSync();
+    start = '';   // still unsaved
+  }
 })();

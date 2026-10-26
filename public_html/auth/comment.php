@@ -61,7 +61,7 @@ if ($do === 'add') {
         if ($re) $c['re'] = $re;
         if ($to) $c['to'] = $to;
         if ($admin) $c['admin'] = true;
-        elseif ($S['moderate']) $c['pending'] = true;
+        elseif (m3d_comment_needs_check($p, $S)) $c['pending'] = true;
         $all['next']++;
         $all[$kind][$key] = [...(array) ($all[$kind][$key] ?? []), $c];
         return [$all, $c];

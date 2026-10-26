@@ -66,8 +66,8 @@ const localTime = (() => {
   });
 })();
 
-// ── "Ignore this update" (/auth/ignore-update.php): the ✕ on a catalog card's "↑ Update" tag and My account's button. The
-// update stays ignored for that version only (code "kind:slug@version"); the header's dot follows (event m3d-upd {code, on}) ──
+// ── "Ignore this update" (/auth/ignore-update.php): My account's ✕ on an update tag and Stop Ignoring. The update stays ignored
+// for that version only (code "kind:slug@version"); the cards' "↑" tags follow (event m3d-upd {code, on}, also sent by the bell's ✕) ──
 const updIgnore = async (code, ignore) => {
   let me = {};
   try { me = JSON.parse(document.querySelector('[data-account]')?.dataset.me || '{}'); } catch { /* no status */ }
@@ -127,21 +127,6 @@ const siteToast = (text, kind = 'info', act = null) => {
     nm.className = 'who-name';
     nm.textContent = s.name;
     who.append(nm);
-    // a dot while something they downloaded has a newer version they haven't downloaded or ignored yet (s.updates: codes
-    // "kind:slug@version" without the ignored ones); ignoring one on this page takes it off at once (event m3d-upd)
-    const shown = new Set(Array.isArray(s.updates) ? s.updates : []);
-    const dot = document.createElement('span');
-    dot.className = 'who-dot';
-    const whoTitle = who.title;
-    const paintDot = () => {
-      const n = shown.size;
-      if (n) who.append(dot); else dot.remove();
-      who.title = whoTitle + (n ? ` · ${n} new update${n === 1 ? '' : 's'} for what you downloaded` : '');
-      if (n) who.setAttribute('aria-label', who.title); else who.removeAttribute('aria-label');
-    };
-    paintDot();
-    document.addEventListener('m3d-upd', (e) => { if (e.detail.on) shown.add(e.detail.code); else shown.delete(e.detail.code); paintDot(); });
-    try { localStorage.removeItem('m3d_seen_updates'); } catch { /* the old "seen" list: no longer used */ }
     // unlocks left under the download limits (only when rules apply to this patron): a person icon (models) and a
     // hanger icon (accessories), each with its number; red when none are left. The title says it in words.
     if (s.left) {
@@ -184,43 +169,22 @@ const siteToast = (text, kind = 'info', act = null) => {
       mark('[data-ocard]', 'outfits', '.ocard-img');
       document.querySelectorAll('[data-owned-row]').forEach((n) => (n.hidden = false));
     } } catch { /* a nicety */ }
-    // catalogs: "↑ Update · V4" on the picture of what this patron downloaded and now has a newer version (s.updates,
-    // codes "kind:slug@version"); it stays until they download the new version or press its ✕ (ignored until the next version)
+    // catalogs: a round "↑" on the picture of what this patron downloaded and now has a newer version (s.updates, codes
+    // "kind:slug@version"; the version only in its hover text, Pi); it stays until they download the new version or ignore it (the bell's ✕, My account's ✕)
     try { (Array.isArray(s.updates) ? s.updates : []).forEach((code) => {
       const kind = code.slice(0, code.indexOf(':')), at = code.indexOf('@');
       const slug = code.slice(kind.length + 1, at), ver = code.slice(at + 1);
       const sel = kind === 'models' ? '[data-card]' : '[data-ocard]';
       const tags = [];
-      const ignore = async (ev) => {
-        ev.preventDefault(); ev.stopPropagation();   // the card is a link: the ✕ never opens it
-        if (tags.some((t) => t.dataset.busy)) return;
-        tags.forEach((t) => (t.dataset.busy = '1'));
-        try {
-          await updIgnore(code, true);
-          tags.forEach((t) => (t.hidden = true));
-          siteToast('Update hidden until the next version.', 'info', { label: 'Undo', fn: async () => {
-            try { await updIgnore(code, false); tags.forEach((t) => (t.hidden = false)); } catch (e) { siteToast(e.message, 'err'); }
-          } });
-        } catch (e) { siteToast(e.message, 'err'); }
-        tags.forEach((t) => delete t.dataset.busy);
-      };
+      document.addEventListener('m3d-upd', (e) => { if (e.detail.code === code) tags.forEach((t) => (t.hidden = !e.detail.on)); });   // the bell's ✕, My account's ✕ / Stop Ignoring
       document.querySelectorAll(sel).forEach((c) => {
         if (c.dataset.slug !== slug) return;
         const t = document.createElement('span');
         t.className = 'card-upd';
-        t.title = `${ver} is out since your download`;
-        t.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19V5M5.5 11.5 12 5l6.5 6.5"/></svg><span class="card-upd-txt"></span>';
-        t.lastChild.textContent = `Update · ${ver}`;
-        const x = document.createElement('span');
-        x.className = 'upd-x';
-        x.setAttribute('role', 'button');
-        x.tabIndex = 0;
-        x.title = 'Ignore this update';
-        x.setAttribute('aria-label', `Ignore the update to ${ver}`);
-        x.textContent = '✕';
-        x.addEventListener('click', ignore);
-        x.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') ignore(e); });
-        t.append(x);
+        t.title = `Update: ${ver} is out since your download`;
+        t.setAttribute('role', 'img');
+        t.setAttribute('aria-label', t.title);
+        t.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19V5M5.5 11.5 12 5l6.5 6.5"/></svg>';
         tags.push(t);
         (c.querySelector('.cover, .ocard-img') || c).append(t);
       });
@@ -597,6 +561,61 @@ const likedOk = (root) => {
   });
 })();
 
+// ── Carousels in texts ("::: carousel", md_carousel()): ‹ ›, the "2 / 5" count and the dots, going round at the ends; the slides
+// scroll sideways by themselves (swipe, snap), so the count follows the scroll. Pictures looked at in the viewer are where it stays ──
+(() => {
+  const cars = document.querySelectorAll('[data-carousel]');
+  if (!cars.length) return;
+  const smooth = matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth';
+  const DOTS_MAX = 15;   // more pictures: the count alone
+  let opened = null;   // the carousel whose picture opened the viewer
+  document.addEventListener('click', (e) => {
+    const t = e.target.closest('[data-slide]');
+    if (t) opened = t.closest('[data-carousel]');
+  });
+  const sync = new Map();
+  document.querySelector('[data-lightbox]')?.addEventListener('lb-show', (e) => { if (opened) sync.get(opened)?.(e.detail?.src); });
+  cars.forEach((car) => {
+    const track = car.querySelector('[data-car-track]');
+    const n = track.children.length;
+    if (n < 2) return;
+    const count = car.querySelector('[data-car-count]');
+    const dotBox = car.querySelector('[data-car-dots]');
+    const dots = [...dotBox.children];
+    let srcs = [];
+    try { srcs = JSON.parse(car.dataset.slides).map((s) => s.src); } catch (err) { /* no syncing with the viewer */ }
+    let cur = 0;
+    const go = (i, behavior = smooth) => track.scrollTo({ left: ((i + n) % n) * track.clientWidth, behavior });
+    const paint = () => {
+      cur = Math.min(n - 1, Math.max(0, Math.round(track.scrollLeft / Math.max(1, track.clientWidth))));
+      count.textContent = `${cur + 1} / ${n}`;
+      dots.forEach((d, i) => { if (i === cur) d.setAttribute('aria-current', 'true'); else d.removeAttribute('aria-current'); });
+    };
+    car.querySelector('[data-car-prev]').addEventListener('click', () => go(cur - 1));
+    car.querySelector('[data-car-next]').addEventListener('click', () => go(cur + 1));
+    dots.forEach((d, i) => d.addEventListener('click', () => go(i)));
+    car.addEventListener('keydown', (e) => {
+      if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+      e.preventDefault();
+      go(cur + (e.key === 'ArrowRight' ? 1 : -1));
+    });
+    let frame = 0;
+    track.addEventListener('scroll', () => { cancelAnimationFrame(frame); frame = requestAnimationFrame(paint); }, { passive: true });
+    let width = track.clientWidth;
+    addEventListener('resize', () => {   // the same picture stays in view (only when the width changed: phones send resize while the address bar hides)
+      if (track.clientWidth !== width) { width = track.clientWidth; go(cur, 'auto'); }
+    });
+    sync.set(car, (src) => { const i = srcs.indexOf(src); if (i >= 0) go(i, 'auto'); });
+    car.querySelectorAll('[data-car-prev], [data-car-next], [data-car-count]').forEach((b) => { b.hidden = false; });
+    if (n <= DOTS_MAX) {
+      dotBox.hidden = false;
+      car.style.setProperty('--dots-w', (n - 1) * 16 + 28 + 12 + 'px');   // captions stop short of the dots (counted: a closed box or hidden tab has no layout)
+    }
+    car.classList.add('is-ready');
+    paint();
+  });
+})();
+
 // ── Image viewer: any [data-slide] inside a [data-slides] set opens it; ← → keys, buttons or swipe ──
 (() => {
   const dlg = document.querySelector('[data-lightbox]');
@@ -795,6 +814,8 @@ const likedOk = (root) => {
     const t = e.target.closest('[data-slide]');
     const set = t?.closest('[data-slides]');
     if (!t || !set) return;
+    const a = e.target.closest('a[href]');
+    if (a && a !== t && t.contains(a)) return;   // a link on the tile (a Gallery tile's character, its author) goes where it points
     e.preventDefault();
     slides = JSON.parse(set.dataset.slides || '[]');
     if (!slides.length) return;
@@ -1163,14 +1184,19 @@ document.addEventListener('click', async (e) => {
     v.controls = false;
     b.hidden = false;
     f.classList.add('is-ready');
-    b.addEventListener('click', () => {
+    const open = () => {
       f.classList.add('is-playing');
       b.hidden = true;
       v.controls = true;
+    };
+    b.addEventListener('click', () => {
+      open();
       v.focus({ preventScroll: true });
       v.play().catch(() => {});   // refused (a power-saving mode): the controls are there to try again
     });
-    v.addEventListener('play', () => all.forEach((o) => { if (o !== v && !o.paused) o.pause(); }));
+    // started or given its controls another way (media keys, the right-click menu): the play button and the length make way too
+    v.addEventListener('play', () => { open(); all.forEach((o) => { if (o !== v && !o.paused) o.pause(); }); });
+    new MutationObserver(() => { if (v.controls && !f.classList.contains('is-playing')) open(); }).observe(v, { attributes: true, attributeFilter: ['controls'] });
   });
 })();
 
@@ -1407,28 +1433,43 @@ document.addEventListener('click', async (e) => {
   });
 })();
 
-// ── My account → My Models: "Ignore This Update" / "Stop Ignoring" under an update's versions (the row before carries
-// data-upd = its code; ignored rows are greyed, the summary counts the others) ──
-document.addEventListener('click', async (ev) => {
-  const b = ev.target.closest('[data-upd-ignore]');
-  const tr = b?.closest('tr.upd-row')?.previousElementSibling;
-  if (!tr?.dataset.upd || b.disabled) return;
-  const ignore = !tr.classList.contains('is-upd-ignored');
-  b.disabled = true;
-  try {
-    await updIgnore(tr.dataset.upd, ignore);
-    tr.classList.toggle('is-upd-ignored', ignore);
-    b.textContent = ignore ? 'Stop Ignoring' : 'Ignore This Update';
-    b.title = ignore ? 'Show the update tag and the dot again' : 'No update tag on its card and no dot on your account button until the next version';
+// ── My account → My Models: the ✕ on an update's tag ignores it (toast with Undo), "Stop Ignoring" under its versions shows it
+// again (the row carries data-upd = its code; ignored rows are greyed without the ✕, the summary counts the others). Rows are
+// painted from the m3d-upd event, so the Liked cards' update tags and these stay in step ──
+(() => {
+  const rows = document.querySelectorAll('#my-models tr[data-upd]');
+  if (!rows.length) return;
+  const paint = (tr, ignored) => {
+    tr.classList.toggle('is-upd-ignored', ignored);
+    const b = tr.nextElementSibling?.querySelector('[data-upd-ignore]');
+    if (b) b.hidden = !ignored;
     const count = document.querySelector('[data-upd-count]');
     if (count) {
       const n = tr.parentElement.querySelectorAll('tr[data-upd]:not(.is-upd-ignored)').length;
       count.textContent = `${n} update${n === 1 ? '' : 's'}`;
       count.hidden = !n;
     }
-  } catch (e) { siteToast(e.message, 'err'); }
-  b.disabled = false;
-});
+  };
+  document.addEventListener('m3d-upd', (e) => rows.forEach((tr) => { if (tr.dataset.upd === e.detail.code) paint(tr, !e.detail.on); }));
+  document.addEventListener('click', async (ev) => {
+    const b = ev.target.closest('[data-upd-x], [data-upd-ignore]');
+    if (!b || b.disabled) return;
+    const tr = b.hasAttribute('data-upd-x') ? b.closest('tr') : b.closest('tr.upd-row')?.previousElementSibling;
+    const code = tr?.dataset.upd;
+    if (!code) return;
+    const ignore = b.hasAttribute('data-upd-x');
+    tr.querySelectorAll('[data-upd-x]').forEach((x) => (x.disabled = true));   // the column's ✕ and the phone one
+    b.disabled = true;
+    try {
+      await updIgnore(code, ignore);
+      if (ignore) siteToast('Update hidden until the next version.', 'info', { label: 'Undo', fn: async () => {
+        try { await updIgnore(code, false); } catch (e) { siteToast(e.message, 'err'); }
+      } });
+    } catch (e) { siteToast(e.message, 'err'); }
+    tr.querySelectorAll('[data-upd-x]').forEach((x) => (x.disabled = false));
+    b.disabled = false;
+  });
+})();
 
 // ── My account → My Models: All / Models / Accessories / Available / Updates (rows carry data-models or data-accessories, data-avail, data-upd) ──
 (() => {
@@ -1527,7 +1568,6 @@ document.addEventListener('click', (ev) => {
     const links = [...nav.children];
     while (links.length > 1 && nav.scrollWidth > nav.clientWidth + 1) list.prepend(links.pop());
     btn.classList.toggle('is-current', !!list.querySelector('[aria-current]'));
-    btn.classList.toggle('has-new', !!list.querySelector('.nav-new'));
   };
   let raf = 0;
   const later = () => { cancelAnimationFrame(raf); raf = requestAnimationFrame(fit); };
