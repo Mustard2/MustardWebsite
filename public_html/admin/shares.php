@@ -8,9 +8,9 @@ if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST' && str_starts_with((string) ($
     admin_post_guard($M3D);
     $in = json_decode((string) file_get_contents('php://input'), true);
     $a = is_array($in['add'] ?? null) ? $in['add'] : [];
-    $kind = ($a['kind'] ?? '') === 'outfits' ? 'outfits' : 'models';
+    $kind = in_array($a['kind'] ?? '', M3D_ITEM_KINDS, true) ? (string) $a['kind'] : 'models';
     $item = m3d_item($kind, is_string($a['slug'] ?? null) ? $a['slug'] : '');
-    if (!$item) admin_json(['ok' => false, 'error' => 'This ' . ($kind === 'outfits' ? 'accessory' : 'model') . ' isn’t saved yet.'], 404);
+    if (!$item) admin_json(['ok' => false, 'error' => 'This ' . (m3d_kind_word($kind)) . ' isn’t saved yet.'], 404);
     if (!m3d_share_links($item)) admin_json(['ok' => false, 'error' => 'It has no download links switched on. Add one and save first.'], 400);
     $time = SHARE_TIMES[is_string($a['time'] ?? null) ? $a['time'] : ''] ?? null;
     $max = (int) ($a['max'] ?? -1);

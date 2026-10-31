@@ -36,7 +36,7 @@ $ended = [
 if ($ended) {
     http_response_code($state === 'unknown' ? 404 : 410);
     layout_start($ended[0], '', 'page-gate');
-    echo '<section class="wrap gate"><p class="eyebrow">Temporary Link</p><h1>' . e($ended[0]) . '</h1><p class="lead">' . e($ended[1]) . '</p>'
+    echo '<section class="wrap gate"><h1>' . e($ended[0]) . '</h1><p class="lead">' . e($ended[1]) . '</p>'
         . '<div class="cta"><a class="btn btn-ghost" href="/">Visit ' . e(site_name()) . '</a></div></section>';
     layout_end();
     exit;
@@ -46,12 +46,12 @@ $kind = (string) $share['kind'];
 $name = $kind === 'models' ? m3d_model_name($item) : (string) $item['name'];
 $pic = item_pic($kind, $item);   // the creator shared the files themselves: the picture is shown as it is, even for a draft or blurred item
 $ver = m3d_released_label($item);
-$sub = array_filter([$kind === 'outfits' ? m3d_accessory_type($item) : (string) ($item['franchise'] ?? ''), $ver !== '' ? 'Version ' . $ver : '']);
+$sub = array_filter([$kind === 'models' ? (string) ($item['franchise'] ?? '') : m3d_item_type($kind, $item), $ver !== '' ? 'Version ' . $ver : '']);
 $page = m3d_listed($item) && m3d_can_view($kind, $item) && !m3d_release_hidden($item) ? m3d_item_url($kind, (string) $item['slug']) : '';
 // link previews (Discord, chat apps): the item's main picture, like its own page's, and what the link gives; the creator chose to share it,
 // so a draft or blurred item's picture shows too (the page shows it as well); a GET uses nothing, so a preview never uses a download;
 // then a short list, one line each (Discord keeps the line breaks)
-$og = $kind === 'outfits' ? $pic : ((string) ($item['cover'] ?? '') ?: $pic);
+$og = $kind === 'models' ? ((string) ($item['cover'] ?? '') ?: $pic) : ($kind === 'outfits' ? outfit_main($item) : $pic);
 if ($og !== '') page_image($og);
 $files = count(m3d_share_links($item));
 $max = (int) ($share['max'] ?? 0);
@@ -77,6 +77,6 @@ layout_start($name, implode("\n", [
       <?php endforeach ?>
     </div>
     <p class="lead sh-until">This link works until <?= when_html((int) $share['until']) ?>. Please don’t pass it on.</p>
-    <?php if ($page !== ''): ?><p class="note small"><a href="<?= e($page) ?>">See the <?= $kind === 'outfits' ? 'Accessory' : 'Model' ?> Page →</a></p><?php endif ?>
+    <?php if ($page !== ''): ?><p class="note small"><a href="<?= e($page) ?>">See the <?= m3d_kind_word($kind, false, true) ?> Page →</a></p><?php endif ?>
   </section>
 <?php layout_end();

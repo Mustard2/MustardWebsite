@@ -2,40 +2,44 @@
 // Download gate.
 //   /get/<model>/<n>/          → link n of a model
 //   /get/outfit/<outfit>/<n>/  → link n of an outfit
+//   /get/scene/<scene>/<n>/    → link n of a scene
 // Public links redirect straight away; patron links need a fresh Patreon tier check first, then the item's
 // extra requirements if it has any (minimum tier, months as a patron, total support: m3d_check_requirements).
 // Every download is counted (m3d_count_download: totals only, no personal data).
 // Patron links also respect the download limits (m3d_check_limits). Before a patron download, a waiting page counts down
 // (Admin → Access → Download Countdown): it links back here with a signed, time-stamped ?t= that the server checks. Public links start at once.
-// A visitor who hasn't confirmed 18+ gets only the age gate (age_gate_page()), which comes back here.
+// A visitor who hasn't confirmed 18+ gets only the age gate (age_gate_page()), which comes back here. A link with its own password
+// (the lock on its row in the editor) then asks for it (dl_link_pw_page()), before the Patreon checks.
 require dirname(__DIR__) . '/app/_init.php';
 header('X-Robots-Tag: noindex, nofollow');
 header('Referrer-Policy: no-referrer');
 maintenance_gate();   // no downloads during maintenance (admins pass)
 
-$kind = ($_GET['type'] ?? '') === 'outfit' ? 'outfits' : 'models';
+$kind = ['outfit' => 'outfits', 'scene' => 'scenes'][m3d_get_text('type')] ?? 'models';
 $slug = m3d_get_text('model');
 $n = ctype_digit(m3d_get_text('n')) ? (int) $_GET['n'] : null;
 $item = m3d_item($kind, $slug);
 // drafts and items hidden until their release date answer like an unknown address
 if (!$item || ((m3d_visibility($item) === 'draft' || m3d_release_hidden($item)) && !m3d_can_view($kind, $item))) {
-    dl_unavailable(404, 'Unknown ' . ($kind === 'outfits' ? 'accessory' : 'model') . '.');
+    dl_unavailable(404, 'Unknown ' . (m3d_kind_word($kind)) . '.');
 }
 // password items: public and patron links alike only after the password was entered on the page
 if (!m3d_can_view($kind, $item)) m3d_redirect(m3d_item_url($kind, $slug));
 $staff = m3d_is_admin($M3D) && !m3d_preview();   // previewing as a patron: refused like that patron
 // before its patrons date ("Coming soon"): no download yet, the page says when; admins pass
 if (m3d_release_phase($item) === 'soon' && !$staff) m3d_redirect(m3d_item_url($kind, $slug));
-// "In development": the page shows no download, and old links (Discord, My Models) don't download either; admins pass
-if ($kind === 'models' && m3d_status($item) === 'in-development' && !$staff) m3d_redirect(m3d_item_url($kind, $slug));
 $links = array_values(array_filter($item['links'] ?? [], fn($l) => !empty($l['url'])));
 $link = $n !== null ? ($links[$n] ?? null) : null;
+// "In development": the page shows no download, and old links (Discord, My Models) don't download either; admins pass, and so do
+// links with their own password (the download box shows those, for the people given it: dl_link_pw_page() below asks for it)
+if ($kind === 'models' && m3d_status($item) === 'in-development' && !$staff && !($link && m3d_link_pw($link) !== '')) m3d_redirect(m3d_item_url($kind, $slug));
 if (!$link || !empty($link['off'])) dl_unavailable(404, 'This download is not available.');   // switched off in the editor: like a removed link
-$here = ($kind === 'outfits' ? "/get/outfit/$slug/" : "/get/$slug/") . "$n/";
+$here = m3d_get_url($kind, $slug, (int) $n);
 $label = (string) ($link['label'] ?? '');
 // a short "s4:" link while no bucket is set in Settings: nowhere to send anyone
 if (m3d_download_url((string) $link['url']) === null) dl_unavailable(503, 'This download isn’t ready yet.');
 age_gate_page($here);   // not confirmed 18+ yet (a shared link): the age gate first, then back here
+dl_link_pw_page($kind, $item, $link, (int) $n, $here);   // a link with its own password: the password form until this visitor typed it (admins pass)
 
 // the same link again within 10 minutes (the Download button pressed after the file already started, Back, a download manager):
 // sent again, but not counted, logged or held against the daily cap a second time (m3d_dl_repeat()); a version out meanwhile is a new download
@@ -82,7 +86,7 @@ if (empty($patron['access'])) {
 $req = m3d_check_requirements($item, $patron);
 if ($req['unknown']) m3d_redirect('/auth/login.php?return=' . rawurlencode($here));   // session from before these checks: fetch the data
 if (!$req['ok']) {
-    m3d_redirect('/patreon-required/?reason=requirements&type=' . ($kind === 'outfits' ? 'outfit' : 'model') . '&item=' . rawurlencode($slug) . '&return=' . rawurlencode($here));
+    m3d_redirect('/patreon-required/?reason=requirements&type=' . (['outfits' => 'outfit', 'scenes' => 'scene'][$kind] ?? 'model') . '&item=' . rawurlencode($slug) . '&return=' . rawurlencode($here));
 }
 
 if (!$again && m3d_dl_capped($patron) !== null) $capped();
@@ -90,7 +94,7 @@ if (!$again && m3d_dl_capped($patron) !== null) $capped();
 // download limits (Admin → Access): checked before the waiting page and again when it sends the patron back
 $limits = m3d_check_limits($patron, $kind, $slug);
 if (!$limits['ok']) {
-    m3d_redirect('/patreon-required/?reason=limit&type=' . ($kind === 'outfits' ? 'outfit' : 'model') . '&item=' . rawurlencode($slug) . '&return=' . rawurlencode($here));
+    m3d_redirect('/patreon-required/?reason=limit&type=' . (['outfits' => 'outfit', 'scenes' => 'scene'][$kind] ?? 'model') . '&item=' . rawurlencode($slug) . '&return=' . rawurlencode($here));
 }
 // a download that uses one of the patron's downloads (rules apply, not downloaded before or a newer version with "Updates Use an
 // Unlock", not a "not counted" item): ask first
@@ -113,7 +117,7 @@ if (!$again) {
         return null;
     });
     if ($refused === 'cap') $capped();
-    if ($refused === 'limit') m3d_redirect('/patreon-required/?reason=limit&type=' . ($kind === 'outfits' ? 'outfit' : 'model') . '&item=' . rawurlencode($slug) . '&return=' . rawurlencode($here));
+    if ($refused === 'limit') m3d_redirect('/patreon-required/?reason=limit&type=' . (['outfits' => 'outfit', 'scenes' => 'scene'][$kind] ?? 'model') . '&item=' . rawurlencode($slug) . '&return=' . rawurlencode($here));
     m3d_dl_done($code);
 }
 m3d_redirect(m3d_download_url((string) $link['url']));   // an S4 file: a fresh pre-signed address (app/s4.php)

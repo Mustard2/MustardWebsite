@@ -7,7 +7,8 @@
 // shown at once, `added` set; `by` is the Patreon id typed there, or '' (nobody's: no My Renders, no ban), `name` the name typed (or their known name, with `named` off).
 // data/showcase.json: {renders: [{id (8 hex), kind (models | outfits), slug, src (/media/showcase/<ymd>-<hex>.webp, + -md/-sm/-xs), by (Patreon id, '' for one the creator added for nobody),
 //   name (Patreon name when sent), named (show the name), added? (added by the creator, already approved), link? {t: x | patreon, h: handle} (their profile, only kept with `named`: RENDER_LINKS),
-//   full? (an https address of the picture in full quality on another website, m3d_render_full_clean(): only a link, never loaded by the site),
+//   full? (an https address of the picture in full quality on another website, m3d_render_full_clean(): only a link, never loaded by the site;
+//   the creator may also set a file in the MEGA S4 bucket, "s4:<file>" or its full S4 address: sent through /get/still/r/<id>/, render_full_dl()),
 //   caption, at (unix), ok? (approved), ok_at?, hidden? (approved, then hidden by the creator in From Patrons: kept, shown nowhere but the
 //   author's My Renders, its Gallery copy hidden too: m3d_render_hidden()), pos? (its place among the item's shown renders, set by dragging in
 //   From Patrons: m3d_renders_order())}]}, newest first.
@@ -256,11 +257,13 @@ function m3d_render_caption(mixed $v): string
     return rtrim(mb_substr(trim((string) preg_replace('/[\p{Cc}\s]+/u', ' ', $cap)), 0, SHOWCASE_CAPTION));
 }
 
-/** The "Full Quality Link" as typed: '' = none, null = not an https web address (no user:password@, a host with a dot). */
-function m3d_render_full_clean(string $u): ?string
+/** The "Full Quality Link" as typed: '' = none, null = not an https web address (no user:password@, a host with a dot).
+ *  $s4 (the creator's forms in From Patrons, Link Check's Replace…): a short link to a file in the MEGA S4 bucket, "s4:<file>", too. */
+function m3d_render_full_clean(string $u, bool $s4 = false): ?string
 {
     $u = trim($u);
     if ($u === '') return '';
+    if ($s4 && preg_match('#^s4:/*([^"<>\x00-\x1f]+)$#iD', $u, $m)) return strlen($u) > SHOWCASE_FULL_MAX ? null : 's4:' . trim($m[1]);   // like clean_dl_url()
     if (strlen($u) > SHOWCASE_FULL_MAX || preg_match('/[\s<>"]/', $u) || !filter_var($u, FILTER_VALIDATE_URL)) return null;
     $p = parse_url($u);
     if (strtolower($p['scheme'] ?? '') !== 'https' || isset($p['user']) || isset($p['pass']) || !str_contains((string) ($p['host'] ?? ''), '.')) return null;
@@ -274,11 +277,20 @@ function m3d_showcase_host(): string
     return preg_match('#^https://[^\s"<>]+$#D', $h) ? $h : '';
 }
 
-/** The viewer's "Download Full Size" for a render with a full-quality link: it opens the patron's own address in a new tab. */
+/** The viewer's "Download Full Size" for a render with a full-quality link: it opens the patron's own address in a new tab. A file in the MEGA
+ *  S4 bucket (m3d_render_full_s4()) goes through /get/still/r/<id>/ instead, which sends a fresh signed address (auth/get-still.php). */
 function render_full_dl(array $r): ?array
 {
     $u = (string) ($r['full'] ?? '');
-    return $u !== '' ? ['href' => $u, 'size' => '', 'locked' => false, 'ext' => true, 'note' => 'Full quality on ' . preg_replace('/^www\./', '', (string) parse_url($u, PHP_URL_HOST))] : null;
+    if ($u === '') return null;
+    if (m3d_render_full_s4($u)) return m3d_download_url($u) === null ? null : ['href' => '/get/still/r/' . $r['id'] . '/', 'size' => '', 'locked' => false, 'note' => 'Full quality'];
+    return m3d_s4_short($u) ? null : ['href' => $u, 'size' => '', 'locked' => false, 'ext' => true, 'note' => 'Full quality on ' . preg_replace('/^www\./', '', (string) parse_url($u, PHP_URL_HOST))];
+}
+
+/** A render's full-quality link is a file in a MEGA S4 bucket that the site signs (S4 downloads on): "s4:<file>" or a full S4 address. */
+function m3d_render_full_s4(string $u): bool
+{
+    return m3d_s4_on() && m3d_s4_parse($u) !== null;
 }
 
 /** Deletes a render's picture and its versions (only files in media/showcase/: a crop made in Admin → Gallery is there too). */
@@ -385,7 +397,9 @@ function m3d_render_notify(array $r, array $item): void
 {
     m3d_notify_post('renders', [['title' => mb_substr('New render of ' . $item['name'], 0, 250), 'url' => abs_url(m3d_showcase_admin_url($r['id'])),
         'description' => m3d_notify_plain((string) ($r['caption'] ?? ''), 200), 'color' => hexdec('e8b931'),
-        'footer' => ['text' => 'From ' . mb_substr((string) ($r['name'] ?? ''), 0, 60) . (empty($r['named']) ? ' (name hidden on the site)' : '') . ' · waiting for you']]]);
+        'footer' => ['text' => 'From ' . mb_substr((string) ($r['name'] ?? ''), 0, 60) . (empty($r['named']) ? ' (name hidden on the site)' : '') . ' · waiting for you'],
+        'sub' => '🖼️ New Patron Render · ⏳ Waiting for You',
+        'facts' => [['From', '**' . m3d_notify_plain((string) ($r['name'] ?? ''), 60) . '**' . (empty($r['named']) ? ' (name hidden on the site)' : '')]]]]);
 }
 
 // ── Page pieces ───────────────────────────────────────────────────────────────
@@ -562,7 +576,7 @@ function showcase_account(): string
     $nHid = count(array_filter($mine, fn($r) => !empty($r['ok']) && !empty($r['hidden'])));
     $nOk = count($mine) - $nWait - $nHid;
     $sum = implode(' · ', array_filter([$nWait ? $nWait . ' waiting for approval' : '', $nOk ? $nOk . ' shown' : '', $nHid ? $nHid . ' hidden' : '']));
-    return '<section class="acc-sec" id="my-renders"><h2 class="acc-liked acc-renders">' . SHOWCASE_ICON . 'My Renders <span class="muted small">' . e($sum) . '</span></h2>'
+    return '<section class="acc-sec" id="my-renders">' . section_head('renders', 'My Renders', $sum)
         . strip_html('like-strip sc-acc-strip', 'sc-acc-row', $tiles, 'renders', 'div', ' data-strip-auto') . '</section>';
 }
 
@@ -577,6 +591,8 @@ function showcase_dialog(string $kind, array $item, array $p): string
 {
     $name = trim((string) ($p['name'] ?? ''));
     $max = m3d_showcase_max();
+    $pref = m3d_render_prefs($p);   // what the person set on their Settings page (Patron Renders)
+    $lt = $pref['named'] ? (string) ($pref['link']['t'] ?? '') : '';
     return '<dialog class="sc-dlg" data-sc-dlg data-max="' . $max . '" aria-labelledby="sc-dlg-t"><form method="post" action="/auth/render.php" enctype="multipart/form-data">'
         . '<input type="hidden" name="csrf" value="' . e(m3d_csrf()) . '"><input type="hidden" name="do" value="share">'
         . '<input type="hidden" name="kind" value="' . e($kind) . '"><input type="hidden" name="slug" value="' . e($item['slug']) . '">'
@@ -588,12 +604,13 @@ function showcase_dialog(string $kind, array $item, array $p): string
         . '<p class="sc-hint">The page shows a smaller copy. For a full-quality download, upload your render to an image host'
         . (($host = m3d_showcase_host()) !== '' ? ' such as <a href="' . e($host) . '" target="_blank" rel="noopener">' . e(preg_replace('/^www\./', '', (string) parse_url($host, PHP_URL_HOST))) . ' ↗</a>' : '') . ' and paste its link here.</p>'
         . '<label class="field"><span class="lbl">Caption <span class="muted small">(optional)</span></span><input class="input" name="caption" maxlength="' . SHOWCASE_CAPTION . '" autocomplete="off"></label>'
-        . '<label class="toggle"><input type="checkbox" class="switch" name="named" value="1" checked data-sc-named><span>' . e($name !== '' ? "Show My Name ($name)" : 'Show My Name') . '</span></label>'
+        . '<label class="toggle"><input type="checkbox" class="switch" name="named" value="1"' . ($pref['named'] ? ' checked' : '') . ' data-sc-named><span>' . e($name !== '' ? "Show My Name ($name)" : 'Show My Name') . '</span></label>'
         . '<div class="field sc-link" data-sc-link><span class="lbl">Link on My Name <span class="muted small">(optional)</span></span><div class="sc-link-row">'
         . '<select class="input" name="link_t" aria-label="Network" data-sc-link-t><option value="">No Link</option>'
-        . implode('', array_map(fn($k, $v) => '<option value="' . $k . '">' . e($v[0]) . '</option>', array_keys(RENDER_LINKS), RENDER_LINKS)) . '</select>'
-        . '<input class="input" name="link_h" maxlength="200" autocomplete="off" placeholder="Your username or profile address" aria-label="Username or profile address" disabled data-sc-link-h></div></div>'
-        . '<label class="sc-ok"><input type="checkbox" name="ok" value="1" required><span>I made this render with this ' . ($kind === 'outfits' ? 'accessory' : 'model') . ', and the creator may show it on this site.</span></label>'
+        . implode('', array_map(fn($k, $v) => '<option value="' . $k . '"' . ($k === $lt ? ' selected' : '') . '>' . e($v[0]) . '</option>', array_keys(RENDER_LINKS), RENDER_LINKS)) . '</select>'
+        . '<input class="input" name="link_h" maxlength="200" autocomplete="off" placeholder="Your username or profile address" aria-label="Username or profile address"'
+        . ($lt !== '' ? ' value="' . e(m3d_render_link_text($pref['link'])) . '"' : ' disabled') . ' data-sc-link-h></div></div>'
+        . '<label class="sc-ok"><input type="checkbox" name="ok" value="1" required><span>I made this render with this ' . (m3d_kind_word($kind)) . ', and the creator may show it on this site.</span></label>'
         . '<p class="sc-note">The creator checks every render before it shows. You can remove yours from this page any time.</p>'
         . '<div class="sc-actions"><button class="btn btn-ghost" type="button" data-sc-close>Cancel</button><button class="btn btn-primary" type="submit">Send for Approval</button></div>'
         . '</form></dialog>';
@@ -602,7 +619,7 @@ function showcase_dialog(string $kind, array $item, array $p): string
 /** The message after auth/render.php sent the visitor back (?render=sent|removed, ?rendererr=code). */
 function showcase_flash(): void
 {
-    $ok = ['sent' => 'Thanks! Your render will show here once the creator has approved it.', 'removed' => 'Your render was removed.'];
+    $ok = ['sent' => '✓ Render sent for review.', 'removed' => '✓ Render removed.'];
     if (isset($ok[$m = m3d_get_text('render')])) site_flash(e($ok[$m]));
     if (isset(SHOWCASE_ERRORS[$m = m3d_get_text('rendererr')])) site_flash(e(strtr(SHOWCASE_ERRORS[$m], [
         '{mb}' => showcase_mb(m3d_showcase_max()), '{day}' => m3d_plural(max(1, m3d_showcase_settings()['per_day']), 'render')])), 'err');

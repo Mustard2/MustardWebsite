@@ -19,11 +19,19 @@ function search_index(): array
     foreach (m3d_listed_items('models') as $m) $names[$m['slug']] = (string) $m['name'];   // listed only: no draft or hidden password model names
     foreach (m3d_listed_items('outfits') as $o) {
         $pic = m3d_visibility($o) === 'public' ? outfit_preview($o) : '';
-        $for = m3d_fits_all($o) ? ['All Models'] : array_values(array_filter(array_map(fn($s) => $names[$s] ?? '', (array) ($o['models'] ?? []))));
+        $for = m3d_fits_blender($o) ? ['Blender'] : (m3d_fits_all($o) ? ['All Models'] : array_values(array_filter(array_map(fn($s) => $names[$s] ?? '', (array) ($o['models'] ?? [])))));
         $out[] = ['g' => 'outfits', 'k' => m3d_accessory_type($o), 't' => (string) $o['name'], 's' => $for ? 'For ' . implode(', ', array_slice($for, 0, 3)) . (count($for) > 3 ? '…' : '') : 'Accessory',
                   'u' => m3d_item_url('outfits', (string) $o['slug']), 'p' => $pic !== '' ? img_thumb($pic) : '',
                   'x' => implode(' ', array_merge(['accessory', (string) ($o['slug'] ?? '')], $for)), 'ref' => 'outfits:' . $o['slug']];
     }
+    foreach (m3d_listed_items('scenes') as $sc) {
+        $pic = m3d_visibility($sc) === 'public' ? outfit_preview($sc) : '';
+        $with = array_values(array_filter(array_map(fn($s) => $names[$s] ?? '', (array) ($sc['models'] ?? []))));
+        $out[] = ['g' => 'scenes', 'k' => 'Scene', 't' => (string) $sc['name'], 's' => $with ? 'With ' . implode(', ', array_slice($with, 0, 3)) . (count($with) > 3 ? '…' : '') : 'Scene',
+                  'u' => m3d_item_url('scenes', (string) $sc['slug']), 'p' => $pic !== '' ? img_thumb($pic) : '',
+                  'x' => implode(' ', array_merge(['scene', (string) ($sc['slug'] ?? '')], $with)), 'ref' => 'scenes:' . $sc['slug']];
+    }
+    $out = array_merge($out, search_gallery($names));
     if (m3d_blog_on()) {
         foreach (m3d_blog()['posts'] as $p) {
             if (m3d_post_state($p) !== 'live') continue;
@@ -39,6 +47,14 @@ function search_index(): array
                       'u' => $p['slug'] === $home ? '/docs/' : '/docs/' . $p['slug'] . '/', 'p' => '', 'x' => (string) ($p['summary'] ?? ''), 'ref' => ''];
         }
     }
+    foreach (m3d_tools()['tools'] as $t) {   // tool pages and their tutorials (app/tools.php), in the Help group; not drafts
+        if (!empty($t['draft'])) continue;
+        $out[] = ['g' => 'help', 'k' => m3d_page_type($t) === 'page' ? 'Page' : 'Tool', 't' => (string) $t['name'], 's' => '', 'u' => m3d_tool_url($t), 'p' => '', 'x' => '', 'ref' => ''];
+        foreach (m3d_tool_tuts($t) as $tu) {
+            $out[] = ['g' => 'help', 'k' => 'Tutorial', 't' => (string) $tu['title'], 's' => trim($t['name'] . ($tu['group'] !== '' ? ' · ' . $tu['group'] : '')),
+                      'u' => m3d_tool_url($t, (string) $tu['slug']), 'p' => '', 'x' => (string) ($tu['summary'] ?? ''), 'ref' => ''];
+        }
+    }
     if (m3d_has_faq()) {
         foreach (m3d_faq()['sections'] ?? [] as $sec) foreach ($sec['items'] ?? [] as $it) {
             if (trim((string) ($it['q'] ?? '')) === '') continue;
@@ -47,6 +63,59 @@ function search_index(): array
         }
     }
     return $out;
+}
+
+/**
+ * The Gallery's entries of the index: one per character with pictures (/gallery/?c=<key>) and one per scene with pictures (/gallery/?q=<its
+ * name>: the tiles' search text holds their scene's name), each with its number of pictures. Only what everyone sees (m3d_still_public_view(),
+ * like the rest of the index): the picture = the newest one shown clear to everyone. A scene's entry also carries its models' names, so a
+ * search for a model finds the pictures of the scenes made with it. $names = listed model slug => name.
+ */
+function search_gallery(array $names): array
+{
+    $chars = $scenes = [];
+    $scenesOn = m3d_scenes_on();
+    foreach (m3d_gallery()['stills'] as $s) {
+        $view = m3d_still_public_view($s);
+        if ($view === 'hidden') continue;
+        $pic = $view === 'clear' && str_starts_with((string) ($s['src'] ?? ''), '/media/') ? (string) $s['src'] : '';
+        foreach (m3d_still_chars($s) as $c) {
+            $k = $c['key'];
+            $chars[$k] ??= ['c' => $c, 'n' => 0, 'p' => ''];
+            $chars[$k]['n']++;
+            if ($chars[$k]['p'] === '') $chars[$k]['p'] = $pic;   // the gallery's order: newest first
+        }
+        $slug = (string) ($s['scene'] ?? '');
+        $sc = $slug !== '' && $scenesOn ? m3d_item('scenes', $slug) : null;
+        if (!$sc || !m3d_listed($sc) || m3d_visibility($sc) !== 'public') continue;   // like still_scene() for a visitor not logged in
+        $scenes[$slug] ??= ['sc' => $sc, 'n' => 0, 'p' => ''];
+        $scenes[$slug]['n']++;
+        if ($scenes[$slug]['p'] === '') $scenes[$slug]['p'] = $pic;
+    }
+    $count = fn(int $n) => $n . ($n === 1 ? ' picture' : ' pictures');
+    $out = [];
+    foreach ($chars as $k => $en) {
+        $c = $en['c'];
+        $out[] = ['g' => 'gallery', 'k' => 'Gallery', 't' => (string) $c['name'], 's' => $count($en['n']) . ($c['franchise'] !== '' ? ' · ' . $c['franchise'] : ''),
+                  'u' => '/gallery/?c=' . rawurlencode((string) $k), 'p' => $en['p'] !== '' ? img_thumb($en['p']) : '',
+                  'x' => implode(' ', ['gallery renders', (string) ($c['model']['slug'] ?? '')]), 'ref' => 'gallery:' . $k];
+    }
+    foreach ($scenes as $slug => $en) {
+        $with = array_values(array_filter(array_map(fn($m) => $names[$m] ?? '', (array) ($en['sc']['models'] ?? []))));
+        $name = (string) $en['sc']['name'];
+        $out[] = ['g' => 'gallery', 'k' => 'Gallery', 't' => $name, 's' => $count($en['n']) . ' · Scene' . ($with ? ' with ' . implode(', ', array_slice($with, 0, 3)) . (count($with) > 3 ? '…' : '') : ''),
+                  'u' => '/gallery/?q=' . rawurlencode($name), 'p' => $en['p'] !== '' ? img_thumb($en['p']) : '',
+                  'x' => implode(' ', array_merge(['gallery renders scene', $slug], $with)), 'ref' => 'gallery-scene:' . $slug];
+    }
+    return $out;
+}
+
+/** The results page's Gallery cards: a character's or a scene's pictures (search_gallery()), in the look of the homepage's Recently Updated. */
+function search_gallery_card(array $en): string
+{
+    $img = $en['p'] !== '' ? '<img src="' . e($en['p']) . '" alt="" loading="lazy" decoding="async" />' : '<span class="ph-initials">' . e(mb_strtoupper(mb_substr($en['t'], 0, 1))) . '</span>';
+    return '<a class="recent" href="' . e($en['u']) . '"><span class="recent-img">' . $img . '</span>'
+        . '<span class="recent-body"><b class="recent-name">' . e($en['t']) . '</b><span class="recent-meta">' . e($en['s']) . '</span></span></a>';
 }
 
 /** The entries every word of $q is found in, best first: title starting with the search, a title word starting with its first word, another word
@@ -142,7 +211,7 @@ function search_fix(array $index, string $q): string
 
 /**
  * The 404 page's guesses: up to $max entries of the search index (no FAQ questions) matching the words of the address that wasn't found
- * ("/models/tifaa/" → Tifa), those of the address's own kind first (/models/, /accessories/, /docs/, /blog/). The words are searched as
+ * ("/models/tifaa/" → Tifa), those of the address's own kind first (/models/, /accessories/, /scenes/, /docs/, /blog/). The words are searched as
  * they are, else corrected (search_fix()), else one at a time, longest first. Nothing for addresses with a file name (scanners asking for
  * /wp-login.php and such), nor for long ones.
  */
@@ -152,12 +221,13 @@ function search_guess_path(string $uri, int $max = 3): array
     if ($path === '' || str_contains($path, '.') || mb_strlen($path) > 120) return [];
     $parts = explode('/', strtolower($path));
     if (count($parts) > 4) return [];
-    $groups = ['models' => 'models', 'accessories' => 'outfits', 'docs' => 'help', 'blog' => 'blog'];
+    $groups = ['models' => 'models', 'accessories' => 'outfits', 'scenes' => 'scenes', 'docs' => 'help', 'tools' => 'help', 'blog' => 'blog'];
     $group = $groups[$parts[0]] ?? '';
+    $parts0 = $parts[0];   // the Gallery's entries only for a /gallery/… address
     if ($group !== '' || in_array($parts[0], ['gallery', 'bugs', 'search'], true)) array_shift($parts);
     $words = array_values(array_unique(array_filter(preg_split('/[^\p{L}\p{N}]+/u', implode(' ', $parts)) ?: [], fn($w) => mb_strlen($w) >= 2 && !ctype_digit($w))));
     if (!$words || count($words) > 6) return [];
-    $index = array_values(array_filter(search_index(), fn($en) => $en['k'] !== 'FAQ'));
+    $index = array_values(array_filter(search_index(), fn($en) => $en['k'] !== 'FAQ' && ($en['g'] !== 'gallery' || $parts0 === 'gallery')));
     $tries = [implode(' ', $words)];
     $hits = search_run($index, $tries[0]);
     if (!$hits && ($fix = search_fix($index, $tries[0])) !== '') $hits = search_run($index, $fix);

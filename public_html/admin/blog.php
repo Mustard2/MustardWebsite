@@ -7,14 +7,18 @@ admin_require($M3D);
 $items = [];   // what "Models and Accessories in This Post" can pick (drafts too: they show on the post once listed);
 // x = more words to find it by: an accessory's models with their franchises ("fantasy" finds Tifa's outfit), a model's generation
 $models = array_column(m3d_models(), null, 'slug');
-foreach (['models', 'outfits'] as $kind) foreach (m3d_items($kind) as $it) {
+foreach (M3D_ITEM_KINDS as $kind) foreach (m3d_items($kind) as $it) {
     $pic = item_pic($kind, $it);
     if ($kind === 'models') {
         $sub = trim('Model · ' . ($it['franchise'] ?? ''), ' ·');
         $x = ($it['generation'] ?? '') !== '' ? 'gen ' . $it['generation'] : '';
+    } elseif ($kind === 'scenes') {
+        $with = array_map('m3d_model_name', array_values(array_filter(array_map(fn($s) => $models[$s] ?? null, (array) ($it['models'] ?? [])))));
+        $sub = implode(' · ', array_filter(['Scene', $with ? 'With ' . implode(', ', array_slice($with, 0, 2)) . (count($with) > 2 ? '…' : '') : '']));
+        $x = implode(' ', $with);
     } else {
         $fits = m3d_fits_all($it) ? [] : array_values(array_filter(array_map(fn($s) => $models[$s] ?? null, (array) ($it['models'] ?? []))));
-        $for = m3d_fits_all($it) ? ['All Models'] : array_map('m3d_model_name', $fits);
+        $for = m3d_fits_blender($it) ? ['Blender'] : (m3d_fits_all($it) ? ['All Models'] : array_map('m3d_model_name', $fits));
         $sub = implode(' · ', array_filter([m3d_accessory_type($it), $for ? 'For ' . implode(', ', array_slice($for, 0, 2)) . (count($for) > 2 ? '…' : '') : '']));
         $x = implode(' ', array_unique(array_merge($for, array_map(fn($m) => (string) ($m['franchise'] ?? ''), $fits))));
     }

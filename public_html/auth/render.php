@@ -34,7 +34,7 @@ if ($do === 'remove') {
 }
 
 if ($do !== 'share') m3d_redirect('/');
-$kind = ($_POST['kind'] ?? '') === 'outfits' ? 'outfits' : 'models';
+$kind = in_array($_POST['kind'] ?? '', M3D_ITEM_KINDS, true) ? (string) $_POST['kind'] : 'models';
 $slug = is_string($_POST['slug'] ?? null) ? $_POST['slug'] : '';
 $item = preg_match('/^[a-z0-9-]{1,100}$/D', $slug) ? m3d_item($kind, $slug) : null;
 if (!$item || !m3d_can_view($kind, $item)) not_found();

@@ -11,7 +11,6 @@ layout_start('FAQ', 'Answers to common questions about ' . site_name() . ': down
 ?>
   <div class="wrap faq">
     <header class="faq-head">
-      <p class="eyebrow">Help</p>
       <h1>Frequently Asked Questions</h1>
       <?= admin_edit_button('/admin/faq.php', 'Edit FAQ') ?>
       <?php if (!empty($faq['intro'])): ?><div class="lead md"><?= md_html($faq['intro']) ?></div><?php endif ?>

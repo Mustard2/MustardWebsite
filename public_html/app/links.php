@@ -44,7 +44,7 @@ function lc_renders_on(): bool
 function lc_replace_everywhere(string $old, string $new): ?int
 {
     $n = 0;
-    foreach (['models', 'outfits'] as $kind) {
+    foreach (M3D_ITEM_KINDS as $kind) {
         $items = m3d_items($kind, true);
         $hit = 0;
         foreach ($items as &$it) {
@@ -61,7 +61,7 @@ function lc_replace_everywhere(string $old, string $new): ?int
         if ($hit && !m3d_save_items($kind, $items)) return null;
         $n += $hit;
     }
-    if (m3d_render_full_clean($new)) {   // patrons' full-quality links: https addresses only, never "s4:"
+    if (m3d_render_full_clean($new, m3d_s4_on())) {   // patrons' full-quality links: https addresses, or a file in the S4 bucket (as the creator may set in From Patrons)
         $hit = m3d_renders_update(function (array $rs) use ($old, $new) {
             $hit = 0;
             foreach ($rs as &$x) if (trim((string) ($x['full'] ?? '')) === $old) { $x['full'] = $new; $hit++; }
@@ -92,14 +92,14 @@ function lc_all_links(): array
         if (!preg_match('#^https?://#i', $url) && !m3d_s4_short($url)) return;   // pages of this site (add-ons like /mustardui/) aren't checked; "s4:" links are
         $out[] = ['h' => md5($url), 'url' => $url, 'host' => lc_host($url)] + $l;
     };
-    foreach (['models', 'outfits'] as $kind) {
+    foreach (M3D_ITEM_KINDS as $kind) {
         foreach (m3d_items($kind) as $it) {
             $slug = (string) ($it['slug'] ?? '');
             $sub = $kind === 'models'
                 ? trim(implode(' · ', array_filter([(string) ($it['franchise'] ?? ''), ($it['generation'] ?? '') !== '' ? 'Gen ' . $it['generation'] : ''])))
-                : 'Accessory · ' . m3d_accessory_type($it);
+                : ($kind === 'scenes' ? 'Scene' : 'Accessory · ' . m3d_accessory_type($it));
             $base = ['kind' => $kind, 'slug' => $slug, 'name' => (string) ($it['name'] ?? $slug), 'sub' => $sub,
-                     'edit' => '/admin/edit.php?' . ($kind === 'outfits' ? 'kind=outfits&slug=' : 'slug=') . rawurlencode($slug)];
+                     'edit' => '/admin/edit.php?' . ($kind !== 'models' ? 'kind=' . $kind . '&slug=' : 'slug=') . rawurlencode($slug)];
             foreach ((array) ($it['links'] ?? []) as $l) {
                 if (!is_array($l)) continue;
                 $add($base + ['url' => (string) ($l['url'] ?? ''), 'label' => (string) ($l['label'] ?? 'Download'), 'access' => (($l['access'] ?? '') === 'public' ? 'Public' : 'Patrons') . (!empty($l['off']) ? ' · Hidden' : '')]);

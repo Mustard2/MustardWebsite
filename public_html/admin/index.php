@@ -4,6 +4,7 @@
 require __DIR__ . '/_admin.php';
 require_once __DIR__ . '/_backup.php';
 admin_require($M3D);
+admin_auto_backup();   // when due, made before "Needs a look" reads the newest backup
 
 const HOME_DAYS = 30;   // the chart
 const HOME_TOP = 5;     // most downloaded this week
@@ -82,10 +83,10 @@ if (admin_form_post('home-layout')) {
     // keeps its place for when it can
     $off = ['bugs' => !m3d_bugs_on(), 'bugs-week' => !m3d_bugs_on(), 'comments' => !m3d_comments_on(), 'stills' => !m3d_gallery()['stills']];
     foreach (home_layout() as $i => $r) if (!empty($off[$r[0]]) && !isset($keep[$r[0]])) $keep = array_slice($keep, 0, $i, true) + [$r[0] => $r] + $keep;
-    m3d_save_settings(['home' => array_map(fn($r) => $r[3] ? $r : ($r[2] ? array_slice($r, 0, 3) : [$r[0], $r[1]]), array_values($keep))]) ? admin_flash('✓ Layout saved') : admin_flash(e(m3d_write_error()), 'err');
+    m3d_save_settings(['home' => array_map(fn($r) => $r[3] ? $r : ($r[2] ? array_slice($r, 0, 3) : [$r[0], $r[1]]), array_values($keep))]) ? admin_flash('✓ Layout saved.') : admin_flash(e(m3d_write_error()), 'err');
 }
 if (admin_form_post('home-reset')) {
-    m3d_save_settings(['home' => null]) ? admin_flash('✓ Back to the default layout') : admin_flash(e(m3d_write_error()), 'err');
+    m3d_save_settings(['home' => null]) ? admin_flash('✓ Layout reset.') : admin_flash(e(m3d_write_error()), 'err');
 }
 
 $tz = m3d_tz();
@@ -104,22 +105,18 @@ $top = [];                 // "kind:slug" => downloads in the last 7 days
 $recent = [];              // the newest rows
 $got = [];                 // "kind:slug" => [patron id => the version of their last download] (Update Uptake)
 $logOn = !empty($M3D['log_downloads']);
-if (($fh = @fopen(m3d_log_file(), 'rb'))) {
-    while (($line = fgets($fh)) !== false) {
-        $r = m3d_log_cols($line);
-        if (!isset($r[3]) || ($t = strtotime((string) $r[0])) === false) continue;
-        $id = (string) $r[1];
-        if (!isset($first[$id]) || $t < $first[$id]) $first[$id] = $t;
-        $day = (new DateTimeImmutable('@' . $t))->setTimezone($tz)->format('Y-m-d');
-        if (isset($days[$day])) $days[$day]++;
-        [$k, $s] = m3d_log_item_parts($r[3]);
-        if ($t >= $weekFrom) { $week++; $top["$k:$s"] = ($top["$k:$s"] ?? 0) + 1; }
-        elseif ($t >= $prevFrom) $prevWeek++;
-        $recent[] = [$t, $id, (string) $r[2], $k, $s, (string) ($r[5] ?? ''), (string) ($r[4] ?? '')];
-        $got["$k:$s"][$id] = (string) ($r[5] ?? '');   // the log is in time order: the last line wins
-        if (count($recent) > HOME_MORE * 4) $recent = array_slice($recent, -HOME_MORE);
-    }
-    fclose($fh);
+foreach (m3d_log_rows() as $r) {
+    if (!isset($r[3]) || ($t = strtotime((string) $r[0])) === false) continue;
+    $id = (string) $r[1];
+    if (!isset($first[$id]) || $t < $first[$id]) $first[$id] = $t;
+    $day = (new DateTimeImmutable('@' . $t))->setTimezone($tz)->format('Y-m-d');
+    if (isset($days[$day])) $days[$day]++;
+    [$k, $s] = m3d_log_item_parts($r[3]);
+    if ($t >= $weekFrom) { $week++; $top["$k:$s"] = ($top["$k:$s"] ?? 0) + 1; }
+    elseif ($t >= $prevFrom) $prevWeek++;
+    $recent[] = [$t, $id, (string) $r[2], $k, $s, (string) ($r[5] ?? ''), (string) ($r[4] ?? '')];
+    $got["$k:$s"][$id] = (string) ($r[5] ?? '');   // the log is in time order: the last line wins
+    if (count($recent) > HOME_MORE * 4) $recent = array_slice($recent, -HOME_MORE);
 }
 usort($recent, fn($a, $b) => $b[0] <=> $a[0]);
 $recent = array_slice($recent, 0, HOME_MORE);
@@ -131,8 +128,8 @@ $dYesterday = prev($days);
 
 $item = function (string $k, string $s): array {   // [name, picture, kind label, item or null]
     $it = m3d_item($k, $s);
-    if (!$it) return [$s, '', $k === 'outfits' ? 'Accessory · Removed' : 'Model · Removed', null];
-    return [(string) $it['name'], item_pic($k, $it), $k === 'outfits' ? m3d_accessory_type($it) : 'Model', $it];
+    if (!$it) return [$s, '', m3d_kind_word($k, false, true) . ' · Removed', null];
+    return [(string) $it['name'], item_pic($k, $it), m3d_item_type($k, $it), $it];
 };
 
 // ── Needs a look: problems (warn), things waiting (info), then the backup (ok, or warn when old). The site rows are the bell's
@@ -143,11 +140,11 @@ $site = m3d_notify_site(false);
 foreach ($site as [, $tone, , $text, $href, $go]) if ($tone === 'warn') $todo[] = [$tone, $text, $href, $go];
 if (m3d_comments_on() && ($n = count(m3d_comments_pending()))) $todo[] = ['info', m3d_plural($n, 'comment') . ' waiting for approval', settings_url('comments'), 'Settings'];
 foreach ($site as [, $tone, , $text, $href, $go]) if ($tone !== 'warn') $todo[] = [$tone, $text, $href, $go];
-foreach (['models' => '/admin/models.php', 'outfits' => '/admin/outfits.php'] as $k => $href) {
+foreach (['models' => '/admin/models.php', 'outfits' => '/admin/outfits.php', 'scenes' => '/admin/scenes.php'] as $k => $href) {
     $drafts = array_values(array_filter(m3d_items($k), fn($it) => m3d_visibility($it) === 'draft'));
     if (!$drafts) continue;
     $names = array_map(fn($it) => (string) $it['name'], array_slice($drafts, 0, 3));
-    $todo[] = ['info', m3d_plural(count($drafts), $k === 'outfits' ? 'accessory draft' : 'model draft', $k === 'outfits' ? 'accessory drafts' : 'model drafts')
+    $todo[] = ['info', m3d_plural(count($drafts), m3d_kind_word($k) . ' draft')
         . ' waiting: ' . implode(', ', $names) . (count($drafts) > 3 ? '…' : ''), $href, 'Assets'];
 }
 if (($nt = m3d_notice()) && ($until = (string) ($nt['until'] ?? '')) !== '') {
@@ -182,7 +179,7 @@ $diff = function (int $now, int $before, string $what, string $noun = 'downloads
 [$newLikes] = m3d_likes_new_since($today->modify('-6 days')->format('Y-m-d'));
 // only items, pictures and posts that still exist, like the Likes tile of Downloads (models and accessories) it links to; Gallery and blog likes are named apart
 $itemLikes = $stillLikes = $postLikes = 0;
-foreach (['models', 'outfits'] as $k) foreach (m3d_likes($k) as $slug => $codes) if (m3d_item($k, (string) $slug)) $itemLikes += count((array) $codes);
+foreach (M3D_ITEM_KINDS as $k) foreach (m3d_likes($k) as $slug => $codes) if (m3d_item($k, (string) $slug)) $itemLikes += count((array) $codes);
 foreach (m3d_likes('stills') as $id => $codes) if (m3d_still((string) $id)) $stillLikes += count((array) $codes);
 foreach (m3d_likes('posts') as $id => $codes) if (m3d_post((string) $id)) $postLikes += count((array) $codes);
 $allLikes = $itemLikes + $stillLikes + $postLikes;
@@ -215,7 +212,7 @@ if (m3d_bugs_on()) {
 }
 // like Admin → Downloads: the models and accessories on the site (no Gallery pictures, no removed items)
 $all = 0;
-foreach (['models', 'outfits'] as $k) foreach (m3d_items($k) as $it) $all += m3d_downloads($k, (string) $it['slug'])['total'];
+foreach (M3D_ITEM_KINDS as $k) foreach (m3d_items($k) as $it) $all += m3d_downloads($k, (string) $it['slug'])['total'];
 $w['dl-all'] = '<a class="stat stat-i stat-free" href="/admin/stats.php?p=all">' . $icon('all') . '<b>' . number_format($all) . '</b><span>Downloads All Time</span><small class="flat">patrons and free links</small></a>';
 $w['likes-week'] = '<a class="stat stat-i stat-likes" href="/admin/stats.php?tsort=likes-desc" title="Likes given in the last 7 days on models, accessories, gallery pictures and blog posts">' . $icon('like') . '<b>' . number_format($newLikes) . '</b><span>New Likes This Week</span><small class="flat">' . e($likesNote) . '</small></a>';
 $w['logins-week'] = '<div class="stat stat-i stat-login" title="Logins with Patreon (yours aren’t counted)">' . $icon('login') . '<b>' . number_format($loginWeek) . '</b><span>Logins, Last 7 Days</span>' . ($loginSince === '' ? '<small class="flat">counted from the next login</small>'
@@ -272,7 +269,7 @@ ob_start(); ?>
             <?php $i = 0; foreach ($top as $key => $n): [$k, $s] = explode(':', $key, 2); [$name, $pic, $kindLabel, $it] = $item($k, $s); ?>
             <li<?= $i++ >= HOME_TOP ? ' class="more"' : '' ?>>
               <?php if ($pic !== ''): ?><img src="<?= e(img_thumb($pic)) ?>" alt="" loading="lazy" /><?php else: ?><span class="no-img"></span><?php endif ?>
-              <span class="nm"><?= $it ? '<a href="/admin/edit.php?' . ($k === 'outfits' ? 'kind=outfits&amp;' : '') . 'slug=' . e(rawurlencode($s)) . '">' . e($name) . '</a>' : e($name) ?><span class="k"><?= e($kindLabel) ?></span><span class="bar" style="width:<?= round($n / $best * 100) ?>%"></span></span>
+              <span class="nm"><?= $it ? '<a href="/admin/edit.php?' . ($k !== 'models' ? 'kind=' . $k . '&amp;' : '') . 'slug=' . e(rawurlencode($s)) . '">' . e($name) . '</a>' : e($name) ?><span class="k"><?= e($kindLabel) ?></span><span class="bar" style="width:<?= round($n / $best * 100) ?>%"></span></span>
               <b class="n"><?= $n ?></b>
             </li>
             <?php endforeach ?>
@@ -287,13 +284,13 @@ $until = function (int $t) use ($today, $tz): string {   // "today", "tomorrow",
     return $n <= 0 ? 'today' : ($n === 1 ? 'tomorrow' : "in $n days");
 };
 $verText = fn(string $v) => preg_match('/^\d/', $v) ? "V$v" : $v;
-$itemLink = fn(string $k, array $it) => '/admin/edit.php?' . ($k === 'outfits' ? 'kind=outfits&amp;' : '') . 'slug=' . e(rawurlencode((string) $it['slug']));
+$itemLink = fn(string $k, array $it) => '/admin/edit.php?' . ($k !== 'models' ? 'kind=' . $k . '&amp;' : '') . 'slug=' . e(rawurlencode((string) $it['slug']));
 $more = fn(int $i, int $usual) => $i >= $usual ? '<li class="more">' : '<li>';   // rows past the usual number show only in a taller widget
 $pic = fn(string $k, array $it) => ($p = item_pic($k, $it)) !== '' ? '<img src="' . e(img_thumb($p)) . '" alt="" loading="lazy" />' : '<span class="no-img"></span>';
 
 // Most Liked: the likes there are now (models and accessories)
 $liked = [];
-foreach (['models', 'outfits'] as $k) foreach (m3d_likes($k) as $slug => $codes) if (($n = count((array) $codes)) && ($it = m3d_item($k, (string) $slug))) $liked[] = [$n, $k, $it];
+foreach (M3D_ITEM_KINDS as $k) foreach (m3d_likes($k) as $slug => $codes) if (($n = count((array) $codes)) && ($it = m3d_item($k, (string) $slug))) $liked[] = [$n, $k, $it];
 usort($liked, fn($a, $b) => $b[0] <=> $a[0]);
 $liked = array_slice($liked, 0, HOME_MORE);
 $h = '<section class="sec hm-top-box"><h2>Most Liked <a href="/admin/stats.php?tsort=likes-desc">Stats →</a></h2>';
@@ -301,7 +298,7 @@ if (!$liked) $h .= '<p class="muted">No likes yet.</p>';
 else {
     $h .= '<ul class="hm-top">';
     foreach ($liked as $i => [$n, $k, $it]) {
-        $h .= $more($i, HOME_TOP) . $pic($k, $it) . '<span class="nm"><a href="' . $itemLink($k, $it) . '">' . e((string) $it['name']) . '</a><span class="k">' . e($k === 'outfits' ? m3d_accessory_type($it) : 'Model')
+        $h .= $more($i, HOME_TOP) . $pic($k, $it) . '<span class="nm"><a href="' . $itemLink($k, $it) . '">' . e((string) $it['name']) . '</a><span class="k">' . e(m3d_item_type($k, $it))
             . '</span><span class="bar bar-like" style="width:' . round($n / $liked[0][0] * 100) . '%"></span></span><b class="n">' . $n . '</b></li>';
     }
     $h .= '</ul>';
@@ -310,7 +307,7 @@ $w['liked'] = $h . '</section>';
 
 // Coming Up: the patrons date, the public date and versions dated in the future, of every item (drafts too, tagged), soonest first
 $events = [];
-foreach (['models', 'outfits'] as $k) foreach (m3d_items($k) as $it) {
+foreach (M3D_ITEM_KINDS as $k) foreach (m3d_items($k) as $it) {
     $rel = m3d_release($it);
     if ($rel['patrons'] && $rel['patrons'] > $now) $events[] = [$rel['patrons'], $k, $it, 'Patrons get it', true];
     if ($rel['public'] && $rel['public'] > $now) $events[] = [$rel['public'], $k, $it, 'Free for everyone', true];
@@ -336,7 +333,7 @@ $w['coming'] = $h . '</section>';
 // Update Uptake: versions out in the last HOME_UPTAKE days (items with an older version): of the patrons in the log who downloaded the item,
 // how many have this version as their last download
 $fresh = [];
-foreach (['models', 'outfits'] as $k) foreach (m3d_items($k) as $it) {
+foreach (M3D_ITEM_KINDS as $k) foreach (m3d_items($k) as $it) {
     if (count(m3d_released_versions($it)) < 2) continue;
     $cur = m3d_current_version($it);
     $t = m3d_changelog_ts((string) ($cur['date'] ?? ''));
@@ -393,7 +390,7 @@ if (m3d_comments_on()) {   // Latest Comments: the newest ones by visitors (not 
             $at = (int) ($c['at'] ?? 0);
             $text = preg_replace('/\s+/u', ' ', (string) ($c['text'] ?? '')) ?? '';   // one line, without the format's marks (**bold**, links…)
             $text = mb_strimwidth(trim(html_entity_decode(strip_tags(md_inline($text)), ENT_QUOTES | ENT_HTML5, 'UTF-8')), 0, 160, '…');
-            $h .= $more($i, HOME_TOP) . bug_avatar($name) . '<span class="nm"><b>' . e($name) . '</b> <span class="on">' . (!empty($c['re']) ? 'replied on ' : 'on ')
+            $h .= $more($i, HOME_TOP) . bug_avatar($name, false, (string) ($c['by'] ?? '')) . '<span class="nm"><b>' . e($name) . '</b> <span class="on">' . (!empty($c['re']) ? 'replied on ' : 'on ')
                 . ($url !== '' ? '<a href="' . e($url . '#cm-' . (int) $c['id']) . '">' . e($title) . '</a>' : e($title)) . '</span>'
                 . '<span class="k">' . e($text) . '</span></span>'
                 . '<span class="when" title="' . e(m3d_site_time($at, 'D j M Y, H:i T')) . '">' . e(m3d_site_time($at, m3d_site_time($at, 'Y-m-d') === m3d_today() ? 'H:i' : 'j M'))   // like Latest Downloads
@@ -441,6 +438,7 @@ admin_start('Home', 'home');
       <div class="row-btns" data-home-view>
         <a class="btn btn-ghost btn-sm" href="/admin/edit.php">+ New Model</a>
         <a class="btn btn-ghost btn-sm" href="/admin/edit.php?kind=outfits">+ New Accessory</a>
+        <a class="btn btn-ghost btn-sm" href="/admin/edit.php?kind=scenes">+ New Scene</a>
         <a class="btn btn-ghost btn-sm" href="/admin/gallery.php">+ Gallery Pictures</a>
         <button type="button" class="btn btn-ghost btn-sm" data-home-edit title="Add, remove, resize and move the widgets">Edit Layout</button>
       </div>

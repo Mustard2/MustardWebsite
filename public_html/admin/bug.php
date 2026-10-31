@@ -41,6 +41,8 @@ switch ($do) {
                 if ($k === 'locked' && $auto && empty($_POST['lock_set'])) continue;   // lock_set: the switch was flipped by hand after picking the status (site.js)
                 if (!empty($_POST[$k])) $b[$k] = true; else unset($b[$k]);
             }
+            if (empty($b['hidden'])) unset($b['hid']);   // the Moderation page's mark goes with it
+            elseif (empty($b['hid'])) $b['hid'] = m3d_mod_mark('');   // hidden here: by the creator, so only they show it again
             $b['seen'] = true;
             return $b;
         });

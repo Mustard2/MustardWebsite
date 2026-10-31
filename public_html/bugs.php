@@ -1,6 +1,7 @@
 <?php
 // /bugs/ (list), /bugs/report/ (form), /bugs/<n>/ (one report): rewritten here by .htaccess (?report=1, ?n=N).
-// /bugs/?index=1 = the JSON the report form uses for "Is it one of these?". POST (do = report | comment | metoo, CSRF)
+// /bugs/?index=1 = the JSON the report form uses for "Is it one of these?". POST (do = report | comment | metoo | react, CSRF;
+// react {n, i (a comment's place in the log, -1 = the report), at, r}: answered as JSON {ok, rx} to site.js' Accept: application/json)
 // from logged-in visitors (m3d_bug_can_post()); do = follow (the Follow button) from anyone who can follow (m3d_bug_can_follow()). Off (Settings → Features → Bug reports): 404, except for admins.
 // Data and rules: app/bugs.php.
 require __DIR__ . '/app/_init.php';
@@ -8,6 +9,7 @@ require __DIR__ . '/app/_init.php';
 $admin = m3d_is_admin($M3D);
 if (!m3d_bugs_on() && !$admin) not_found();
 $S = m3d_bug_settings();
+$emo = emoji_attrs($S);   // the ☺ picker / ":heart:" codes of the report and comment boxes (site.js [data-emoji])
 $p = m3d_patron($M3D);
 $creator = $admin && empty($p['preview']);   // the creator's tools (one report's page, the list's extra chips and tick boxes); not while previewing as a patron
 $can = m3d_bug_can_post($p);
@@ -63,6 +65,34 @@ if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST') {
     }
     elseif ($can['why'] === 'banned') m3d_redirect(m3d_ban_url('bugs'));   // banned in Admin → Access: the page with the reason
     elseif (!$can['ok']) $error = $can['why'] === 'login' ? 'Please log in with Patreon first.' : $can['why'];
+    elseif ($do === 'react') {   // a reaction on the report or one of its comments, on or off
+        $b = m3d_bug((int) ($_POST['n'] ?? 0));
+        if (!$b || !m3d_bug_visible($b, $p)) not_found();
+        $n = (int) $b['n'];
+        $i = (int) ($_POST['i'] ?? -1);
+        $at = (int) ($_POST['at'] ?? 0);
+        $r = bug_str($_POST['r'] ?? '');
+        $x = $i >= 0 ? ($b['log'][$i] ?? null) : $b;
+        $json = str_contains((string) ($_SERVER['HTTP_ACCEPT'] ?? ''), 'application/json');
+        $back = "/bugs/$n/" . ($i >= 0 ? "#c$i" : '#report');
+        $ok = $S['reactions'] && in_array($r, COMMENT_REACTIONS, true) && is_array($x) && empty($b['pending']) && empty($x['hid'])
+            && ($i < 0 || (($x['t'] ?? '') === 'c' && (int) ($x['at'] ?? 0) === $at));
+        if ($ok && !m3d_bug_toggle_ok('cm_rx', COMMENT_RX_PER_HOUR)) { $ok = false; $back = "/bugs/$n/?wait=1" . ($i >= 0 ? "#c$i" : '#report'); }
+        $out = null;
+        if ($ok) {
+            $code = m3d_like_code((string) $p['id']);
+            m3d_bug_change($n, function (array $b) use ($i, $at, $r, $code, &$out) {
+                if ($i < 0) { [$b, $out] = m3d_rx_toggle($b, $r, $code); return $b; }
+                $c = $b['log'][$i] ?? null;   // the same comment still (not moved by a delete meanwhile)
+                if (!is_array($c) || ($c['t'] ?? '') !== 'c' || (int) ($c['at'] ?? 0) !== $at) return $b;
+                [$b['log'][$i], $out] = m3d_rx_toggle($c, $r, $code);
+                return $b;
+            });
+        }
+        if ($json && $out !== null) { header('Content-Type: application/json'); echo json_encode(['ok' => true, 'rx' => (object) $out], JSON_UNESCAPED_UNICODE); exit; }
+        if ($json) { http_response_code(400); header('Content-Type: application/json'); echo json_encode(['ok' => false]); exit; }
+        m3d_redirect($back);
+    }
     elseif ($do === 'report') {
         $abouts = m3d_bug_abouts();
         $form = $readForm();
@@ -73,9 +103,9 @@ if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST') {
         if (!isset($abouts[$form['about']])) $error = 'Pick what the bug is about.';
         elseif (mb_strlen($form['title']) < 5) $error = 'Write a short title (5 characters at least).';
         elseif (mb_strlen($form['body']) < 10) $error = 'Tell us what happened (10 characters at least).';
-        // model and accessory reports: the Blender version, and MustardUI's while its page is on
+        // model and accessory reports: the Blender version, and the version of the tool that asks for it (Admin → Tools → Options)
         elseif (m3d_bug_needs_versions($form['about']) && $form['blender'] === '') $error = 'Write the Blender version you use.';
-        elseif (m3d_bug_needs_versions($form['about']) && m3d_mustardui_on() && $form['mui'] === '') $error = 'Write the MustardUI version you use.';
+        elseif (m3d_bug_needs_versions($form['about']) && ($bt = m3d_bug_tool()) && $form['mui'] === '') $error = 'Write the ' . $bt['name'] . ' version you use.';
         // the daily limit is for visitors: admins enter reports for others ("+ New report")
         elseif (!$admin && m3d_bug_sent_today((string) $p['id']) >= $S['per_day']) $error = $limitMsg;   // checked again under the lock below
         else {
@@ -92,7 +122,7 @@ if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST') {
                         'ver' => $form['ver'], 'blender' => $form['blender'], 'mui' => $form['mui'], 'body' => $form['body'], 'steps' => $form['steps'],
                         'links' => $form['links'], 'pics' => $pics, 'by' => (string) $p['id'], 'name' => (string) ($p['name'] ?? ''),
                         'at' => $now, 'act' => $now, 'status' => 'new', 'tags' => [], 'metoo' => [], 'log' => []];
-                    if ($S['moderate'] && !$admin) $b['pending'] = true;
+                    if (m3d_bug_needs_check($p, $S)) $b['pending'] = true;
                     if ($admin) $b['seen'] = true;
                     $bugs[] = m3d_bug_follow($b, $p, $now);
                     return [$bugs, $next + 1, $b];
@@ -127,7 +157,7 @@ if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST') {
         $text = bug_text($_POST['text'] ?? '', BUG_MAX['comment']);
         $form['text'] = $text;
         if (!empty($b['locked']) && !$admin) $error = 'Comments are closed on this report.';
-        elseif (mb_strlen($text) < 2) $error = 'Write a comment first.';
+        elseif (m3d_text_short($text)) $error = 'Write a comment first.';
         else {
             $now = time();
             // the daily limit, checked under the same lock as the save (two sessions at once can't both pass); admins have none
@@ -167,12 +197,24 @@ $offNote = !m3d_bugs_on() ? '<p class="bugs-off">Bug reports are off: only admin
 // ════ One report ════
 if ($n > 0) {
     $b = m3d_bug($n);
-    if (!$b || !m3d_bug_visible($b, $p)) not_found();
+    // a moderator also opens the waiting and hidden ones (from the Moderation page)
+    $modT = $b && m3d_mod_role() === 'mod' ? m3d_mod_target('bug', (string) $n) : null;
+    $modBug = $modT && m3d_mod_may($modT);
+    if (!$b || !(m3d_bug_visible($b, $p) || $modBug)) not_found();
     if (!empty($b['hidden']) || !empty($b['pending'])) header('X-Robots-Tag: noindex');
     $a = m3d_bug_about($b);
     $metoo = (array) ($b['metoo'] ?? []);
     $mine = $p ? in_array(m3d_like_code((string) $p['id']), $metoo, true) : false;
     $own = $p && (string) ($b['by'] ?? '') === (string) ($p['id'] ?? '');
+    // reactions under the report ($i = -1) and each comment; the visitor's own lit, a ☺+ for those who may post (settings → bugs.reactions)
+    $rxCode = $S['reactions'] && $can['ok'] ? m3d_like_code((string) $p['id']) : '';
+    $rxHtml = function (int $i, array $x) use ($S, $b, $n, $rxCode): string {
+        if (!$S['reactions'] || !empty($b['pending'])) return '';
+        $hidden = $rxCode === '' ? '' : '<input type="hidden" name="csrf" value="' . e(m3d_csrf()) . '" /><input type="hidden" name="n" value="' . $n . '" /><input type="hidden" name="i" value="' . $i . '" />'
+            . ($i >= 0 ? '<input type="hidden" name="at" value="' . (int) ($x['at'] ?? 0) . '" />' : '');
+        $h = reactions_html((array) ($x['rx'] ?? []), $hidden, "/bugs/$n/", $rxCode);
+        return $h !== '' ? '<div class="cm-foot">' . $h . '</div>' : '';
+    };
     $log = (array) ($b['log'] ?? []);
     $more = $a['kindKey'] !== 'other' ? count(array_filter(m3d_bugs(), fn($x) => (int) $x['n'] !== $n && ($x['about'] ?? '') === ($b['about'] ?? '') && in_array($x['status'] ?? 'new', BUG_OPEN, true) && empty($x['hidden']) && empty($x['pending']) && m3d_bug_visible($x, $p))) : 0;
     $status = (string) ($b['status'] ?? 'new');
@@ -219,12 +261,13 @@ if ($n > 0) {
   <div class="wrap bug-page">
     <?= $offNote ?>
     <a class="back" href="/bugs/" data-back>← All Bug Reports</a>
-    <?php if (!empty($_GET['sent'])) site_flash('✓ <b>Thanks, your report was sent.</b> ' . (!empty($b['pending']) ? 'The creator checks new reports before they show on the site: until then only you can see it.' : 'You’ll find the answers here.')) ?>
-    <?php if (!empty($b['pending'])): ?>
-      <div class="bug-notice"><span>Waiting for the creator to check it: only you<?= $admin ? ' (and admins)' : '' ?> can see this report.</span><?php if ($creator): ?><form method="post" action="<?= e($act) ?>"><?= $keys ?><button class="btn btn-primary btn-sm" name="do" value="publish">Publish</button></form><?php endif ?></div>
+    <?php if (!empty($_GET['sent'])) site_flash('✓ Report sent.') ?>
+    <?php $modKeys = '<input type="hidden" name="csrf" value="' . e(m3d_csrf()) . '" /><input type="hidden" name="type" value="bug" /><input type="hidden" name="ref" value="' . $n . '" /><input type="hidden" name="return" value="/bugs/' . $n . '/" />'; ?>
+    <?php if (!empty($b['pending']) && empty($b['hidden'])): ?>
+      <div class="bug-notice"><span>Waiting for a check: only you<?= $admin || $modBug ? ' (and moderators)' : '' ?> can see this report.</span><?php if ($creator): ?><form method="post" action="<?= e($act) ?>"><?= $keys ?><button class="btn btn-primary btn-sm" name="do" value="publish">Publish</button></form><?php elseif ($modBug): ?><form method="post" action="/auth/moderate.php"><?= $modKeys ?><button class="btn btn-primary btn-sm" name="do" value="approve">Approve</button></form><a class="btn btn-ghost btn-sm" href="/admin/moderation.php?hide=bug:<?= $n ?>&amp;back=<?= e(rawurlencode('/bugs/' . $n . '/')) ?>">Hide…</a><?php endif ?></div>
     <?php endif ?>
     <?php bug_result_flash($creator) // ?done= / ?err= codes of the creator's changes, ?wait=1 ?>
-    <?php if (!empty($b['hidden'])): ?><p class="bug-notice"><span>Hidden from the site: only admins see this report.</span></p><?php endif ?>
+    <?php if (!empty($b['hidden'])): ?><div class="bug-notice"><span><?= ($hl = mod_hid_line(m3d_mod_hid($b))) !== '' && ($b['hid']['at'] ?? 0) ? $hl . '. ' : '' ?>Hidden from the site: only moderators and admins see this report.</span><?php if ($modBug && !m3d_mod_hid_by_creator($modT['hid'])): ?><form method="post" action="/auth/moderate.php"><?= $modKeys ?><button class="btn btn-ghost btn-sm" name="do" value="show">Show Again</button></form><?php endif ?></div><?php endif ?>
     <header class="bug-top">
       <div class="bug-top-row"><?= bug_status_badge($b) ?><?php if (!empty($b['pin']) && in_array($status, BUG_OPEN, true)): ?><span class="pin-tag"><?= bug_icon('pin') ?>Known Issue</span><?php endif ?></div>
       <?php if ($creator): $editTitle = $edit === 'title'; ?>
@@ -253,8 +296,9 @@ if ($n > 0) {
           <div class="fixed-bar is-closed"><?= bug_icon('closed') ?><span>Closed<?= isset(BUG_REASONS[$b['reason'] ?? '']) ? ': <b>' . e(mb_strtolower(BUG_REASONS[$b['reason']])) . '</b>' : '' ?>.</span></div>
         <?php endif ?>
         <article class="post" id="report">
-          <div class="post-head"><?= bug_avatar((string) $b['name']) ?><b><?= e($b['name'] ?: 'Someone') ?></b> reported this · <?= e(bug_ago((int) $b['at'])) ?>
-            <?php if ($creator && $edit !== 'report'): ?><?= bug_post_menu(['<a class="pm-item" href="/bugs/' . $n . '/?edit=report#report">Edit Report</a>', $blockBtn($byId, (string) ($b['name'] ?? ''), 'pm-item')]) ?><?php endif ?></div>
+          <div class="post-head"><?= bug_avatar((string) $b['name'], false, (string) ($b['by'] ?? '')) ?><b><?= e($b['name'] ?: 'Someone') ?></b><?= mod_tag($b) ?> reported this · <?= e(bug_ago((int) $b['at'])) ?>
+            <?php if ($creator && $edit !== 'report'): ?><?= bug_post_menu(['<a class="pm-item" href="/bugs/' . $n . '/?edit=report#report">Edit Report</a>', $blockBtn($byId, (string) ($b['name'] ?? ''), 'pm-item')]) ?>
+            <?php elseif (!$creator && m3d_mod_role() === 'mod'): ?><?= bug_post_menu(mod_menu_items('bug', (string) $n, !empty($b['pending']), !empty($b['hidden']), $byId, (string) ($b['name'] ?? ''), '/bugs/' . $n . '/')) ?><?php endif ?></div>
           <?php if ($edit === 'report'): $abAll = m3d_bug_abouts_all(); $vAll = $a['item'] ? array_values(array_unique(array_map('m3d_version_label', m3d_versions($a['item'])))) : []; ?>
           <form class="post-body bug-edit-form" method="post" action="<?= e($act) ?>" data-dirty><?= $keys ?><input type="hidden" name="do" value="edit" />
             <label class="rfield"><span class="rlabel">What Is It About?</span>
@@ -265,11 +309,11 @@ if ($n > 0) {
             <div class="r2">
               <label class="rfield"><span class="rlabel">Version</span><input class="input" name="ver" value="<?= e((string) ($b['ver'] ?? '')) ?>" list="bug-ver-all" maxlength="<?= BUG_MAX['short'] ?>" /></label>
               <label class="rfield"><span class="rlabel">Blender</span><input class="input" name="blender" value="<?= e((string) ($b['blender'] ?? '')) ?>" maxlength="<?= BUG_MAX['short'] ?>" /></label>
-              <?php if (m3d_mustardui_on()): ?><label class="rfield"><span class="rlabel">MustardUI</span><input class="input" name="mui" value="<?= e((string) ($b['mui'] ?? '')) ?>" maxlength="<?= BUG_MAX['short'] ?>" /></label><?php endif ?>
+              <?php if ($bt = m3d_bug_tool()): ?><label class="rfield"><span class="rlabel"><?= e($bt['name']) ?></span><input class="input" name="mui" value="<?= e((string) ($b['mui'] ?? '')) ?>" maxlength="<?= BUG_MAX['short'] ?>" /></label><?php endif ?>
             </div>
             <datalist id="bug-ver-all"><?php foreach ($vAll as $v): ?><option value="<?= e($v) ?>"></option><?php endforeach ?></datalist>
-            <label class="rfield"><span class="rlabel">What Happened</span><textarea class="input" name="body" rows="6" maxlength="<?= BUG_MAX['body'] ?>"><?= e((string) ($b['body'] ?? '')) ?></textarea></label>
-            <label class="rfield"><span class="rlabel">How to See It</span><textarea class="input" name="steps" rows="4" maxlength="<?= BUG_MAX['steps'] ?>"><?= e((string) ($b['steps'] ?? '')) ?></textarea></label>
+            <label class="rfield"><span class="rlabel">What Happened</span><textarea class="input" name="body" rows="6" maxlength="<?= BUG_MAX['body'] ?>"<?= $emo ?>><?= e((string) ($b['body'] ?? '')) ?></textarea></label>
+            <label class="rfield"><span class="rlabel">How to See It</span><textarea class="input" name="steps" rows="4" maxlength="<?= BUG_MAX['steps'] ?>"<?= $emo ?>><?= e((string) ($b['steps'] ?? '')) ?></textarea></label>
             <div class="rfield"><span class="rlabel">Screenshot and Video Links</span>
               <?php $links = (array) ($b['links'] ?? []); for ($li = 0; $li < BUG_LINKS; $li++): ?><input class="input" type="url" name="links[]" value="<?= e((string) ($links[$li] ?? '')) ?>" placeholder="https://…" spellcheck="false" aria-label="Link <?= $li + 1 ?>" /><?php endfor ?></div>
             <?php if (!empty($b['pics'])): ?>
@@ -294,29 +338,34 @@ if ($n > 0) {
               <p class="muted small ext-note">These links open on another website.</p>
             <?php endif ?>
           </div>
+          <?= $rxHtml(-1, $b) ?>
           <?php endif ?>
         </article>
 
         <div class="timeline" id="comments">
+          <?php $modComments = m3d_mod_can('bugs'); ?>
           <?php $itemRep = m3d_bug_about_parts((string) ($b['about'] ?? ''))[1] !== '';   // its version comes from the changelog: its "Fixed in" line says it
           foreach ($log as $i => $x): $t = (string) ($x['t'] ?? ''); $when = bug_ago((int) ($x['at'] ?? 0)); ?>
             <?php if ($i === $newFrom): ?><p class="new-line" id="new">New since your last visit</p><?php endif ?>
-            <?php if ($t === 'c'): $cr = !empty($x['admin']); ?>
-              <article class="post<?= $cr ? ' by-creator' : '' ?>" id="c<?= (int) $i ?>">
-                <div class="post-head"><?= bug_avatar((string) ($x['name'] ?? ''), $cr) ?><b><?= e(($x['name'] ?? '') ?: 'Someone') ?></b><?= $cr ? '<span class="creator-tag">Creator</span>' : '' ?><?= !$cr && (string) ($x['by'] ?? '') === (string) ($b['by'] ?? '') ? '<span class="op-tag">Reporter</span>' : '' ?> · <?= e($when) ?>
+            <?php if ($t === 'c' && ($x['hid'] ?? null) && !$modComments) continue; // hidden: only moderators and the creator see it ?>
+            <?php if ($t === 'c'): $cr = !empty($x['admin']); $hidC = m3d_mod_hid($x); $cRef = $n . ':' . (int) $i . ':' . (int) ($x['at'] ?? 0); ?>
+              <article class="post<?= $cr ? ' by-creator' : '' ?><?= !$cr && m3d_posted_by_mod($x) ? ' by-mod' : '' ?><?= $hidC ? ' is-hid' : '' ?>" id="c<?= (int) $i ?>">
+                <div class="post-head"><?= bug_avatar((string) ($x['name'] ?? ''), $cr, (string) ($x['by'] ?? '')) ?><b><?= e(($x['name'] ?? '') ?: 'Someone') ?></b><?= $cr ? '<span class="creator-tag">Creator</span>' : mod_tag($x) ?><?= !$cr && (string) ($x['by'] ?? '') === (string) ($b['by'] ?? '') ? '<span class="op-tag">Reporter</span>' : '' ?> · <?= e($when) ?><?= $hidC ? '<span class="mod-hid">Hidden</span>' : '' ?>
                   <?php if ($creator && $edit !== "c$i"): ?><?= bug_post_menu([
                       '<a class="pm-item" href="/bugs/' . $n . '/?edit=c' . (int) $i . '#c' . (int) $i . '">Edit</a>',
+                      ...mod_menu_items('bugc', $cRef, false, (bool) $hidC, '', '', '/bugs/' . $n . '/'),
                       $cr ? '' : $blockBtn((string) ($x['by'] ?? ''), (string) ($x['name'] ?? ''), 'pm-item'),
                       '<form method="post" action="' . e($act) . '">' . $keys . '<input type="hidden" name="i" value="' . (int) $i . '" /><button class="pm-item is-red" name="do" value="delcomment" onclick="return confirm(\'Delete this comment?\')">Delete</button></form>',
-                  ]) ?><?php endif ?></div>
+                  ]) ?><?php elseif (!$creator && !$cr): ?><?= bug_post_menu(mod_menu_items('bugc', $cRef, false, (bool) $hidC, (string) ($x['by'] ?? ''), (string) ($x['name'] ?? ''), '/bugs/' . $n . '/')) ?><?php endif ?></div>
                 <?php if ($edit === "c$i"): ?>
                   <form class="post-body bug-edit-form" method="post" action="<?= e($act) ?>" data-dirty><?= $keys ?><input type="hidden" name="do" value="editcomment" /><input type="hidden" name="i" value="<?= (int) $i ?>" />
                     <label class="sr-only" for="edit-c<?= (int) $i ?>">Comment</label>
-                    <textarea class="input" id="edit-c<?= (int) $i ?>" name="text" rows="4" maxlength="<?= BUG_MAX['comment'] ?>" required><?= e((string) ($x['text'] ?? '')) ?></textarea>
+                    <textarea class="input" id="edit-c<?= (int) $i ?>" name="text" rows="4" maxlength="<?= BUG_MAX['comment'] ?>" required<?= $emo ?>><?= e((string) ($x['text'] ?? '')) ?></textarea>
                     <div class="edit-acts"><a class="btn btn-ghost btn-sm" href="/bugs/<?= $n ?>/#c<?= (int) $i ?>">Cancel</a><button class="btn btn-primary btn-sm">Save</button></div>
                   </form>
                 <?php else: ?>
-                  <div class="post-body md"><?= md_html((string) ($x['text'] ?? ''), ['picLinks' => true]) ?></div>
+                  <div class="post-body md<?= $S['emoji'] && comment_emoji_only((string) ($x['text'] ?? '')) ? ' cm-big' : '' ?>"><?= md_html((string) ($x['text'] ?? ''), ['picLinks' => true]) ?></div>
+                  <?php if ($hidC): ?><p class="mod-why"><?= mod_hid_line($hidC) ?> · only moderators and the creator see it</p><?php else: ?><?= $rxHtml((int) $i, $x) ?><?php endif ?>
                 <?php endif ?>
               </article>
             <?php elseif ($t === 's'): $st = (string) ($x['status'] ?? 'new'); ?>
@@ -336,8 +385,8 @@ if ($n > 0) {
           <form class="reply" method="post" action="/bugs/<?= $n ?>/#comment-error">
             <input type="hidden" name="csrf" value="<?= e(m3d_csrf()) ?>" /><input type="hidden" name="do" value="comment" /><input type="hidden" name="n" value="<?= $n ?>" />
             <label class="sr-only" for="bug-comment">Comment</label>
-            <textarea class="input" id="bug-comment" name="text" maxlength="<?= BUG_MAX['comment'] ?>" placeholder="Add a comment: more details, a workaround…" required><?= e($form['text'] ?? '') ?></textarea>
-            <div class="reply-foot"><span class="muted">Commenting as <b><?= e($p['name'] ?? '') ?></b><?= $admin ? ' <span class="creator-tag">Creator</span>' : '' ?></span><button class="btn btn-primary btn-sm">Comment</button></div>
+            <textarea class="input" id="bug-comment" name="text" maxlength="<?= BUG_MAX['comment'] ?>" placeholder="Add a comment: more details, a workaround…" required<?= $emo ?>><?= e($form['text'] ?? '') ?></textarea>
+            <div class="reply-foot"><span class="muted">Commenting as <b><?= e($p['name'] ?? '') ?></b><?= $admin ? ' <span class="creator-tag">Creator</span>' : (m3d_is_mod($M3D) ? ' <span class="mod-tag">Moderator</span>' : '') ?></span><button class="btn btn-primary btn-sm">Comment</button></div>
           </form>
         <?php elseif ($can['why'] === 'login'): ?>
           <div class="reply reply-login"><span class="muted">Log in to comment or press Me Too.</span><a class="btn btn-patreon btn-sm" rel="nofollow" href="<?= e($loginUrl) ?>">Log In with Patreon</a></div>
@@ -356,11 +405,11 @@ if ($n > 0) {
               </div></div>
             <?php if ($a['item']): /* an item's report: the version comes from its changelog ("Fix #6: …" in a version's changes) */
               $fixIn = m3d_bug_fixed_in($b, $a['item']); ?>
-              <div class="ct-sec st-fixed"><span class="ct-lbl">Fixed In<?= help_tip('Write #' . $n . ' in a version’s changes, in the ' . ($a['kindKey'] === 'outfits' ? 'accessory' : 'model') . '’s changelog: saving it marks this report fixed in that version.') ?></span>
+              <div class="ct-sec st-fixed"><span class="ct-lbl">Fixed In<?= help_tip('Write #' . $n . ' in a version’s changes, in the ' . (m3d_kind_word($a['kindKey'])) . '’s changelog: saving it marks this report fixed in that version.') ?></span>
                 <p class="ct-fixin"><?= $fixIn !== '' ? '<b>' . e(bug_version_words($fixIn)) . '</b>' : '<span class="muted">Not in the changelog</span>' ?></p></div>
             <?php else: ?>
               <label class="ct-sec st-fixed"><span class="ct-lbl">Fixed In</span>
-                <input class="input" name="fixed" value="<?= e(m3d_bug_fixed_in($b)) ?>" maxlength="<?= BUG_MAX['short'] ?>" placeholder="V2" /></label>
+                <input class="input" name="fixed" value="<?= e(m3d_bug_fixed_in($b)) ?>" maxlength="<?= BUG_MAX['short'] ?>" /></label>
             <?php endif ?>
             <div class="ct-sec st-closed">
               <label class="ct-sec"><span class="ct-lbl">Why It’s Closed</span>
@@ -400,7 +449,7 @@ if ($n > 0) {
         <?php if ($creator): $others = $byId !== '' ? count(array_filter(m3d_bugs(), fn($x) => (string) ($x['by'] ?? '') === $byId && (int) $x['n'] !== $n)) : 0; ?>
           <div class="rep-box">
             <h3>Reported by</h3>
-            <div class="rep-who"><?= bug_avatar((string) ($b['name'] ?? '')) ?><span><b><?= e(($b['name'] ?? '') ?: 'Someone') ?></b><small><?= $byId !== '' ? 'Patreon ID ' . e($byId) : '' ?><?= $others ? ' · ' . m3d_plural($others, 'other report') : '' ?></small></span></div>
+            <div class="rep-who"><?= bug_avatar((string) ($b['name'] ?? ''), false, (string) ($b['by'] ?? '')) ?><span><b><?= e(($b['name'] ?? '') ?: 'Someone') ?></b><small><?= $byId !== '' ? 'Patreon ID ' . e($byId) : '' ?><?= $others ? ' · ' . m3d_plural($others, 'other report') : '' ?></small></span></div>
             <?php if ($byId !== '' && in_array($byId, $blocked, true)): ?><p class="rep-blocked">Blocked from posting bug reports.</p><?php endif ?>
             <?php if ($byId !== ''): ?>
               <div class="rep-acts">
@@ -469,14 +518,14 @@ if (!empty($_GET['report'])) {
               <?= bug_about_option((string) $k, $label, $k === $sel) ?>
             <?php endforeach; echo $group !== '' ? '</optgroup>' : '' ?>
           </select>
-          <?php if (m3d_mustardui_on()): ?><span class="rhelp">A bug in MustardUI itself? Please report it on <a href="<?= e(SITE['mustarduiIssues']) ?>" target="_blank" rel="noopener">MustardUI’s GitHub issues ↗</a></span><?php endif ?></label>
+          <?php foreach (m3d_tools_listed('bugver') as $bt) if ($bt['issues'] !== ''): ?><span class="rhelp">A bug in <?= e($bt['name']) ?> itself? Please report it <a href="<?= e($bt['issues']) ?>" target="_blank" rel="noopener">here ↗</a></span><?php endif ?></label>
         <div class="r2">
           <label class="rfield" data-bug-ver<?= $selVers ? '' : ' hidden' ?>><span class="rlabel">Version</span>
             <select class="input" name="ver"><?php foreach ($selVers as $i => $v): ?><option value="<?= e($v) ?>"<?= ($form['ver'] ?? '') === $v ? ' selected' : '' ?>><?= e($v . ($i === 0 ? ' (latest)' : '')) ?></option><?php endforeach ?><option value="">Not Sure</option></select></label>
           <?php $needVer = m3d_bug_needs_versions($sel); /* site.js switches "optional" and required when the picked item changes */ ?>
           <label class="rfield"><span class="rlabel">Blender <span class="opt" data-ver-opt<?= $needVer ? ' hidden' : '' ?>>optional</span></span>
             <input class="input" name="blender" maxlength="<?= BUG_MAX['short'] ?>" placeholder="e.g. 4.2" value="<?= e($form['blender'] ?? '') ?>" data-ver-in<?= $needVer ? ' required' : '' ?> /></label>
-          <?php if (m3d_mustardui_on()): ?><label class="rfield"><span class="rlabel">MustardUI <span class="opt" data-ver-opt<?= $needVer ? ' hidden' : '' ?>>optional</span></span>
+          <?php if ($bt = m3d_bug_tool()): ?><label class="rfield"><span class="rlabel"><?= e($bt['name']) ?> <span class="opt" data-ver-opt<?= $needVer ? ' hidden' : '' ?>>optional</span></span>
             <input class="input" name="mui" maxlength="<?= BUG_MAX['short'] ?>" placeholder="its version" value="<?= e($form['mui'] ?? '') ?>" data-ver-in<?= $needVer ? ' required' : '' ?> /></label><?php endif ?>
         </div>
         <label class="rfield"><span class="rlabel">Short Title</span>
@@ -486,9 +535,9 @@ if (!empty($_GET['report'])) {
           <div data-bug-similar-list></div>
         </div>
         <label class="rfield"><span class="rlabel">What Happened?</span>
-          <textarea class="input" name="body" rows="5" required minlength="10" maxlength="<?= BUG_MAX['body'] ?>" placeholder="What did you do, what did you expect, what happened instead?"><?= e($form['body'] ?? '') ?></textarea></label>
+          <textarea class="input" name="body" rows="5" required minlength="10" maxlength="<?= BUG_MAX['body'] ?>"<?= $emo ?> placeholder="What did you do, what did you expect, what happened instead?"><?= e($form['body'] ?? '') ?></textarea></label>
         <label class="rfield"><span class="rlabel">How Can We See It? <span class="opt">optional</span></span>
-          <textarea class="input" name="steps" rows="3" maxlength="<?= BUG_MAX['steps'] ?>" placeholder="1. Open the file&#10;2. …"><?= e($form['steps'] ?? '') ?></textarea></label>
+          <textarea class="input" name="steps" rows="3" maxlength="<?= BUG_MAX['steps'] ?>"<?= $emo ?> placeholder="1. Open the file&#10;2. …"><?= e($form['steps'] ?? '') ?></textarea></label>
         <div class="rfield"><span class="rlabel">Screenshots or a Video <span class="opt">optional · links</span></span>
           <div class="links-in"><?php for ($i = 0; $i < BUG_LINKS; $i++): ?><input class="input" type="url" name="links[]" maxlength="500" placeholder="<?= $i ? 'Another link…' : 'https://…' ?>" aria-label="Link <?= $i + 1 ?>" value="<?= e($form['links'][$i] ?? '') ?>" /><?php endfor ?></div>
           <p class="rhelp"><?php if ($S['host'] !== ''): ?>Upload them to <a href="<?= e($S['host']) ?>" target="_blank" rel="noopener"><?= e(preg_replace('#^https?://(www\.)?#', '', rtrim($S['host'], '/'))) ?></a> (or any other site) and paste the links here.<?php else: ?>Upload them to any image or video site and paste the links here.<?php endif ?></p>
@@ -531,8 +580,10 @@ $f = [
     // '' = Open, the default (like GitHub); 'all' = every status
     'status' => in_array($_GET['status'] ?? '', ['all', 'fixed', 'closed', 'following', ...($creator ? ['unseen', 'pending', 'hidden'] : [])], true) ? (string) $_GET['status'] : '',
     'by'     => $creator && preg_match('/^[0-9A-Za-z_-]{1,40}$/D', bug_str($_GET['by'] ?? '')) ? (string) $_GET['by'] : '',   // one reporter's reports (the creator)
-    'kind'   => in_array($_GET['kind'] ?? '', ['models', 'outfits', 'other'], true) ? (string) $_GET['kind'] : '',
-    'about'  => preg_match('/^(models|outfits):[a-z0-9-]{1,64}$|^(mustardui|site|other)$/D', bug_str($_GET['about'] ?? '')) ? (string) $_GET['about'] : '',
+    'kind'   => in_array($_GET['kind'] ?? '', ['models', 'outfits', 'scenes', 'other'], true) ? (string) $_GET['kind'] : '',
+    // one or several (?about=a,b: the reports about any of them); picked in the search field
+    'about'  => implode(',', array_slice(array_values(array_unique(array_filter(explode(',', bug_str($_GET['about'] ?? '')),
+        fn($a) => (bool) preg_match('/^(models|outfits|scenes):[a-z0-9-]{1,64}$|^(mustardui|site|other)$/D', $a)))), 0, 20)),
     'tag'    => is_string($_GET['tag'] ?? null) && isset($tags[$_GET['tag']]) ? $_GET['tag'] : '',
     'mine'   => $p && in_array($_GET['mine'] ?? '', ['sent', 'metoo'], true) ? (string) $_GET['mine'] : '',
     'sort'   => in_array($_GET['sort'] ?? '', ['metoo', 'active'], true) ? (string) $_GET['sort'] : '',
@@ -540,14 +591,14 @@ $f = [
 ];
 $myCode = $p ? m3d_like_code((string) $p['id']) : '';
 $all = array_values(array_filter(m3d_bugs(), fn($b) => m3d_bug_visible($b, $p)));
-$kindOf = fn($b) => in_array($k = m3d_bug_about_parts((string) ($b['about'] ?? ''))[0], ['models', 'outfits'], true) ? $k : 'other';
+$kindOf = fn($b) => in_array($k = m3d_bug_about_parts((string) ($b['about'] ?? ''))[0], M3D_ITEM_KINDS, true) ? $k : 'other';
 $statusOf = fn($b) => in_array($b['status'] ?? 'new', BUG_OPEN, true) ? 'open' : (string) $b['status'];
 $fold = 'm3d_fold';
 // everything but the status: the status chips count inside the other filters
 $base = array_values(array_filter($all, function ($b) use ($f, $kindOf, $myCode, $p, $fold, $creator) {
     if ($f['by'] !== '' && (string) ($b['by'] ?? '') !== $f['by']) return false;
     if ($f['kind'] !== '' && $kindOf($b) !== $f['kind']) return false;
-    if ($f['about'] !== '' && ($b['about'] ?? '') !== $f['about']) return false;
+    if ($f['about'] !== '' && !in_array((string) ($b['about'] ?? ''), explode(',', $f['about']), true)) return false;
     if ($f['tag'] !== '' && !in_array($f['tag'], (array) ($b['tags'] ?? []), true)) return false;
     if ($f['mine'] === 'sent' && (string) ($b['by'] ?? '') !== (string) $p['id']) return false;
     if ($f['mine'] === 'metoo' && !in_array($myCode, (array) ($b['metoo'] ?? []), true)) return false;
@@ -593,7 +644,19 @@ $aboutNames = [];
 foreach ($all as $b) { $k = (string) ($b['about'] ?? 'other'); $aboutNames[$k] ??= $k === 'other' ? 'Other' : m3d_bug_about($b)['name']; }   // "other" also holds deleted items' reports: never one of their names
 asort($aboutNames, SORT_NATURAL | SORT_FLAG_CASE);
 $usedTags = array_filter($tags, fn($id) => array_filter($all, fn($b) => in_array((string) $id, (array) ($b['tags'] ?? []), true)), ARRAY_FILTER_USE_KEY);
-$chip = fn(string $label, array $q, bool $on, string $extra = '') => '<a class="chip" href="' . e(bugs_url($q, $cur)) . '" aria-pressed="' . ($on ? 'true' : 'false') . '">' . $extra . $label . '</a>';
+// $pick / $value: the Filters panel's chips, which the search field suggests and shows as tags (bugTagSearch() in site.js; tagSearch()'s
+// data-pick / data-value / data-default, as chip_row()'s); a chip stays a link to its address
+$chip = fn(string $label, array $q, bool $on, string $extra = '', string $pick = '', ?string $value = null, string $attrs = '') => '<a class="chip' . ($attrs !== '' && str_contains($attrs, 'data-tag-only') ? ' chip-av' : '') . '" href="' . e(bugs_url($q, $cur)) . '" aria-pressed="' . ($on ? 'true' : 'false') . '"'
+    . ($pick !== '' ? ' data-pick="' . e($pick) . '" data-value="' . e((string) $value) . '"' . ($value === '' ? ' data-default' : '') : '') . $attrs . '>' . $extra . $label . '</a>';
+$aboutOn = $f['about'] !== '' ? explode(',', $f['about']) : [];
+// each item's chip: hidden in the panel until picked (the menu lists them all), suggested by the search field with its picture
+$aboutFace = function (string $k) {
+    [$kind, $slug] = m3d_bug_about_parts($k);
+    $it = $slug !== '' ? m3d_item($kind, $slug) : null;
+    if ($it && $kind === 'models') return char_avatar(['model' => $it, 'name' => (string) $it['name']], 22);
+    if ($it && m3d_can_view($kind, $it) && ([$src, $hid] = card_pic($kind, $it)) && $src !== '') return '<img class="g-av' . ($hid ? ' g-av-blur' : '') . '" src="' . e($hid ? $src : (avatar_src($src) ?: $src)) . '" alt="" width="22" height="22" loading="lazy" decoding="async" />';
+    return '';
+};
 
 $byName = '';
 if ($f['by'] !== '') foreach ($all as $b) if ((string) ($b['by'] ?? '') === $f['by'] && ($b['name'] ?? '') !== '') { $byName = (string) $b['name']; break; }
@@ -604,13 +667,12 @@ layout_start('Bug Reports', 'Known bugs in the models, accessories and website o
     <?= $offNote ?>
     <header class="bugs-head">
       <div>
-        <p class="eyebrow">Help</p>
         <h1>Bug Reports</h1>
         <p class="lead lead-sm">Something broken? Look here first: if it’s already reported, press <b>Me Too</b> so it gets fixed sooner.</p>
       </div>
       <div class="bugs-acts">
         <?php if ($creator): ?><button type="button" class="btn btn-ghost" data-tags-open>Edit Tags</button><a class="btn btn-ghost" href="/admin/settings.php?tab=features#bugs">Settings</a><?php endif ?>
-        <a class="btn btn-primary" href="/bugs/report/<?= $f['about'] !== '' ? '?about=' . e(rawurlencode($f['about'])) : '' ?>"><?= bug_icon('bug') ?>Report a Bug</a>
+        <a class="btn btn-primary" href="/bugs/report/<?= count($aboutOn) === 1 ? '?about=' . e(rawurlencode($aboutOn[0])) : '' ?>"><?= bug_icon('bug') ?>Report a Bug</a>
       </div>
     </header>
     <?php bug_result_flash($creator) // back from a batch change (admin/bugs.php) or a deleted report ?>
@@ -629,32 +691,31 @@ layout_start('Bug Reports', 'Known bugs in the models, accessories and website o
 
     <form class="filters hfilters bugs-filters" role="search" action="/bugs/" method="get">
       <?php foreach ($cur as $k => $v) if ($k !== 'q') echo '<input type="hidden" name="' . e($k) . '" value="' . e($v) . '" />' ?>
-      <input class="input search" type="search" name="q" value="<?= e($f['q']) ?>" placeholder="Search bug reports…" aria-label="Search bug reports" />
-      <?= filter_toggle('bug-filters', $active > 0, $active) ?>
+      <?= tag_search('Search bug reports…', 'Search bug reports', null, '', 'q', $f['q']) ?>
+      <?= filter_toggle('bug-filters', false, $active) ?>
     </form>
-    <div class="filter-panel" id="bug-filters"<?= $active ? '' : ' hidden' ?>>
+    <div class="filter-panel" id="bug-filters" hidden><?php // closed until the Filters button opens it: what is picked shows as tags in the search field ?>
       <div class="chips chips-gen" role="group" aria-label="Sort"><span class="chips-lbl">Sort</span>
-        <?= $chip('Newest', ['sort' => ''], $f['sort'] === '') ?><?= $chip('Most “Me Too”', ['sort' => 'metoo'], $f['sort'] === 'metoo') ?><?= $chip('Recently Active', ['sort' => 'active'], $f['sort'] === 'active') ?>
+        <?= $chip('Newest', ['sort' => ''], $f['sort'] === '', '', 'sort', '') ?><?= $chip('Most “Me Too”', ['sort' => 'metoo'], $f['sort'] === 'metoo', '', 'sort', 'metoo') ?><?= $chip('Recently Active', ['sort' => 'active'], $f['sort'] === 'active', '', 'sort', 'active') ?>
       </div>
       <div class="chips chips-gen" role="group" aria-label="About"><span class="chips-lbl">About</span>
-        <?= $chip('All', ['kind' => '', 'about' => ''], $f['kind'] === '' && $f['about'] === '') ?><?= $chip('Models', ['kind' => 'models', 'about' => ''], $f['kind'] === 'models') ?><?= $chip('Accessories', ['kind' => 'outfits', 'about' => ''], $f['kind'] === 'outfits') ?><?= $chip('Other', ['kind' => 'other', 'about' => ''], $f['kind'] === 'other') ?>
-        <?php if ($aboutNames): ?>
-          <form class="bug-about-pick" action="/bugs/" method="get" data-bug-about-pick>
-            <?php foreach ($cur as $k => $v) if (!in_array($k, ['about', 'kind'], true)) echo '<input type="hidden" name="' . e($k) . '" value="' . e($v) . '" />' ?>
-            <select class="input input-sm" name="about" aria-label="Pick a model or accessory" data-about-picker><option value="">Pick a model or accessory…</option><?php foreach ($aboutNames as $k => $name) echo bug_about_option((string) $k, $name, $k === $f['about'], (string) $aboutCount[$k]) ?></select>
-            <noscript><button class="btn btn-ghost btn-sm">Show</button></noscript>
-          </form>
-        <?php endif ?>
+        <?= $chip('All', ['kind' => '', 'about' => ''], $f['kind'] === '' && $f['about'] === '', '', 'kind', '') ?><?= $chip('Models', ['kind' => 'models', 'about' => ''], $f['kind'] === 'models', '', 'kind', 'models') ?><?= $chip('Accessories', ['kind' => 'outfits', 'about' => ''], $f['kind'] === 'outfits', '', 'kind', 'outfits') ?><?= m3d_scenes_on() ? $chip('Scenes', ['kind' => 'scenes', 'about' => ''], $f['kind'] === 'scenes', '', 'kind', 'scenes') : '' ?><?= $chip('Other', ['kind' => 'other', 'about' => ''], $f['kind'] === 'other', '', 'kind', 'other') ?>
       </div>
+      <?php if ($aboutNames): // the items, picked only in the search field (several at once: the reports about any of them), never shown in the panel ?>
+        <div class="chips chips-gen" role="group" aria-label="Items" data-multi data-search-only><span class="chips-lbl">Items</span>
+          <?php foreach ($aboutNames as $k => $name) { $k = (string) $k; $on = in_array($k, $aboutOn, true);
+              echo $chip(e($name) . ' <span>' . (int) $aboutCount[$k] . '</span>', ['kind' => '', 'about' => implode(',', $on ? array_diff($aboutOn, [$k]) : [...$aboutOn, $k])], $on, $aboutFace($k), 'about', $k, ' data-tag-only'); } ?>
+        </div>
+      <?php endif ?>
       <?php if ($usedTags): ?>
         <div class="chips chips-gen" role="group" aria-label="Tags"><span class="chips-lbl">Tags</span>
-          <?= $chip('All', ['tag' => ''], $f['tag'] === '') ?>
-          <?php foreach ($usedTags as $id => [$name, $c]) echo $chip(e($name), ['tag' => (string) $id], $f['tag'] === (string) $id, '<i class="sdot" style="--c:' . e($c) . '"></i>') ?>
+          <?= $chip('All', ['tag' => ''], $f['tag'] === '', '', 'tag', '') ?>
+          <?php foreach ($usedTags as $id => [$name, $c]) echo $chip(e($name), ['tag' => (string) $id], $f['tag'] === (string) $id, '<i class="sdot" style="--c:' . e($c) . '"></i>', 'tag', (string) $id) ?>
         </div>
       <?php endif ?>
       <?php if ($p): ?>
         <div class="chips chips-gen" role="group" aria-label="Mine"><span class="chips-lbl">Mine</span>
-          <?= $chip('All', ['mine' => ''], $f['mine'] === '') ?><?= $chip('Reported by Me', ['mine' => 'sent'], $f['mine'] === 'sent') ?><?= $chip('With My “Me Too”', ['mine' => 'metoo'], $f['mine'] === 'metoo') ?>
+          <?= $chip('All', ['mine' => ''], $f['mine'] === '', '', 'mine', '') ?><?= $chip('Reported by Me', ['mine' => 'sent'], $f['mine'] === 'sent', '', 'mine', 'sent') ?><?= $chip('With My “Me Too”', ['mine' => 'metoo'], $f['mine'] === 'metoo', '', 'mine', 'metoo') ?>
         </div>
       <?php endif ?>
     </div>
@@ -673,7 +734,7 @@ layout_start('Bug Reports', 'Known bugs in the models, accessories and website o
       <?php if ($creator): ?><form method="post" action="/admin/bugs.php" data-bug-batch><input type="hidden" name="csrf" value="<?= e(m3d_csrf()) ?>" /><input type="hidden" name="do" value="batch" /><input type="hidden" name="back" value="<?= e(bugs_url(['_page' => $page > 1 ? $page : ''], $cur)) ?>" /><?php endif ?>
       <ol class="bug-list<?= $creator ? ' can-tick' : '' ?>">
         <?php foreach ($list as $b): $a = m3d_bug_about($b); $st = (string) ($b['status'] ?? 'new'); $done = !in_array($st, BUG_OPEN, true);
-          $me = count((array) ($b['metoo'] ?? [])); $com = count(array_filter((array) ($b['log'] ?? []), fn($x) => ($x['t'] ?? '') === 'c'));
+          $me = count((array) ($b['metoo'] ?? [])); $com = count(array_filter((array) ($b['log'] ?? []), fn($x) => ($x['t'] ?? '') === 'c' && empty($x['hid'])));
           $unseen = $creator && empty($b['seen']); ?>
           <li><?php if ($creator): ?><label class="bug-tick"><input type="checkbox" name="ns[]" value="<?= (int) $b['n'] ?>" aria-label="Select #<?= (int) $b['n'] ?>" /></label><?php endif ?><a class="bug-row<?= $done ? ' is-done' : '' ?><?= $st === 'fixed' ? ' is-fixed' : ($st === 'closed' ? ' is-closed' : '') ?><?= $pin($b) ? ' is-pinned' : '' ?><?= $news($b) || $unseen ? ' has-new' : '' ?>" href="/bugs/<?= (int) $b['n'] ?>/<?= $news($b) ? '#new' : '' ?>">
             <?= bug_about_pic($a, 'bpic bug-pic') ?>

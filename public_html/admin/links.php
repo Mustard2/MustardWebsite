@@ -65,7 +65,7 @@ if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST' && str_starts_with((string) ($
         if ($to === $from[0]['url']) admin_json(['ok' => false, 'error' => 'That is the same address.'], 400);
         $n = lc_replace_everywhere($from[0]['url'], $to);
         if ($n === null) admin_json(['ok' => false, 'error' => 'Not saved: the data files couldn’t be written. Nothing else was changed after that.'], 500);
-        if ($n === 0) admin_json(['ok' => false, 'error' => 'A patron render’s link must be a web address starting with https://'], 400);   // only renders use it, and they take no "s4:" link
+        if ($n === 0) admin_json(['ok' => false, 'error' => 'A patron render’s link must be a web address starting with https://' . (m3d_s4_on() ? ' or a file in your S4 bucket' : '')], 400);   // only renders use it: "s4:" only while S4 downloads are on
         admin_json(['ok' => true, 'n' => $n, 'h' => md5($to), 'listed' => lc_group(lc_host($to)) !== 'other' || lc_site_added($to) || (lc_renders_on() && isset($from[0]['render']))]);
     }
     if (is_array($in) && isset($in['unfull'])) {   // Remove Link on a patron render's dead row: the render and its Gallery copy lose that link (the render stays)
@@ -105,13 +105,13 @@ if (admin_form_post('auto-check')) {
     if ($every < 1 || $every > LC_EVERY_MAX) $error = 'Days: a number from 1 to ' . LC_EVERY_MAX . '.';
     elseif (lc_settings_save(['auto' => $on, 'every' => $every])) {
         if ($on) lc_set_next(0);   // start at the next page
-        $done = $on ? 'Automatic check on: every ' . m3d_plural($every, 'day') . '.' : 'Automatic check off.';
+        $done = 'Automatic check saved.';
     } else $error = m3d_write_error('settings');
 }
 if (admin_form_post('renders-check')) {
     $open = 'renders';
     $on = !empty($_POST['renders']);
-    if (lc_settings_save(['renders' => $on])) $done = $on ? 'Patron render links are checked too.' : 'Patron render links aren’t checked any more.';
+    if (lc_settings_save(['renders' => $on])) $done = 'Patron renders saved.';
     else $error = m3d_write_error('settings');
 }
 if (admin_form_post('other-sites')) {
@@ -123,7 +123,7 @@ if (admin_form_post('other-sites')) {
     }
     if ($bad) $error = 'Not a website: ' . implode(', ', array_slice($bad, 0, 5)) . '. Write one per line, like patreon.com.';
     elseif (count($list) > LC_SITES_MAX) $error = 'At most ' . LC_SITES_MAX . ' websites.';
-    elseif (lc_settings_save(['sites' => array_keys($list)])) $done = $list ? 'Other websites saved.' : 'Only MEGA and transfer.it links are checked now.';
+    elseif (lc_settings_save(['sites' => array_keys($list)])) $done = 'Other websites saved.';
     else $error = m3d_write_error('settings');
 }
 
@@ -155,7 +155,7 @@ admin_start('Link Check', 'models');
     </div>
     <?= assets_menu('links') ?>
 
-    <?php $rep = (int) m3d_get_text('replaced'); if ($rep > 0 && !$done && !$error) $done = 'Link replaced in ' . m3d_plural($rep, 'place') . '.' . (m3d_get_text('listed') === '0' ? ' Its website isn’t checked here: add it under Other Websites to check it.' : ''); ?>
+    <?php $rep = (int) m3d_get_text('replaced'); if ($rep > 0 && !$done && !$error) $done = 'Link replaced.'; ?>
     <?php admin_result($done, $error) ?>
 
     <?php if (!$links): ?>

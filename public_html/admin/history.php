@@ -6,5 +6,5 @@ require __DIR__ . '/_history.php';
 admin_require($M3D, true);
 m3d_session_release();
 
-$kind = ($_GET['kind'] ?? '') === 'outfits' ? 'outfits' : 'models';
+$kind = in_array($_GET['kind'] ?? '', M3D_ITEM_KINDS, true) ? (string) $_GET['kind'] : 'models';
 admin_json(['ok' => true, 'rows' => history_rows($kind, m3d_get_text('slug'))]);

@@ -13,9 +13,9 @@ const SETUP_FEATURES = [
     'blog'      => ['Blog', 'News, works in progress and tutorials at /blog/, written in Admin → Blog.'],
     'bugs'      => ['Bug Reports', 'Visitors report problems with your models at /bugs/, and you mark them fixed.'],
     'comments'  => ['Comments', 'Logged-in patrons comment under model, accessory and blog post pages.'],
+    'ideas'     => ['Ideas', 'Patrons suggest outfits, features and fixes for each model and accessory, and vote on them.'],
     'welcome'   => ['Welcome Page', 'A short tour shown once to new patrons, right after their first login.'],
     'showcase'  => ['Patron Renders', 'Patrons share renders made with your models; you approve each one before it shows.'],
-    'mustardui' => ['MustardUI Page', FEATURE_SWITCHES['mustardui'][1]],
 ];
 
 $needed = m3d_setup_needed();
@@ -128,7 +128,6 @@ header('Content-Type: text/html; charset=utf-8');
 <?= accent_style() ?></head>
 <body class="page-setup">
   <main id="main" class="wrap setup">
-    <p class="eyebrow">First Use</p>
     <h1>Set Up Your Site</h1>
     <ol class="setup-steps">
       <?php foreach ($steps as $n => $label): ?><li class="<?= $n < $step ? 'is-done' : ($n === $step ? 'is-now' : '') ?>"<?= $n === $step ? ' aria-current="step"' : '' ?>><span><?= $n < $step ? '✓' : $n ?></span><?= e($label) ?></li><?php endforeach ?>

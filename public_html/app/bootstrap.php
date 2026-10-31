@@ -326,6 +326,33 @@ function m3d_redirect(string $to, int $code = 302): never
     exit;
 }
 
+/** The small JSON endpoints of auth/ (likes, bookmarks, ignored updates, the bell): the headers of every answer. */
+function m3d_json_headers(): void
+{
+    header('Content-Type: application/json');
+    header('Cache-Control: no-store');
+    header('X-Robots-Tag: noindex');
+}
+
+/** Sends $data as the JSON answer and stops (admin_json() too). */
+function m3d_json_out(array $data, int $code = 200): never
+{
+    http_response_code($code);
+    header('Content-Type: application/json');
+    echo json_encode($data, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+    exit;
+}
+
+/** A JSON POST endpoint's start: the headers, 503 during maintenance, 405 for anything but a POST; then the body's object ([] when none). */
+function m3d_json_post(): array
+{
+    m3d_json_headers();
+    if (m3d_maintenance_blocks()) m3d_json_out(['error' => 'The website is in maintenance, try again later.'], 503);
+    if (($_SERVER['REQUEST_METHOD'] ?? 'GET') !== 'POST') m3d_json_out(['error' => 'Send a POST.'], 405);
+    $in = json_decode((string) file_get_contents('php://input'), true);
+    return is_array($in) ? $in : [];
+}
+
 /** Only allow returning to a path on this site (blocks open redirects). */
 function m3d_safe_return(mixed $path, string $fallback = '/'): string   // mixed: ?return[]= from a crafted address is an array
 {
@@ -489,7 +516,7 @@ function m3d_identity_url(bool $ownCampaign = false): string
 {
     return M3D_PATREON . '/api/oauth2/v2/identity?' . http_build_query([
         'include'        => 'memberships,memberships.campaign,memberships.currently_entitled_tiers' . ($ownCampaign ? ',campaign' : ''),
-        'fields[user]'   => 'full_name,vanity',
+        'fields[user]'   => 'full_name,vanity' . (m3d_avatars_on() ? ',image_url,thumb_url' : ''),   // the profile picture (image_url: the big one), only while they are on (app/avatars.php)
         'fields[member]' => 'patron_status,last_charge_status,last_charge_date,pledge_relationship_start,campaign_lifetime_support_cents,currently_entitled_amount_cents,pledge_cadence',
         'fields[tier]'   => 'title,amount_cents',
         'fields[campaign]' => 'currency',
@@ -641,7 +668,7 @@ function m3d_evaluate_identity(array $identity, array $cfg, ?array $events = nul
     $user = $identity['data'] ?? [];
     $id = (string) ($user['id'] ?? '');
     $name = m3d_clean_name((string) ($user['attributes']['full_name'] ?? ''));
-    $out = ['access' => false, 'reason' => 'not-patron', 'id' => $id, 'name' => $name, 'tiers' => [], 'member' => false,
+    $out = ['access' => false, 'reason' => 'not-patron', 'id' => $id, 'name' => $name, 'pic' => m3d_avatar_src_clean($user['attributes']['image_url'] ?? null) ?: m3d_avatar_src_clean($user['attributes']['thumb_url'] ?? null), 'tiers' => [], 'member' => false,
         'status' => null, 'since' => null, 'total_cents' => 0, 'entitled_cents' => 0, 'cadence' => null,
         'last_charge_date' => null, 'last_charge_status' => null, 'currency' => null, 'tier_list' => []];
 
@@ -938,18 +965,21 @@ function m3d_check_requirements(array $item, ?array $patron): array
     return ['ok' => $tierOk && $mtOk, 'unknown' => !$owner && !$known, 'rows' => $rows, 'mode' => $r['mode'], 'tier_ok' => $tierOk, 'mt_ok' => $mtOk, 'missing' => $missing];
 }
 
-// ── Visibility of a model/outfit: public (default) | blurred | blurred-patrons | password | draft ──
+// ── Visibility of a model/outfit: public (default) | blurred | blurred-patrons | blurred-eligible | password | draft ──
 //   blurred:  listed and readable, but every picture is replaced by a tiny blurred copy (blur_src(): the real file never reaches the page)
 //   blurred-patrons: the same for visitors, but paying patrons (and admins) see the real pictures
+//   blurred-eligible: the same, but only paying patrons who also meet the item's requirements (tier, months, total) see them
 //   password: the page and its downloads open after the password (cookie m3d_unlock); listed with a blurred picture unless 'unlisted'
 //   draft:    only admins see it; 404 for everyone else
 const M3D_VISIBILITY = [
     'public'   => 'Public',
     'blurred'  => 'Blurred Pictures (Teaser)',
     'blurred-patrons' => 'Blurred Pictures, Clear for Patrons',
+    'blurred-eligible' => 'Blurred Pictures, Clear When Eligible',
     'password' => 'Password Protected',
     'draft'    => 'Draft (Hidden)',
 ];
+const M3D_VIS_BLURRED = ['blurred', 'blurred-patrons', 'blurred-eligible'];   // listed, readable, pictures blurred for some or all
 const M3D_UNLOCK_COOKIE = 'm3d_unlock';
 const M3D_UNLOCK_DAYS = 30;
 
@@ -962,7 +992,7 @@ function m3d_visibility(array $item): string
 /** Public or blurred: in the catalogs and the sitemap, announced on Discord, shows updates (not draft or password, not before its patrons date). */
 function m3d_is_open(array $item): bool
 {
-    return in_array(m3d_visibility($item), ['public', 'blurred', 'blurred-patrons'], true) && m3d_release_phase($item) !== 'soon';
+    return in_array(m3d_visibility($item), ['public', ...M3D_VIS_BLURRED], true) && m3d_release_phase($item) !== 'soon';
 }
 
 // ── Release dates (editor → Access → Release dates): patronsFrom / publicFrom (UTC, ISO), releaseBefore: hidden | soon ──
@@ -1056,7 +1086,7 @@ function m3d_release_when(int $ts, bool $time = true): string
 function m3d_release_events(?array $only = null): array
 {
     $out = [];
-    foreach (['models', 'outfits'] as $kind) {
+    foreach (M3D_ITEM_KINDS as $kind) {
         if ($only !== null && $only[0] !== $kind) continue;
         foreach ($only !== null ? $only[1] : m3d_items($kind) as $it) {
             $r = m3d_release($it);
@@ -1122,6 +1152,28 @@ function m3d_with_lock(string $name, callable $job): void
     }
 }
 
+/** When the weekly automatic backup is next due (unix time) is kept in this tiny file, so pages don't list the backups folder. */
+function m3d_backup_next_file(): string
+{
+    return M3D_PRIVATE . '/backups/.auto-backup-next';
+}
+
+/**
+ * Called on every public page: once the weekly automatic backup is due, it is made after the page is sent (bk_auto_run() in
+ * admin/_backup.php), so it doesn't wait for an admin visit. Where the job would hold the page (no PHP-FPM / LiteSpeed),
+ * only the admin pages make it (admin_auto_backup()).
+ */
+function m3d_backup_tick(): void
+{
+    if (!m3d_can_finish_early()) return;
+    $f = m3d_backup_next_file();
+    if (is_file($f) && (int) @file_get_contents($f) > time()) return;
+    m3d_after_response(function () {
+        require_once M3D_SITE . '/admin/_backup.php';
+        bk_auto_run();
+    });
+}
+
 /** Called on every public page: when a release date has passed, posts its Discord message after the page is sent. */
 function m3d_release_tick(): void
 {
@@ -1149,7 +1201,6 @@ function m3d_release_run(): void
             foreach ($due as [$kind, $slug, $w]) {
                 $item = m3d_item($kind, $slug);
                 if (!$item || !m3d_discord_on() || !m3d_is_open($item)) continue;
-                if ($kind === 'models' && m3d_status($item) === 'in-development') continue;   // not downloadable: nothing to announce yet
                 if ($w !== 'e') m3d_discord_after_save($kind, [['visibility' => 'draft'] + $item], [$item]);   // as if just published (posts only a version not sent yet)
                 elseif (m3d_release_phase($item) === 'free') m3d_discord_free($kind, $item);
             }
@@ -1178,7 +1229,7 @@ function m3d_release_in(int $ts): string
 function m3d_unlock_sig(string $kind, array $item): string
 {
     $key = m3d_secret('unlock');
-    $k = $kind === 'outfits' ? 'o' : 'm';
+    $k = M3D_KIND_CODES[$kind] ?? 'm';
     return $k . '.' . $item['slug'] . '.' . substr(hash_hmac('sha256', $k . '|' . $item['slug'] . '|' . ($item['passwordHash'] ?? ''), $key), 0, 20);
 }
 
@@ -1198,7 +1249,7 @@ const PW_TRIES_SECS = 600;
  * Counts a password try for one item, before it is checked (so tries sent side by side are counted too): false, counting nothing,
  * when this visitor had PW_TRIES_MAX tries on the item in the last PW_TRIES_SECS. $undo takes this request's try back (the password was right).
  * Counted per patron (Pi): a logged-in visitor by their like code, so someone guessing never locks a patron out; visitors not logged in
- * share one count per item. private/cache/pw-tries.json = {"m:slug" | "o:slug" | "m:slug:<like code>": [unix…]}: times only, gone after
+ * share one count per item. private/cache/pw-tries.json = {"m:slug" | "o:slug" | "m:slug:<like code>" | "lm:slug:<link n>…": [unix…]}: times only, gone after
  * PW_TRIES_SECS (privacy.php section 6). Can't count = true.
  */
 function m3d_pw_try(string $kind, string $slug, bool $undo = false): bool
@@ -1219,7 +1270,7 @@ function m3d_pw_try(string $kind, string $slug, bool $undo = false): bool
             $times = array_values(array_filter((array) $times, fn($t) => is_int($t) && $t > $cut));
             if ($times) $new[(string) $k] = $times;
         }
-        $key = ($kind === 'outfits' ? 'o:' : 'm:') . $slug . $who;
+        $key = (M3D_KIND_CODES[$kind] ?? $kind) . ':' . $slug . $who;   // a kind without a code (a download link's 'lm'): as given
         $ok = count($new[$key] ?? []) < PW_TRIES_MAX;
         if ($undo) { if (!empty($new[$key])) array_pop($new[$key]); }
         elseif ($ok) $new[$key][] = time();
@@ -1244,14 +1295,54 @@ function m3d_unlock(string $kind, array $item, string $password): ?bool
     if (!password_verify($password, $hash)) return false;
     m3d_pw_try($kind, (string) $item['slug'], true);   // only wrong tries count
     $sig = m3d_unlock_sig($kind, $item);
-    $k = strtok($sig, '.') . '.' . $item['slug'] . '.';
-    // keep other items' entries (dropping an old one for this item), at most 40 so the cookie stays small
-    $list = array_filter(explode(',', (string) ($_COOKIE[M3D_UNLOCK_COOKIE] ?? '')), fn($s) => preg_match('/^[mo]\.[a-z0-9-]+\.[0-9a-f]{20}$/D', $s) && !str_starts_with($s, $k));
+    m3d_unlock_remember($sig, strtok($sig, '.') . '.' . $item['slug'] . '.');   // an older entry of this item goes
+    return true;
+}
+
+/**
+ * Adds an entry to the m3d_unlock cookie: items' ("m.slug.<hmac>") and download links' ("lm.slug.<hmac>") passwords typed. Entries
+ * starting with $drop go, and at most 40 are kept, so the cookie stays small.
+ */
+function m3d_unlock_remember(string $sig, string $drop = ''): void
+{
+    $list = array_filter(explode(',', (string) ($_COOKIE[M3D_UNLOCK_COOKIE] ?? '')), fn($s) => preg_match('/^l?[mos]\.[a-z0-9-]+\.[0-9a-f]{20}$/D', $s) && $s !== $sig && ($drop === '' || !str_starts_with($s, $drop)));
     $list = array_slice(array_values($list), -39);
     $list[] = $sig;
     $value = implode(',', $list);
     setcookie(M3D_UNLOCK_COOKIE, $value, ['expires' => time() + M3D_UNLOCK_DAYS * 86400, 'path' => '/', 'secure' => m3d_is_https(), 'httponly' => true, 'samesite' => 'Lax']);
     $_COOKIE[M3D_UNLOCK_COOKIE] = $value;
+}
+
+/** A download link's own password (the lock on its row in the editor, `pw`): '' = none. Only those who have it download through it. */
+function m3d_link_pw(array $link): string
+{
+    return trim((string) ($link['pw'] ?? ''));
+}
+
+/** Cookie entry proving a download link's password was typed: tied to its address and password, so a new password (or file) asks again. */
+function m3d_link_sig(string $kind, string $slug, array $link): string
+{
+    $k = 'l' . (M3D_KIND_CODES[$kind] ?? 'm');
+    return $k . '.' . $slug . '.' . substr(hash_hmac('sha256', $k . '|' . $slug . '|' . ($link['url'] ?? '') . '|' . m3d_link_pw($link), m3d_secret('unlock')), 0, 20);
+}
+
+/** May this visitor use the link? No password, an admin, or its password typed on this device. */
+function m3d_link_unlocked(string $kind, array $item, array $link): bool
+{
+    if (m3d_link_pw($link) === '' || m3d_is_admin($GLOBALS['M3D'])) return true;
+    return in_array(m3d_link_sig($kind, (string) $item['slug'], $link), explode(',', (string) ($_COOKIE[M3D_UNLOCK_COOKIE] ?? '')), true);
+}
+
+/** Checks a download link's password ($n = its number in /get/); right = remembered in the m3d_unlock cookie. null = too many tries lately. */
+function m3d_link_unlock(string $kind, array $item, array $link, int $n, string $typed): ?bool
+{
+    $pw = m3d_link_pw($link);
+    if ($pw === '') return true;
+    $at = $item['slug'] . ':' . $n;
+    if (!m3d_pw_try('l' . (M3D_KIND_CODES[$kind] ?? 'm'), $at)) return null;
+    if (!hash_equals($pw, trim($typed))) return false;
+    m3d_pw_try('l' . (M3D_KIND_CODES[$kind] ?? 'm'), $at, true);   // only wrong tries count
+    m3d_unlock_remember(m3d_link_sig($kind, (string) $item['slug'], $link));
     return true;
 }
 
@@ -1274,12 +1365,13 @@ function m3d_listed(array $item): bool
 }
 
 /** Pictures replaced by blurred copies: blurred items, "clear for patrons" items for everyone who isn't a paying
- *  patron or admin, and password items still locked for this visitor. */
+ *  patron or admin, "clear when eligible" items for everyone who doesn't also meet their requirements, and password items still locked for this visitor. */
 function m3d_pics_hidden(string $kind, array $item): bool
 {
     return match (m3d_visibility($item)) {
         'blurred'         => true,
         'blurred-patrons' => !m3d_sees_patron_pics(),
+        'blurred-eligible' => !m3d_sees_eligible_pics($item),
         'password'        => !m3d_is_unlocked($kind, $item),
         default           => false,
     };
@@ -1292,7 +1384,16 @@ function m3d_sees_patron_pics(): bool
     return ($p !== null && !empty($p['access'])) || (m3d_is_admin($GLOBALS['M3D']) && !m3d_preview());
 }
 
-/** The models/outfits the catalogs show. */
+/** "Clear when eligible": a paying patron who meets the item's requirements (m3d_check_requirements(): tier, months, total; exceptions
+ *  count, a login too old to check them doesn't), or an admin. An item without requirements = any paying patron, like "clear for patrons". */
+function m3d_sees_eligible_pics(array $item): bool
+{
+    if (!m3d_sees_patron_pics()) return false;
+    $c = m3d_check_requirements($item, m3d_patron($GLOBALS['M3D']));   // an admin not previewing passes as the owner
+    return $c['ok'] && !$c['unknown'];
+}
+
+/** The models/outfits/scenes the catalogs show. */
 function m3d_listed_items(string $kind): array
 {
     return array_values(array_filter(m3d_items($kind), 'm3d_listed'));
@@ -1356,7 +1457,7 @@ function m3d_preview_patron(array $real, array $pv): array
         'last_charge_date' => null, 'last_charge_status' => $tier === 'declined' ? 'Declined' : null,
         'currency' => $real['currency'] ?? null, 'tier_list' => $tier === 'ok' ? [[$title, $price]] : [],
         'checked_at' => time(), 'preview' => true,
-        'preview_dl' => ['models' => max(0, (int) ($pv['dl_models'] ?? 0)), 'outfits' => max(0, (int) ($pv['dl_outfits'] ?? 0))],
+        'preview_dl' => ['models' => max(0, (int) ($pv['dl_models'] ?? 0)), 'outfits' => max(0, (int) ($pv['dl_outfits'] ?? 0)), 'scenes' => max(0, (int) ($pv['dl_scenes'] ?? 0))],
         'preview_updates' => max(0, (int) ($pv['updates'] ?? 0)),
     ];
 }
@@ -1405,8 +1506,8 @@ function m3d_ex_rules(array $x): array
 {
     $out = [];
     foreach (array_values((array) ($x['rules'] ?? [])) as $i => $r) {
-        if (!is_array($r) || !isset(DL_WHAT[$r['what'] ?? '']) || !isset(DL_PERIODS[$r['per'] ?? ''])) continue;
-        $out[] = ['id' => 'x' . $i, 'on' => true, 'max' => max(1, min(999, (int) ($r['max'] ?? 1))), 'what' => $r['what'], 'per' => $r['per'], 'from' => '', 'to' => '', 'tier' => '', 'own' => true];
+        if (!is_array($r) || ($what = m3d_what_clean($r['what'] ?? '')) === null || !isset(DL_PERIODS[$r['per'] ?? ''])) continue;
+        $out[] = ['id' => 'x' . $i, 'on' => true, 'max' => max(0, min(999, (int) ($r['max'] ?? 1))), 'what' => $what, 'per' => $r['per'], 'from' => '', 'to' => '', 'tier' => '', 'own' => true];
     }
     return $out;
 }
@@ -1442,6 +1543,7 @@ const BAN_KINDS = [
     'bugs'     => ['Bug Reports', 'post bug reports'],
     'comments' => ['Comments', 'comment'],
     'renders'  => ['Renders', 'share renders'],
+    'ideas'    => ['Ideas', 'suggest ideas or vote'],
 ];
 const BAN_REASON_MAX = 300;
 
@@ -1486,10 +1588,10 @@ function m3d_ban_url(string $what): string
 }
 
 /**
- * Turns one ban on or off for a Patreon id (the Block buttons of bug reports, comments and renders). A person not in the list
- * yet gets a record with only the ban; removing the last ban of a record that holds nothing else removes the record.
+ * Turns one ban on or off for a Patreon id (the Block buttons of bug reports, comments and renders, the Moderation page's ban window, with
+ * its $reason). A person not in the list yet gets a record with only the ban; removing the last ban of a record that holds nothing else removes the record.
  */
-function m3d_ban_set(string $id, string $what, bool $on, string $name = ''): bool
+function m3d_ban_set(string $id, string $what, bool $on, string $name = '', string $reason = ''): bool
 {
     if (!preg_match('/^\d{1,20}$/D', $id) || !isset(BAN_KINDS[$what]) || in_array($id, m3d_owner_ids($GLOBALS['M3D']), true)) return false;
     $people = m3d_exceptions(true);
@@ -1497,8 +1599,9 @@ function m3d_ban_set(string $id, string $what, bool $on, string $name = ''): boo
     foreach ($people as $i => $x) if ((string) $x['id'] === $id) $at = $i;
     if ($at === null) {
         if (!$on) return true;
-        $people[] = ['id' => $id, 'name' => mb_substr($name, 0, 80), 'note' => '', 'ban' => [$what], 'added' => gmdate('c')];
+        $people[] = ['id' => $id, 'name' => mb_substr($name, 0, 80), 'note' => '', 'ban' => [$what], 'added' => gmdate('c')] + ($reason !== '' ? ['reason' => mb_substr($reason, 0, BAN_REASON_MAX)] : []);
     } else {
+        if ($on && $reason !== '') $people[$at]['reason'] = mb_substr($reason, 0, BAN_REASON_MAX);   // the Moderation page's ban window
         $b = array_diff(m3d_ex_bans($people[$at]), [$what]);
         if ($on) $b[] = $what;
         $people[$at]['ban'] = m3d_ex_bans(['ban' => $b]);
@@ -1566,8 +1669,10 @@ function m3d_log_download(array $cfg, array $patron, string $model, string $labe
 }
 
 // ── Download wait and limits (Admin → Access → Downloads; settings.json → downloads) ──
-//   wait:  seconds of the "Your download starts in…" page before every patron download (0 = off; public links never wait). Enforced by the server with a
-//          signed, time-stamped link (m3d_dl_token): no cookie, no session needed, and the real link is never in the page.
+//   wait:  seconds of the "Your download starts in…" page before every patron download of a model (0 = off; public links never wait). Enforced by the
+//          server with a signed, time-stamped link (m3d_dl_token): no cookie, no session needed, and the real link is never in the page.
+//   waits: {outfits, pics}: the same for accessories and for pictures' full size files (Gallery pictures, model / accessory pictures); absent = `wait`
+//          (m3d_dl_wait()).
 //   rules: [{id, on, max, what: models|outfits|all, per: day|week|month, from, to, tier}]: at most `max` DIFFERENT items per
 //          rolling period for patrons whose months as a patron are >= from (if set) and < to (if set), and whose tier
 //          (m3d_patron_tier(): their most expensive paid tier) costs exactly `tier` cents (if set; '' = any tier). A patron
@@ -1581,14 +1686,41 @@ function m3d_log_download(array $cfg, array $patron, string $model, string $labe
 //   grace: days (0 = off, at most DL_GRACE_MAX): a pledge removed and made again within them keeps its months as a patron (m3d_pledge_since(),
 //          worked out at login).
 const DL_PERIODS = ['day' => [86400, '24 hours'], 'week' => [604800, '7 days'], 'month' => [2592000, '30 days']];   // rolling: "per 7 days", never "this week"
+const DL_WAIT_MAX = 60;    // seconds: the longest download countdown
+const DL_WAIT_KINDS = ['models' => 'Models', 'outfits' => 'Accessories', 'scenes' => 'Scenes', 'pics' => 'Pictures'];   // the countdowns of Access → Downloads (downloads.wait / waits)
 const DL_GRACE_MAX = 30;   // days: the longest grace period between a removed pledge and a new one (m3d_pledge_since())
-const DL_WHAT = ['models' => ['model', 'models'], 'outfits' => ['accessory', 'accessories'], 'all' => ['download', 'downloads']];
+const DL_WHAT = ['models' => ['model', 'models'], 'outfits' => ['accessory', 'accessories'], 'scenes' => ['scene', 'scenes'], 'all' => ['download', 'downloads']];
 
-/** The kinds a limit rule counts ('all' = both). */
+/** A rule's `what` as stored: one kind, several joined by "+" in M3D_ITEM_KINDS order ("models+outfits", Pi: the three icons of Access → Downloads),
+ *  or 'all' when it names every kind. $w = that text in any order, or a list of kinds; null = not a valid choice. */
+function m3d_what_clean(mixed $w): ?string
+{
+    if (is_string($w)) $w = $w === 'all' ? M3D_ITEM_KINDS : explode('+', $w);
+    if (!is_array($w) || !$w) return null;
+    foreach ($w as $k) if (!is_string($k) || !in_array($k, M3D_ITEM_KINDS, true)) return null;
+    $ks = array_values(array_intersect(M3D_ITEM_KINDS, $w));
+    return count($ks) === count(M3D_ITEM_KINDS) ? 'all' : implode('+', $ks);
+}
+
+/** The kinds a limit rule counts ('all' = every kind). */
 function m3d_rule_kinds(array $r): array
 {
-    $w = (string) ($r['what'] ?? 'models');
-    return $w === 'all' ? ['models', 'outfits'] : [$w];
+    $w = m3d_what_clean((string) ($r['what'] ?? 'models')) ?? 'models';
+    return $w === 'all' ? M3D_ITEM_KINDS : explode('+', $w);
+}
+
+/** The kinds a rule counts that the texts name: the shown ones (m3d_kind_shown()), else all of them. */
+function m3d_rule_kinds_named(array $r): array
+{
+    $ks = m3d_rule_kinds($r);
+    return array_values(array_intersect($ks, m3d_shown_kinds())) ?: $ks;
+}
+
+/** Kinds in words: ['models', 'outfits'] → "models and accessories"; $one: "model or accessory". */
+function m3d_kinds_words(array $kinds, bool $one = false): string
+{
+    $w = array_map(fn($k) => DL_WHAT[$k][$one ? 0 : 1] ?? $k, array_values($kinds));
+    return count($w) > 1 ? implode(', ', array_slice($w, 0, -1)) . ($one ? ' or ' : ' and ') . end($w) : (string) ($w[0] ?? '');
 }
 
 /** A limit rule's rolling period: [seconds, "7 days"]. */
@@ -1597,11 +1729,28 @@ function m3d_rule_period(array $r): array
     return DL_PERIODS[$r['per'] ?? 'week'] ?? DL_PERIODS['week'];
 }
 
-/** The word before "unlock" in the texts: "model ", "accessory ", or '' for a rule that counts both. */
+/** The word before "unlock" in the texts: "model ", "accessory ", or '' for a rule that counts several kinds. */
 function m3d_rule_noun(array $r): string
 {
-    $w = (string) ($r['what'] ?? 'models');
-    return $w === 'all' ? '' : (DL_WHAT[$w][0] ?? 'model') . ' ';
+    $ks = m3d_rule_kinds_named($r);
+    return count($ks) > 1 ? '' : DL_WHAT[$ks[0]][0] . ' ';
+}
+
+/** A rule of 0 ("Not included") refusing a download, as a sentence: "Scenes aren’t included in your tier.", "… for patrons with less than 3 months." */
+function m3d_rule_none_text(array $r): string
+{
+    $ks = m3d_rule_kinds_named($r);
+    $what = count($ks) > 1 && m3d_rule_kinds($r) === M3D_ITEM_KINDS ? 'Downloads' : ucfirst(m3d_kinds_words($ks));
+    $from = ((int) ($r['from'] ?? 0)) ?: null;
+    $to = isset($r['to']) && $r['to'] !== '' ? (int) $r['to'] : null;
+    $months = match (true) {
+        $from !== null && $to !== null => " for patrons with $from to " . m3d_plural($to - 1, 'month'),
+        $to !== null                   => ' for patrons with less than ' . m3d_plural($to, 'month'),
+        $from !== null                 => ' for patrons with ' . m3d_plural($from, 'month') . ' or more',
+        default                        => '',
+    };
+    $where = (int) ($r['tier'] ?? 0) > 0 ? ' in your tier' : ($months === '' ? (!empty($r['own']) ? ' for you' : ' in your membership') : '');
+    return "$what aren’t included$where$months.";
 }
 
 /** Of m3d_check_limits() rows: the tightest (fewest unlocks left), or null. */
@@ -1612,19 +1761,32 @@ function m3d_tightest_row(array $rows): ?array
     return $t;
 }
 
-/** Of m3d_check_limits() rows: the full one that frees up last, which says when the next unlock comes (every full rule must free up). */
+/** Of m3d_check_limits() rows: the full one that frees up last, which says when the next unlock comes (every full rule must free up);
+ *  a rule of 0 ("Not included", never frees up) first. */
 function m3d_blocking_row(array $rows): ?array
 {
     $full = array_values(array_filter($rows, fn($x) => $x['used'] >= $x['max']));
-    usort($full, fn($a, $b) => ($b['next'] ?? 0) <=> ($a['next'] ?? 0));
+    usort($full, fn($a, $b) => [$a['max'] > 0, -($a['next'] ?? 0)] <=> [$b['max'] > 0, -($b['next'] ?? 0)]);
     return $full[0] ?? null;
 }
 
 function m3d_dl_settings(): array
 {
     $d = m3d_settings()['downloads'] ?? [];
-    return ['wait' => max(0, min(60, (int) ($d['wait'] ?? 10))), 'rules' => array_values(array_filter((array) ($d['rules'] ?? []), 'is_array')),
+    $secs = fn($v) => max(0, min(DL_WAIT_MAX, (int) $v));
+    $wait = $secs($d['wait'] ?? 10);
+    $w = is_array($d['waits'] ?? null) ? $d['waits'] : [];
+    $waits = ['models' => $wait];
+    foreach (['outfits', 'scenes', 'pics'] as $k) $waits[$k] = $secs($w[$k] ?? $wait);
+    return ['wait' => $wait, 'waits' => $waits, 'rules' => array_values(array_filter((array) ($d['rules'] ?? []), 'is_array')),
             'updates' => !empty($d['updates']), 'cap' => max(0, min(999, (int) ($d['cap'] ?? 0))), 'grace' => max(0, min(DL_GRACE_MAX, (int) ($d['grace'] ?? 0)))];
+}
+
+/** Seconds of the countdown before a patron download of this kind (dl_wait_gate()'s kinds: models, outfits, and stills / pics for pictures). */
+function m3d_dl_wait(string $kind): int
+{
+    $w = m3d_dl_settings()['waits'];
+    return $w[in_array($kind, ['stills', 'pics'], true) ? 'pics' : $kind] ?? $w['models'];
 }
 
 /** Daily download cap (downloads.cap): when this patron is blocked, the time downloads open again (24 hours after the download that
@@ -1731,8 +1893,10 @@ function m3d_dl_done_key(string $code): string
  */
 function m3d_rule_text(array $r, bool $short = false): string
 {
-    $what = isset(DL_WHAT[$r['what'] ?? '']) ? $r['what'] : 'models';
-    $max = max(1, (int) ($r['max'] ?? 1));
+    $ks = m3d_rule_kinds_named($r);
+    $all = count($ks) > 1 && m3d_rule_kinds($r) === M3D_ITEM_KINDS;   // "5 unlocks", "Downloads not included"
+    $none = ucfirst($all ? 'downloads' : m3d_kinds_words($ks)) . ' not included';
+    $max = max(0, (int) ($r['max'] ?? 1));   // 0 = "Not included" (Pi): that kind can't be downloaded by these patrons
     $per = m3d_rule_period($r)[1];
     $tier = (int) ($r['tier'] ?? 0) > 0 ? m3d_tier_label((int) $r['tier']) : '';   // "Fan tier (€5)"
     if ($short) {
@@ -1747,9 +1911,11 @@ function m3d_rule_text(array $r, bool $short = false): string
         };
         $nb = fn(string $t) => str_replace(' ', "\u{a0}", $t);   // "3+ months", "30 days" never split over two lines
         $who = $tier !== '' ? $tier . ($who !== '' ? ' · ' . $nb($who) : '') : $nb($who);   // a long tier name may wrap
-        return $max . "\u{a0}" . ($what === 'all' ? ($max === 1 ? 'unlock' : 'unlocks') : DL_WHAT[$what][$max === 1 ? 0 : 1]) . ' / ' . $nb($per) . ' · ' . $who;
+        if ($max === 0) return $none . ' · ' . $who;
+        return $max . "\u{a0}" . ($all ? ($max === 1 ? 'unlock' : 'unlocks') : implode(' + ', array_map(fn($k) => DL_WHAT[$k][$max === 1 ? 0 : 1], $ks))) . ' / ' . $nb($per) . ' · ' . $who;
     }
-    $text = $max . ' ' . ($what === 'all' ? '' : DL_WHAT[$what][0] . ' ') . ($max === 1 ? 'unlock' : 'unlocks') . ' per ' . $per;
+    $text = $max === 0 ? $none
+        : $max . ' ' . ($all ? '' : m3d_kinds_words($ks, true) . ' ') . ($max === 1 ? 'unlock' : 'unlocks') . ' per ' . $per;
     $from = ((int) ($r['from'] ?? 0)) ?: null;
     $to = isset($r['to']) && $r['to'] !== '' ? (int) $r['to'] : null;
     $who = $tier !== '' ? "$tier patrons" : 'patrons';
@@ -1803,17 +1969,12 @@ function m3d_patron_log(string $patronId, bool $fresh = false): array
     static $cache = [];
     if (isset($cache[$patronId]) && !$fresh) return $cache[$patronId];
     $out = [];
-    $fh = @fopen(m3d_log_file(), 'rb');
-    if (!$fh || $patronId === '') return $out;
-    // plain lines first, parsed only when the patron's id is in them: much faster than parsing the whole log as CSV
-    while (($line = fgets($fh)) !== false) {
-        if (!str_contains($line, $patronId)) continue;
-        $r = m3d_log_cols($line);
+    if ($patronId === '' || !is_file(m3d_log_file())) return $out;
+    foreach (m3d_log_rows($patronId) as $r) {
         if (($r[1] ?? '') !== $patronId || !isset($r[3]) || ($t = strtotime((string) $r[0])) === false) continue;
         [$k, $s] = m3d_log_item_parts($r[3]);
         $out[] = [$t, $k, $s, (string) ($r[5] ?? ''), (string) ($r[4] ?? ''), ($r[6] ?? '') === 'free', ($r[6] ?? '') === 'update', m3d_log_membership($r)];
     }
-    fclose($fh);
     return $cache[$patronId] = $out;
 }
 
@@ -1831,24 +1992,19 @@ function m3d_known_patrons(bool $all = false): array
         if ($newest) $known[$id] = $name; else $known[$id] ??= $name;
         if ($name !== '') $seen[$id][$name] = true;
     };
-    if ($fh = @fopen(m3d_log_file(), 'rb')) {
-        while (($line = fgets($fh)) !== false) {
-            $r = m3d_log_cols($line);
-            if (($r[1] ?? '') !== '') $add((string) $r[1], (string) ($r[2] ?? ''), true);
-        }
-        fclose($fh);
-    }
+    foreach (m3d_log_rows() as $r) if (($r[1] ?? '') !== '') $add((string) $r[1], (string) ($r[2] ?? ''), true);
     foreach (m3d_bugs() as $b) {
         if (($b['by'] ?? '') !== '') $add((string) $b['by'], (string) ($b['name'] ?? ''));
         foreach ((array) ($b['log'] ?? []) as $x) if (($x['t'] ?? '') === 'c' && ($x['by'] ?? '') !== '' && empty($x['admin'])) $add((string) $x['by'], (string) ($x['name'] ?? ''));
     }
     foreach (m3d_comments_flat() as [, , $c]) if (($c['by'] ?? '') !== '' && empty($c['admin'])) $add((string) $c['by'], (string) ($c['name'] ?? ''));
+    foreach (m3d_ideas_flat() as [, , $i]) if (($i['by'] ?? '') !== '' && empty($i['admin'])) $add((string) $i['by'], (string) ($i['name'] ?? ''));
     foreach (m3d_renders() as $r) if (($r['by'] ?? '') !== '') $add((string) $r['by'], (string) ($r['name'] ?? ''));
     foreach (m3d_exceptions() as $x) $add((string) $x['id'], (string) ($x['name'] ?? ''));
     return $all ? $seen : $known;
 }
 
-/** What goes in a "Patreon ID or name" field's suggestion list for one person: "Anna · 12345678" (m3d_find_patrons() reads it back). */
+/** What a "Patreon ID or name" field posts for a person picked from its list (assets/people.js): "Anna · 12345678" (m3d_find_patrons() reads it back). */
 function m3d_patron_pick(string $id, string $name): string
 {
     return $name !== '' && $name !== $id ? $name . ' · ' . $id : $id;
@@ -1878,14 +2034,6 @@ function m3d_find_patrons(string $q, int $max = 30): array
         }
     }
     return array_slice($out, 0, $max);
-}
-
-/** The <option>s of a "Patreon ID or name" field's <datalist>. */
-function m3d_patron_options(): string
-{
-    $h = '';
-    foreach (m3d_known_patrons() as $id => $name) $h .= '<option value="' . e(m3d_patron_pick((string) $id, $name)) . '"></option>';
-    return $h;
 }
 
 /** The membership saved with a patron's newest download that has one (m3d_log_membership()) + 'at' (timestamp of that download), or null. */
@@ -1927,7 +2075,7 @@ function m3d_preview_updates(int $n): array
 {
     if ($n <= 0) return [];
     $out = [];
-    foreach (['models', 'outfits'] as $k) foreach (m3d_listed_items($k) as $it) {
+    foreach (M3D_ITEM_KINDS as $k) foreach (m3d_listed_items($k) as $it) {
         if (!m3d_is_open($it) || m3d_preview_got($it) === '' || ($rel = m3d_changelog_ts((string) (m3d_released_versions($it)[0]['date'] ?? ''))) === null) continue;
         $out[] = [$rel, $k, $it];
     }
@@ -1949,8 +2097,8 @@ function m3d_free_items(): array
     static $out = null;
     if ($out !== null) return $out;
     $out = [];
-    foreach (['models' => m3d_models(), 'outfits' => m3d_outfits()] as $kind => $list) {
-        foreach ($list as $it) if (!empty($it['noLimits'])) $out[$kind . ':' . $it['slug']] = true;
+    foreach (M3D_ITEM_KINDS as $kind) {
+        foreach (m3d_items($kind) as $it) if (!empty($it['noLimits'])) $out[$kind . ':' . $it['slug']] = true;
     }
     return $out;
 }
@@ -2006,11 +2154,11 @@ function m3d_check_limits(?array $patron, ?string $kind = null, ?string $slug = 
             if (!in_array(explode(':', $key, 2)[0], m3d_rule_kinds($r), true)) continue;
             $first[] = $t;
         }
-        $max = max(1, (int) ($r['max'] ?? 1));
+        $max = max(0, (int) ($r['max'] ?? 1));   // 0 = "Not included": never downloads, never frees up
         $ok = $exempt || $free || $owned || count($first) < $max;
         sort($first);
         // when a slot frees up: the oldest counted download leaves the period
-        $next = count($first) >= $max ? $first[count($first) - $max] + $secs : null;
+        $next = $max > 0 && count($first) >= $max ? $first[count($first) - $max] + $secs : null;
         $rows[] = ['rule' => $r, 'text' => m3d_rule_text($r), 'used' => count($first), 'max' => $max, 'ok' => $ok, 'next' => $next];
     }
     return ['ok' => !in_array(false, array_column($rows, 'ok'), true), 'exempt' => $exempt, 'free' => $free, 'owned' => $owned, 'update' => $update, 'rows' => $rows];
@@ -2032,21 +2180,24 @@ function m3d_update_needs_unlock(string $kind, array $item, string $got, int $t)
 /**
  * Downloads left now per kind, from the tightest rule that counts it (header counter, My account): null when no rule
  * applies to this patron (or they're exempt) = unlimited; else ['models' => int|null, 'outfits' => int|null (null = no
- * rule counts that kind), 'next' => ['models' => ts|null, 'outfits' => ts|null] (when a slot frees up, if at 0)].
+ * rule counts that kind), 'next' => ['models' => ts|null, 'outfits' => ts|null] (when a slot frees up, if at 0), 'none' => [kind => true]
+ * (a rule of 0 counts it: "Not included", its number null)].
  */
 function m3d_downloads_left(?array $patron): ?array
 {
     $c = m3d_check_limits($patron);
     if (!$c['rows'] || $c['exempt']) return null;
-    $left = ['models' => null, 'outfits' => null, 'next' => ['models' => null, 'outfits' => null]];
+    $left = ['models' => null, 'outfits' => null, 'scenes' => null, 'next' => ['models' => null, 'outfits' => null, 'scenes' => null], 'none' => []];
     foreach ($c['rows'] as $r) {
         $n = max(0, $r['max'] - $r['used']);
-        foreach (['models', 'outfits'] as $k) {
-            if (!in_array($k, m3d_rule_kinds($r['rule']), true)) continue;
+        foreach (M3D_ITEM_KINDS as $k) {
+            if (!in_array($k, m3d_rule_kinds($r['rule']), true) || !m3d_kind_shown($k)) continue;   // nothing of that kind to unlock: no number
+            if ($r['max'] === 0) { $left['none'][$k] = true; continue; }   // a rule of 0: "Not included", no number either
             $left[$k] = min($left[$k] ?? PHP_INT_MAX, $n);
             if ($n === 0 && $r['next']) $left['next'][$k] = max($left['next'][$k] ?? 0, $r['next']);   // all full rules must free up
         }
     }
+    foreach ($left['none'] as $k => $_) $left[$k] = $left['next'][$k] = null;
     return $left;
 }
 
@@ -2224,7 +2375,7 @@ function m3d_version_url(string $kind, array $item, string $label): string
  */
 function m3d_updates_for(?array $patron): array
 {
-    $out = ['models' => [], 'outfits' => []];
+    $out = ['models' => [], 'outfits' => [], 'scenes' => []];
     // (no updates for someone banned from downloading: they couldn't get them)
     if (!$patron || empty($patron['access']) || m3d_banned($patron, 'download')) return $out;
     foreach (m3d_last_downloads(m3d_patron_history($patron)) as $key => [$t, $got]) {
@@ -2263,7 +2414,8 @@ function m3d_update_codes(array $updates): array
     return $out;
 }
 
-// ── Ignored updates ("Ignore this update", the ✕ on a catalog card's "↑ Update" tag) ──
+// ── Ignored updates ("Ignore this update": the ✕ of an update row in the bell or of the update tag on My Account; one version only.
+// Removing a downloaded item's bookmark hides all its updates instead, app/bell.php → Bookmarks) ──
 // data/ignored.json: {ignored: {patron code (m3d_like_code()): {"kind:slug": version label}}}: no raw ids or names (privacy.php).
 // An entry hides the tag and the account button's dot for that version only: a newer version has another label, so it shows
 // again. Entries no longer matching one of the patron's updates (downloaded since, newer version) go at their next change.
@@ -2279,10 +2431,11 @@ function m3d_ignored_updates(?array $patron): array
     return is_array($mine) ? array_filter($mine, 'is_string') : [];
 }
 
-/** m3d_updates_for() without the ones this patron ignored (catalog tags, the account button's dot). */
+/** m3d_updates_for() without the ones this patron ignored or un-bookmarked (catalog tags, the bell; app/bell.php → Bookmarks). */
 function m3d_updates_shown(?array $patron): array
 {
     $out = m3d_updates_for($patron);
+    foreach (m3d_bookmarks_off($patron) as $key => $_) { [$k, $s] = explode(':', $key, 2); unset($out[$k][$s]); }
     if (!($ign = m3d_ignored_updates($patron))) return $out;
     foreach ($out as $kind => $list) foreach ($list as $slug => $version) if (($ign["$kind:$slug"] ?? null) === $version) unset($out[$kind][$slug]);
     return $out;
@@ -2360,16 +2513,12 @@ function m3d_stats(): array
 
 function m3d_stats_from_log(): array
 {
-    $s = ['since' => gmdate('c'), 'downloads' => ['models' => [], 'outfits' => []]];
-    $fh = @fopen(m3d_log_file(), 'rb');
-    if ($fh) {
-        while (($r = fgetcsv($fh, 0, ',', '"', '')) !== false) {
-            if (count($r) < 4 || $r[3] === '') continue;
-            $s['since'] = min($s['since'], (string) $r[0]);
-            [$kind, $slug] = m3d_log_item_parts($r[3]);
-            $s['downloads'][$kind][$slug]['patrons'] = ($s['downloads'][$kind][$slug]['patrons'] ?? 0) + 1;
-        }
-        fclose($fh);
+    $s = ['since' => gmdate('c'), 'downloads' => ['models' => [], 'outfits' => [], 'scenes' => []]];
+    foreach (m3d_log_rows() as $r) {
+        if (count($r) < 4 || $r[3] === '') continue;
+        $s['since'] = min($s['since'], (string) $r[0]);
+        [$kind, $slug] = m3d_log_item_parts($r[3]);
+        $s['downloads'][$kind][$slug]['patrons'] = ($s['downloads'][$kind][$slug]['patrons'] ?? 0) + 1;
     }
     return $s;
 }
@@ -2554,22 +2703,37 @@ function m3d_log_rename_items(array $map): int
 /** The download log: logs/downloads.csv (date, patreon id, name, item, link label, version, "free" / "update" / empty, then the membership at that download: m3d_log_download(), m3d_log_membership()). */
 function m3d_log_file(): string { return M3D_PRIVATE . '/logs/downloads.csv'; }
 
-/** The log's item column (4th) for a model or accessory: "slug" or "outfit:slug". */
+/** The log's item column (4th) for a model, accessory or scene: "slug", "outfit:slug" or "scene:slug". */
 function m3d_log_item(string $kind, string $slug): string
 {
-    return ($kind === 'outfits' ? 'outfit:' : '') . $slug;
+    return (['outfits' => 'outfit:', 'scenes' => 'scene:'][$kind] ?? '') . $slug;
 }
 
 /** The other way: [kind, slug] of a log item. */
 function m3d_log_item_parts(string $item): array
 {
-    return str_starts_with($item, 'outfit:') ? ['outfits', substr($item, 7)] : ['models', $item];
+    if (str_starts_with($item, 'outfit:')) return ['outfits', substr($item, 7)];
+    if (str_starts_with($item, 'scene:')) return ['scenes', substr($item, 6)];
+    return ['models', $item];
 }
 
 /** A log line's columns. */
 function m3d_log_cols(string $line): array
 {
     return str_getcsv(rtrim($line, "\r\n"), ',', '"', '');
+}
+
+/** The download log's lines as columns (m3d_log_cols()), oldest first; none without a log. $needle: only the lines holding it (a patron's
+ *  id: much faster than parsing the whole log as CSV). */
+function m3d_log_rows(string $needle = ''): Generator
+{
+    $fh = @fopen(m3d_log_file(), 'rb');
+    if (!$fh) return;
+    try {
+        while (($line = fgets($fh)) !== false) if ($needle === '' || str_contains($line, $needle)) yield m3d_log_cols($line);
+    } finally {
+        fclose($fh);
+    }
 }
 
 /**
@@ -2696,11 +2860,54 @@ function m3d_prune_log(array $cfg): void
     @touch($mark);
 }
 
-// ── Data: models (data/models.json), outfits (data/outfits.json) ────────────
+// ── Data: models (data/models.json), outfits (data/outfits.json), scenes (data/scenes.json) ────────────
 // Both kinds share the same shape for downloads:
 //   links: [ { label: "Mega", url: "https://…", access: "patrons" | "public" }, … ]
 // Patron links are never printed on a page: they are reached through /get/… after the tier check.
-const M3D_KINDS = ['models' => 'models', 'outfits' => 'outfits'];
+const M3D_KINDS = ['models' => 'models', 'outfits' => 'outfits', 'scenes' => 'scenes'];
+/** Every kind of item with a page, downloads and a changelog, in menu order (scenes: shown once one is listed, m3d_scenes_on()). */
+const M3D_ITEM_KINDS = ['models', 'outfits', 'scenes'];
+/** One letter per kind: password cookie entries, password tries, picture download addresses (/get/still/<letter>/…). */
+const M3D_KIND_CODES = ['models' => 'm', 'outfits' => 'o', 'scenes' => 's'];
+/** [one, many] of each kind, in the site's texts. */
+const M3D_KIND_WORDS = ['models' => ['model', 'models'], 'outfits' => ['accessory', 'accessories'], 'scenes' => ['scene', 'scenes']];
+
+/** "model", "accessory", "scene" ($many: the plural; $title: "Model", "Accessories"). */
+function m3d_kind_word(string $kind, bool $many = false, bool $title = false): string
+{
+    $w = (M3D_KIND_WORDS[$kind] ?? M3D_KIND_WORDS['models'])[$many ? 1 : 0];
+    return $title ? ucfirst($w) : $w;
+}
+
+/** Does the site show this kind of item: at least one listed (not a draft, unlisted or before its release)? The pages that explain the
+ *  unlocks per kind (My account, the header's unlocks left, the welcome page, /unlocks/) leave the other kinds and their rules out (Pi).
+ *  $stored: any saved at all (the admin's settings show a kind's choices from the first one, so its limits can be set before it is published). */
+function m3d_kind_shown(string $kind, bool $stored = false): bool
+{
+    static $on = [];
+    return $on[$kind][(int) $stored] ??= $stored ? (bool) m3d_items($kind) : (bool) array_filter(m3d_items($kind), 'm3d_listed');
+}
+
+/** The kinds m3d_kind_shown() in menu order, e.g. ['models', 'outfits']. */
+function m3d_shown_kinds(): array
+{
+    return array_values(array_filter(M3D_ITEM_KINDS, fn($k) => m3d_kind_shown($k)));
+}
+
+/** The unlock rules that count a kind the site shows (m3d_kind_shown()): the others have nothing to count, so pages leave them out. */
+function m3d_rules_shown(array $rules): array
+{
+    $kinds = m3d_shown_kinds();
+    return array_values(array_filter($rules, fn($r) => is_array($r) && array_intersect(m3d_rule_kinds($r), $kinds)));
+}
+
+/** Does the site show Scenes (Blender scenes made with the models, catalog /scenes/, pages /scenes/<slug>/)? Always on, but shown only
+ *  once a scene is listed: until then /scenes/ answers 404 except to admins, and the menu, sitemap, account, unlock texts and settings
+ *  leave scenes out. $stored: as m3d_kind_shown()'s. */
+function m3d_scenes_on(bool $stored = false): bool
+{
+    return m3d_kind_shown('scenes', $stored);
+}
 
 /** $fresh: read the file again (a job that worked for a while before saving must not write back an older copy). */
 function m3d_items(string $kind, bool $fresh = false): array
@@ -2728,14 +2935,35 @@ function m3d_outfits(): array { return m3d_items('outfits'); }
 // and every type in use); a missing type = Outfit (everything before accessories existed).
 const M3D_ACCESSORY_TYPES = ['Outfit', 'Hair', 'Necklace', 'Earrings', 'Glasses', 'Shoes', 'Hat', 'Bag'];
 function m3d_accessory_type(array $o): string { $t = trim((string) ($o['type'] ?? '')); return $t !== '' ? $t : 'Outfit'; }
-/** Public page of a model or accessory. */
-function m3d_item_url(string $kind, string $slug): string { return ($kind === 'outfits' ? '/accessories/' : '/models/') . $slug . '/'; }
+/** What an item is, in one word for lists: "Model", the accessory's type ("Outfit", "Hair"…), "Scene". */
+function m3d_item_type(string $kind, array $item): string
+{
+    return match ($kind) { 'outfits' => m3d_accessory_type($item), 'scenes' => 'Scene', default => 'Model' };
+}
+/** Public page of a model, accessory or scene. */
+function m3d_item_url(string $kind, string $slug): string { return (['outfits' => '/accessories/', 'scenes' => '/scenes/'][$kind] ?? '/models/') . $slug . '/'; }
+/** The /get/ address of a download link (auth/get.php): /get/<slug>/<n>/, /get/outfit/<slug>/<n>/, /get/scene/<slug>/<n>/. */
+function m3d_get_url(string $kind, string $slug, int $n): string { return '/get/' . (['outfits' => 'outfit/', 'scenes' => 'scene/'][$kind] ?? '') . $slug . '/' . $n . '/'; }
 function m3d_outfit(string $slug): ?array { return m3d_item('outfits', $slug); }
 
 /** An accessory made for every model (`allModels`, the editor's "All Models" switch): its `models` ticks are kept but not read. */
-function m3d_fits_all(array $o): bool { return !empty($o['allModels']); }
+function m3d_fits_all(array $o): bool { return !empty($o['allModels']) && !m3d_fits_blender($o); }
+/** An accessory made for Blender itself, not for a model (`fits` = 'blender', the editor's Optimized For → Blender; a generic asset): it fits no model. */
+function m3d_fits_blender(array $o): bool { return ($o['fits'] ?? '') === 'blender'; }
 /** Whether an accessory fits a model: one of its ticked models, or every model. */
-function m3d_outfit_fits(array $o, string $modelSlug): bool { return m3d_fits_all($o) || in_array($modelSlug, $o['models'] ?? [], true); }
+function m3d_outfit_fits(array $o, string $modelSlug): bool { return !m3d_fits_blender($o) && (m3d_fits_all($o) || in_array($modelSlug, $o['models'] ?? [], true)); }
+
+/** The version of a model a scene was made with (`modelVers` {model slug: version label}, editor → Models in This Scene); '' = not said. */
+function m3d_scene_ver(array $sc, string $modelSlug): string
+{
+    return trim((string) (((array) ($sc['modelVers'] ?? []))[$modelSlug] ?? ''));
+}
+
+/** Scenes made with a model (its slug among the scene's `models`), in scene catalog order (drafts and unlisted ones left out). */
+function m3d_scenes_for(string $modelSlug): array
+{
+    return array_values(array_filter(m3d_listed_items('scenes'), fn($sc) => in_array($modelSlug, $sc['models'] ?? [], true)));
+}
 
 /** Outfits made for a model (its own and those for all models), in outfit catalog order (drafts and unlisted ones left out). */
 function m3d_outfits_for(string $modelSlug): array

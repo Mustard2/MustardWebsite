@@ -98,6 +98,13 @@ function img_dims(string $url): ?array
     return [(int) $sz[0], (int) $sz[1]];
 }
 
+/** Is a picture of media/ taller than wide? (false when unknown) */
+function img_is_tall(string $url): bool
+{
+    $d = img_dims($url);
+    return $d !== null && $d[1] > $d[0];
+}
+
 /** ' style="aspect-ratio: w / h"' of a picture of media/ ('' when unknown): the gallery row gives it its width before it loads. */
 function img_ratio_style(string $url): string
 {
@@ -484,7 +491,7 @@ function copy_external(string $url, string $folder): string
  * and the browser / phone icons icon-<hex>-{32,180,192}.png (square, the picture centred; the 180 px one, for iPhones, on the
  * site background since they show transparency as black). Returns [logo address, icon code]. media/site/ is never "unused".
  */
-function img_site_logo(string $tmp): array
+function img_site_logo(string $tmp, bool $iconsOnly = false): array
 {
     $info = @getimagesize($tmp);
     if (!$info || !in_array($info[2], [IMAGETYPE_PNG, IMAGETYPE_JPEG, IMAGETYPE_WEBP, IMAGETYPE_GIF], true)) {
@@ -516,7 +523,7 @@ function img_site_logo(string $tmp): array
     if ($lw > $lh * 3) { $lw = $lh * 3; $lh = (int) max(1, round($h * $lw / $w)); }
     $logo = $canvas($lw, $lh);
     imagecopyresampled($logo, $src, 0, 0, 0, 0, $lw, $lh, $w, $h);
-    $save($logo, "$dir/logo-$hex.png");
+    if (!$iconsOnly) $save($logo, "$dir/logo-$hex.png");
     foreach ([32 => null, 192 => null, 180 => [18, 17, 16]] as $size => $bg) {
         $icon = $canvas($size, $size, $bg);
         $pad = $bg ? (int) round($size * .1) : 0;
@@ -526,6 +533,28 @@ function img_site_logo(string $tmp): array
         $save($icon, "$dir/icon-$hex-$size.png");
     }
     return ['/media/site/logo-' . $hex . '.png', $hex];
+}
+
+/** Only the icons (icon-<hex>-{32,180,192}.png) of a logo the server can't read itself: an SVG one, drawn as a PNG by admin.js. Returns the icon code. */
+function img_site_icon(string $tmp): string
+{
+    return img_site_logo($tmp, true)[1];
+}
+
+/** The site icon for Discord's cards (preview_logo()): the 192 px icon at 80 % in the middle of a clear 192 px square, since Discord shows it
+ *  in a fixed box; false when it can't be made (then the icon goes as it is). */
+function img_site_card_icon(string $from, string $to): bool
+{
+    $src = @imagecreatefrompng($from);
+    if (!$src) return false;
+    $c = imagecreatetruecolor(192, 192);
+    imagealphablending($c, false);
+    imagesavealpha($c, true);
+    imagefill($c, 0, 0, imagecolorallocatealpha($c, 0, 0, 0, 127));
+    imagealphablending($c, true);
+    imagecopyresampled($c, $src, 19, 19, 0, 0, 154, 154, imagesx($src), imagesy($src));
+    imagealphablending($c, false);
+    return @imagepng($c, $to, 9);
 }
 
 /** Deletes the logo and icons of an older upload (media/site/logo-<hex>.png, icon-<hex>-*.png). */

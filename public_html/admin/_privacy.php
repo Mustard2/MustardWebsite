@@ -2,9 +2,10 @@
 // Admin → Settings → Privacy → Personal Data: everything the site stores about one Patreon user, for a GDPR access request
 // (Art. 15) or a copy to take elsewhere (Art. 20). Read only: nothing is changed or logged. Included only by settings.php.
 //   By Patreon ID: the download log, an access exception, bans (with their reason; the bug-report and comment blocks are bans),
-//   bug reports and comments, comments on pages (models, accessories, blog posts).
+//   bug reports and comments, comments on pages (models, accessories, scenes, blog posts), ideas on model / accessory / scene pages, the moderator role and the moderation log.
 //   By the scrambled code (m3d_like_code() of the ID; the site holds the key, so it finds them from the ID): likes, ignored
-//   updates, the welcome page, the notifications bell (data/bell/<code>.json), poll votes, Me Too and following bug reports.
+//   updates, the welcome page, the notifications bell (data/bell/<code>.json), poll votes, idea votes, Me Too and following bug reports,
+//   reactions on comments and bug reports (`rx`).
 // pd_collect() gathers it; pd_html() is the readable file (one page, opens in any browser, prints); the JSON is the same data.
 declare(strict_types=1);
 defined('M3D_PRIVATE') or exit;
@@ -21,22 +22,18 @@ function pd_collect(string $id): array
 {
     $code = m3d_like_code($id);
     $d = ['id' => $id, 'name' => '', 'names' => [], 'made' => time(), 'downloads' => [], 'exception' => null,
-          'likes' => ['models' => [], 'outfits' => [], 'stills' => [], 'posts' => []], 'ignored' => [], 'welcome' => null, 'bell' => null, 'votes' => [], 'renders' => [],
-          'reports' => [], 'comments' => [], 'metoo' => [], 'following' => [], 'blocked' => false, 'page_comments' => [], 'cm_blocked' => false, 'bans' => [], 'ban_reason' => ''];
+          'likes' => ['models' => [], 'outfits' => [], 'scenes' => [], 'stills' => [], 'posts' => []], 'ignored' => [], 'welcome' => null, 'bell' => null, 'votes' => [], 'renders' => [],
+          'reports' => [], 'comments' => [], 'metoo' => [], 'following' => [], 'blocked' => false, 'page_comments' => [], 'cm_blocked' => false, 'ideas' => [], 'idea_votes' => [], 'reactions' => [], 'modlog' => [], 'moderator' => false, 'bans' => [], 'ban_reason' => '',
+          'avatar' => m3d_avatar_stored($id), 'avatar_off' => (int) (m3d_avatars_data()['off'][$id] ?? 0)];   // the Patreon profile picture (app/avatars.php)
     $names = [];
 
     // download log: every column of their lines (patron links only: public links are only counted)
-    if ($fh = @fopen(m3d_log_file(), 'rb')) {
-        while (($line = fgets($fh)) !== false) {
-            if (!str_contains($line, $id)) continue;
-            $r = m3d_log_cols($line);
-            if (($r[1] ?? '') !== $id || !isset($r[3]) || ($t = strtotime((string) $r[0])) === false) continue;
-            [$k, $s] = m3d_log_item_parts((string) $r[3]);
-            $names[] = (string) ($r[2] ?? '');
-            $d['downloads'][] = ['at' => $t, 'name' => (string) ($r[2] ?? ''), 'kind' => $k, 'item' => pd_item_name($k, $s), 'link' => (string) ($r[4] ?? ''),
-                'version' => (string) ($r[5] ?? ''), 'note' => in_array($r[6] ?? '', ['free', 'update'], true) ? (string) $r[6] : '', 'membership' => m3d_log_membership($r)];
-        }
-        fclose($fh);
+    foreach (m3d_log_rows($id) as $r) {
+        if (($r[1] ?? '') !== $id || !isset($r[3]) || ($t = strtotime((string) $r[0])) === false) continue;
+        [$k, $s] = m3d_log_item_parts((string) $r[3]);
+        $names[] = (string) ($r[2] ?? '');
+        $d['downloads'][] = ['at' => $t, 'name' => (string) ($r[2] ?? ''), 'kind' => $k, 'item' => pd_item_name($k, $s), 'link' => (string) ($r[4] ?? ''),
+            'version' => (string) ($r[5] ?? ''), 'note' => in_array($r[6] ?? '', ['free', 'update'], true) ? (string) $r[6] : '', 'membership' => m3d_log_membership($r)];
     }
 
     if ($x = m3d_exception($id)) {
@@ -47,7 +44,7 @@ function pd_collect(string $id): array
         $d['ban_reason'] = $d['bans'] ? trim((string) ($x['reason'] ?? '')) : '';
     }
 
-    foreach (['models', 'outfits'] as $k) foreach (m3d_likes($k) as $slug => $codes) if (in_array($code, (array) $codes, true)) $d['likes'][$k][] = pd_item_name($k, (string) $slug);
+    foreach (M3D_ITEM_KINDS as $k) foreach (m3d_likes($k) as $slug => $codes) if (in_array($code, (array) $codes, true)) $d['likes'][$k][] = pd_item_name($k, (string) $slug);
     foreach (m3d_likes('stills') as $sid => $codes) if (in_array($code, (array) $codes, true)) {
         $s = m3d_still((string) $sid);
         $d['likes']['stills'][] = $s ? m3d_still_name($s) . ' (' . $s['src'] . ')' : 'Picture ' . $sid;
@@ -98,6 +95,10 @@ function pd_collect(string $id): array
             $d['comments'][] = ['n' => $n, 'title' => $title, 'at' => (int) ($x['at'] ?? 0), 'text' => (string) ($x['text'] ?? ''), 'shown_as' => (string) ($x['name'] ?? '')];
         }
         if (in_array($code, (array) ($b['metoo'] ?? []), true)) $d['metoo'][] = ['n' => $n, 'title' => $title];
+        foreach ((array) ($b['rx'] ?? []) as $r => $codes) if (in_array($code, (array) $codes, true)) $d['reactions'][] = ['on' => "Bug report #$n $title", 'emoji' => (string) $r];
+        foreach ((array) ($b['log'] ?? []) as $x) foreach ((array) ($x['rx'] ?? []) as $r => $codes) {
+            if (in_array($code, (array) $codes, true)) $d['reactions'][] = ['on' => ($x['name'] ?? '') . "’s comment on bug report #$n $title", 'emoji' => (string) $r];
+        }
         if (isset(((array) ($b['fol'] ?? []))[$code])) $d['following'][] = ['n' => $n, 'title' => $title, 'opened' => (int) $b['fol'][$code]];
     }
     $d['blocked'] = in_array($id, array_map('strval', m3d_bug_settings()['blocked']), true);
@@ -110,6 +111,28 @@ function pd_collect(string $id): array
             'text' => (string) ($c['text'] ?? ''), 'shown_as' => (string) ($c['name'] ?? ''), 'pending' => !empty($c['pending'])];
     }
     $d['cm_blocked'] = in_array($id, m3d_comment_settings()['blocked'], true);
+    foreach (array_reverse(m3d_comments_flat()) as [$k, $key, $c]) foreach ((array) ($c['rx'] ?? []) as $r => $codes) if (in_array($code, (array) $codes, true)) {
+        $d['reactions'][] = ['on' => (($c['name'] ?? '') ?: 'Someone') . '’s comment on ' . m3d_comment_page($k, $key)[0], 'emoji' => (string) $r];
+    }
+
+    // ideas on model and accessory pages (app/ideas.php): the ones they suggested, and their votes (stored under the scrambled code)
+    foreach (array_reverse(m3d_ideas_flat()) as [$k, $slug, $i]) {
+        [$title, $url] = m3d_idea_page($k, $slug);
+        if ((string) ($i['by'] ?? '') === $id && empty($i['admin'])) {
+            $names[] = (string) ($i['name'] ?? '');
+            $d['ideas'][] = ['kind' => $k, 'item' => $title, 'url' => $url !== '' ? abs_url($url) : '', 'at' => (int) ($i['at'] ?? 0), 'title' => (string) ($i['title'] ?? ''),
+                'text' => (string) ($i['text'] ?? ''), 'shown_as' => (string) ($i['name'] ?? ''), 'status' => IDEA_STATUSES[m3d_idea_status($i)], 'pending' => !empty($i['pending'])];
+        } elseif (in_array($code, (array) ($i['votes'] ?? []), true)) {
+            $d['idea_votes'][] = ['item' => $title, 'title' => (string) ($i['title'] ?? '')];
+        }
+    }
+
+    // moderation (app/moderation.php): whether they are a moderator, and the log's steps about their posts or bans, or taken by them
+    $d['moderator'] = in_array($id, array_column(m3d_mod_settings()['mods'], 'id'), true);
+    foreach (array_reverse(m3d_modlog_of($id)) as $e) {
+        $d['modlog'][] = ['at' => (int) ($e['at'] ?? 0), 'by_them' => (string) ($e['by'] ?? '') === $id, 'what' => mod_act_words($e) . ((string) ($e['what'] ?? '') !== '' ? ': ' . $e['what'] : ''),
+            'by' => (string) ($e['name'] ?? ''), 'why' => (string) ($e['why'] ?? '')];
+    }
 
     $names = array_values(array_unique(array_filter(array_map('trim', $names), fn($s) => $s !== '' && $s !== $id)));
     $d['names'] = $names;   // as Patreon sent them (the exception's name is the site's own, in its section)
@@ -121,7 +144,7 @@ function pd_collect(string $id): array
 function pd_found(array $d, bool $block = true): bool
 {
     return $d['downloads'] || $d['exception'] || array_filter($d['likes']) || $d['ignored'] || $d['welcome'] !== null || $d['bell'] !== null || $d['votes'] || $d['renders']
-        || $d['reports'] || $d['comments'] || $d['metoo'] || $d['following'] || $d['page_comments'] || ($block && ($d['bans'] || $d['blocked'] || $d['cm_blocked']));
+        || $d['reports'] || $d['comments'] || $d['metoo'] || $d['following'] || $d['page_comments'] || $d['ideas'] || $d['idea_votes'] || $d['reactions'] || $d['modlog'] || $d['moderator'] || ($block && ($d['bans'] || $d['blocked'] || $d['cm_blocked']));
 }
 
 /** One "Tier: Custom (at least …)" line per part of an exception. */
@@ -163,21 +186,29 @@ function pd_summary(array $d): array
     $dl = $d['downloads'];
     $items = count(array_unique(array_map(fn($r) => $r['kind'] . ':' . $r['item'], $dl)));
     $l = $d['likes'];
-    $likes = array_filter([count($l['models']) ? m3d_plural(count($l['models']), 'model') : '', count($l['outfits']) ? m3d_plural(count($l['outfits']), 'accessory', 'accessories') : '',
+    $likes = array_filter([count($l['models']) ? m3d_plural(count($l['models']), 'model') : '', count($l['outfits']) ? m3d_plural(count($l['outfits']), 'accessory', 'accessories') : '', count($l['scenes']) ? m3d_plural(count($l['scenes']), 'scene') : '',
         count($l['stills']) ? m3d_plural(count($l['stills']), 'gallery picture') : '', count($l['posts']) ? m3d_plural(count($l['posts']), 'blog post') : '']);
     $bugs = array_filter([$d['reports'] ? m3d_plural(count($d['reports']), 'report') : '', $d['comments'] ? m3d_plural(count($d['comments']), 'comment') : '',
         $d['metoo'] ? 'Me Too on ' . count($d['metoo']) : '', $d['following'] ? 'following ' . count($d['following']) : '']);
     return [
-        'Download Log' => $dl ? m3d_plural(count($dl), 'download') . ' of ' . $items . ' ' . ($items === 1 ? 'model or accessory' : 'models and accessories')
+        'Download Log' => $dl ? m3d_plural(count($dl), 'download') . ' of ' . $items . ' ' . ($items === 1 ? 'item' : 'items')
             . ' (' . m3d_site_time($dl[0]['at'], 'j M Y') . ' – ' . m3d_site_time(end($dl)['at'], 'j M Y') . ')' : '',
+        'Profile Picture' => $d['avatar'] !== '' ? 'Stored' : ($d['avatar_off'] ? 'Turned off by them on ' . m3d_site_time($d['avatar_off'], 'j M Y') : ''),
         'Likes' => implode(', ', $likes),
         'Ignored Updates' => $d['ignored'] ? (string) count($d['ignored']) : '',
         'Welcome Page' => $d['welcome'] !== null ? 'Seen ' . m3d_site_time($d['welcome'], 'j M Y') : '',
-        'Notifications' => $d['bell'] !== null ? m3d_plural($d['bell']['read'], 'notification') . ' opened, ' . $d['bell']['removed'] . ' removed' : '',
+        'Notifications' => $d['bell'] !== null ? m3d_plural($d['bell']['read'], 'notification') . ' opened, ' . $d['bell']['removed'] . ' removed'
+            . ($d['bell']['off'] ? ', ' . count($d['bell']['off']) . ' switched off' : '') : '',
+        'Bookmarks' => $d['bell'] !== null && ($d['bell']['bookmarks'] || $d['bell']['unbookmarked']) ? m3d_plural(count($d['bell']['bookmarks']), 'bookmark')
+            . ($d['bell']['unbookmarked'] ? ', ' . count($d['bell']['unbookmarked']) . ' download' . (count($d['bell']['unbookmarked']) === 1 ? '' : 's') . ' un-bookmarked' : '') : '',
+        'Render Defaults' => $d['bell'] !== null && $d['bell']['render'] !== null ? ($d['bell']['render']['named'] ? 'Name shown' . ($d['bell']['render']['link'] !== '' ? ' · ' . $d['bell']['render']['link'] : '') : 'Name hidden') : '',
         'Poll Votes' => $d['votes'] ? m3d_plural(count($d['votes']), 'poll') : '',
         'Renders Shared' => $d['renders'] ? m3d_plural(count($d['renders']), 'render') . (($w = count(array_filter($d['renders'], fn($r) => !$r['approved']))) ? " ($w waiting)" : '') : '',
         'Bug Reports' => implode(', ', $bugs),
-        'Comments' => $d['page_comments'] ? m3d_plural(count($d['page_comments']), 'comment') . ' on models, accessories and blog posts' : '',
+        'Comments' => $d['page_comments'] ? m3d_plural(count($d['page_comments']), 'comment') . ' on models, accessories, scenes and blog posts' : '',
+        'Ideas' => implode(', ', array_filter([$d['ideas'] ? m3d_plural(count($d['ideas']), 'idea') . ' suggested' : '', $d['idea_votes'] ? m3d_plural(count($d['idea_votes']), 'vote') . ' on other ideas' : ''])),
+        'Reactions' => $d['reactions'] ? m3d_plural(count($d['reactions']), 'reaction') . ' on comments and bug reports' : '',
+        'Moderation' => implode(', ', array_filter([$d['moderator'] ? 'A moderator' : '', $d['modlog'] ? m3d_plural(count($d['modlog']), 'step') . ' in the moderation log' : ''])),
         'Access Exception' => $d['exception'] ? 'Yes' : '',
         'Banned From' => implode(', ', array_map(fn($k) => BAN_KINDS[$k][0], $d['bans'])) . ($d['ban_reason'] !== '' ? ' (reason: ' . $d['ban_reason'] . ')' : ''),
     ];
@@ -191,26 +222,35 @@ function pd_json(array $d): array
         'about' => 'Personal data stored by ' . site_name() . ' (' . abs_url('/') . ') about one Patreon user, made ' . gmdate('c', $d['made']) . '.',
         'patreon_user_id' => $d['id'],
         'names' => $d['names'],
-        'download_log' => array_map(fn($r) => ['date' => $iso($r['at']), 'name' => $r['name'], 'kind' => $r['kind'] === 'outfits' ? 'accessory' : 'model', 'item' => $r['item'],
+        'profile_picture' => ['stored' => $d['avatar'] !== '', 'picture' => $d['avatar'] ?: null, 'turned_off' => $iso($d['avatar_off'] ?: null)],
+        'download_log' => array_map(fn($r) => ['date' => $iso($r['at']), 'name' => $r['name'], 'kind' => m3d_kind_word($r['kind']), 'item' => $r['item'],
             'version' => $r['version'], 'link' => $r['link'],
             'note' => ['free' => 'not counted in the download limits', 'update' => 'an update unlocked again'][$r['note']] ?? '',
             'membership' => $r['membership'] ? ['months_as_patron' => $r['membership']['months'], 'patron_since' => $r['membership']['since'] ?: null,
                 'tier_cents' => $r['membership']['tier_cents'], 'total_support_cents' => $r['membership']['total_cents'], 'currency' => m3d_currency()] : null], $d['downloads']),
         'access_exception' => $d['exception'] ? pd_exception_lines($d['exception']) : null,
-        'likes' => ['models' => $d['likes']['models'], 'accessories' => $d['likes']['outfits'], 'gallery_pictures' => $d['likes']['stills'], 'blog_posts' => $d['likes']['posts']],
+        'likes' => ['models' => $d['likes']['models'], 'accessories' => $d['likes']['outfits'], 'scenes' => $d['likes']['scenes'], 'gallery_pictures' => $d['likes']['stills'], 'blog_posts' => $d['likes']['posts']],
         'ignored_updates' => array_map(fn($r) => ['item' => $r['item'], 'version' => $r['version']], $d['ignored']),
         'welcome_page_seen' => $iso($d['welcome']),
-        'notifications_bell' => $d['bell'] !== null ? ['notifications_opened' => $d['bell']['read'], 'notifications_removed' => $d['bell']['removed']] : null,
+        'notifications_bell' => $d['bell'] !== null ? ['notifications_opened' => $d['bell']['read'], 'notifications_removed' => $d['bell']['removed'], 'switched_off' => $d['bell']['off'],
+            'bookmarks' => $d['bell']['bookmarks'], 'downloads_unbookmarked' => $d['bell']['unbookmarked']] : null,
+        'render_share_defaults' => $d['bell']['render'] ?? null,
         'poll_votes' => array_map(fn($r) => ['post' => $r['post'], 'question' => $r['question'], 'choices' => $r['choices']], $d['votes']),
-        'renders_shared' => array_map(fn($r) => ['date' => $iso($r['at']), 'on' => $r['kind'] === 'outfits' ? 'accessory' : 'model', 'item' => $r['item'], 'picture' => $r['picture'],
+        'renders_shared' => array_map(fn($r) => ['date' => $iso($r['at']), 'on' => m3d_kind_word($r['kind']), 'item' => $r['item'], 'picture' => $r['picture'],
             'caption' => $r['caption'], 'shown_as' => $r['shown_as'], 'profile_link' => $r['link'], 'full_quality_link' => $r['full'], 'approved' => $r['approved'], 'in_gallery' => $r['in_gallery']], $d['renders']),
         'bug_reports' => array_map(fn($r) => ['number' => $r['n'], 'date' => $iso($r['at'])] + array_diff_key($r, ['n' => 1, 'at' => 1]), $d['reports']),
         'bug_comments' => array_map(fn($r) => ['report' => $r['n'], 'report_title' => $r['title'], 'date' => $iso($r['at']), 'text' => $r['text'], 'shown_as' => $r['shown_as']], $d['comments']),
         'bug_me_too' => array_map(fn($r) => ['report' => $r['n'], 'report_title' => $r['title']], $d['metoo']),
         'bug_following' => array_map(fn($r) => ['report' => $r['n'], 'report_title' => $r['title'], 'last_opened' => $iso($r['opened'])], $d['following']),
         'banned_from' => $d['bans'] ? ['what' => array_map(fn($k) => BAN_KINDS[$k][0], $d['bans']), 'reason' => $d['ban_reason']] : null,
-        'comments' => array_map(fn($r) => ['date' => $iso($r['at']), 'on' => ['models' => 'model', 'outfits' => 'accessory', 'posts' => 'blog post'][$r['kind']] ?? $r['kind'],
+        'comments' => array_map(fn($r) => ['date' => $iso($r['at']), 'on' => ['models' => 'model', 'outfits' => 'accessory', 'scenes' => 'scene', 'posts' => 'blog post'][$r['kind']] ?? $r['kind'],
             'page' => $r['page'], 'address' => $r['url'], 'text' => $r['text'], 'shown_as' => $r['shown_as'], 'waiting_for_approval' => $r['pending']], $d['page_comments']),
+        'ideas' => array_map(fn($r) => ['date' => $iso($r['at']), 'on' => m3d_kind_word($r['kind']), 'item' => $r['item'], 'address' => $r['url'],
+            'idea' => $r['title'], 'details' => $r['text'], 'shown_as' => $r['shown_as'], 'status' => $r['status'], 'waiting_for_approval' => $r['pending']], $d['ideas']),
+        'idea_votes' => array_map(fn($r) => ['item' => $r['item'], 'idea' => $r['title']], $d['idea_votes']),
+        'reactions' => $d['reactions'],
+        'moderator' => $d['moderator'],
+        'moderation_log' => array_map(fn($r) => ['date' => $iso($r['at']), 'step' => $r['what'], 'by' => $r['by_them'] ? 'you, as a moderator' : $r['by'], 'reason' => $r['why']], $d['modlog']),
         'not_included' => pd_not_included(),
     ];
 }
@@ -223,7 +263,8 @@ function pd_not_included(): array
         'The web host and the delivery and protection service keep short-term server logs with IP addresses; the website itself stores no IP addresses.',
         'Backups of the website contain copies of the data above; they are kept to restore the site after a failure.',
     ] + (($bugDc = notify_bug_discord_words()) !== '' ? [3 => ucfirst($bugDc) . ' are also sent to a private Discord channel of ' . site_name() . ' (title, text and your Patreon name).'] : [])
-      + (m3d_notify_discord_on('comments') ? [4 => 'New comments are also sent to a private Discord channel of ' . site_name() . ' (the text and your Patreon name).'] : []);
+      + (m3d_notify_discord_on('comments') ? [4 => 'New comments are also sent to a private Discord channel of ' . site_name() . ' (the text and your Patreon name).'] : [])
+      + (m3d_notify_discord_on('ideas') ? [5 => 'New ideas are also sent to a private Discord channel of ' . site_name() . ' (the idea and your Patreon name).'] : []);
 }
 
 /** The readable file: a single HTML page, light, printable, no outside files. */
@@ -240,11 +281,13 @@ function pd_html(array $d): string
     $h = '';
 
     $h .= $sec('About You', '', '<table class="kv"><tr><th>Patreon User ID</th><td>' . e($d['id']) . '</td></tr>'
-        . '<tr><th>Name' . (count($d['names']) > 1 ? 's' : '') . ' (from Patreon)</th><td>' . ($d['names'] ? e(implode(', ', $d['names'])) : '<span class="none">None stored</span>') . '</td></tr></table>');
+        . '<tr><th>Name' . (count($d['names']) > 1 ? 's' : '') . ' (from Patreon)</th><td>' . ($d['names'] ? e(implode(', ', $d['names'])) : '<span class="none">None stored</span>') . '</td></tr>'
+        . '<tr><th>Profile Picture (from Patreon)</th><td>' . ($d['avatar'] !== '' ? '<img src="' . e($d['avatar']) . '" alt="Your stored profile picture" width="' . AVATAR_SIZE . '" height="' . AVATAR_SIZE . '" style="border-radius:50%"><div class="sub">A ' . AVATAR_SIZE . ' px copy, shown next to your comments and bug reports.</div>'
+            : ($d['avatar_off'] ? '<span class="none">None: you turned it off on ' . $t($d['avatar_off']) . '</span>' : '<span class="none">None stored</span>')) . '</td></tr></table>');
 
     $rows = '';
     foreach ($d['downloads'] as $r) {
-        $rows .= '<tr><td class="nowrap">' . $t($r['at']) . '</td><td>' . e($r['item']) . '<div class="sub">' . ($r['kind'] === 'outfits' ? 'Accessory' : 'Model') . '</div></td><td>' . e($r['version']) . '</td><td>' . e($r['link'])
+        $rows .= '<tr><td class="nowrap">' . $t($r['at']) . '</td><td>' . e($r['item']) . '<div class="sub">' . (m3d_kind_word($r['kind'], false, true)) . '</div></td><td>' . e($r['version']) . '</td><td>' . e($r['link'])
             . ($r['note'] === 'free' ? '<div class="sub">Not counted in the limits</div>' : ($r['note'] === 'update' ? '<div class="sub">Update unlocked again</div>' : '')) . '</td><td>' . e(pd_membership($r['membership'])) . '</td></tr>';
     }
     $h .= $sec('Downloads', 'Each download of a patrons-only link: kept to protect patron files, apply the download limits and check why a download was allowed. Entries are deleted after ' . (int) ($GLOBALS['M3D']['log_retention_days'] ?? 365) . ' days.',
@@ -262,8 +305,9 @@ function pd_html(array $d): string
     }
 
     $h .= $sec('Likes', 'Stored under a scrambled code instead of your Patreon ID; only the number of likes is shown on the site.',
-        $d['likes']['models'] || $d['likes']['outfits'] || $d['likes']['stills'] || $d['likes']['posts']
+        $d['likes']['models'] || $d['likes']['outfits'] || $d['likes']['scenes'] || $d['likes']['stills'] || $d['likes']['posts']
             ? ($d['likes']['models'] ? '<h3>Models</h3>' . $list($d['likes']['models']) : '') . ($d['likes']['outfits'] ? '<h3>Accessories</h3>' . $list($d['likes']['outfits']) : '')
+              . ($d['likes']['scenes'] ? '<h3>Scenes</h3>' . $list($d['likes']['scenes']) : '')
               . ($d['likes']['stills'] ? '<h3>Gallery Pictures</h3>' . $list($d['likes']['stills']) : '')
               . ($d['likes']['posts'] ? '<h3>Blog Posts</h3>' . $list($d['likes']['posts']) : '')
             : $none);
@@ -271,8 +315,13 @@ function pd_html(array $d): string
     $h .= $sec('Ignored Updates', 'Updates you chose to ignore, so the “Update” mark stays hidden (scrambled code, like likes).',
         $list(array_map(fn($r) => $r['item'] . ($r['version'] !== '' ? ' · ' . $r['version'] : ''), $d['ignored'])));
 
-    $h .= $sec('Notifications', 'Which notifications of the bell you opened (so its number shows only the ones you haven’t) and which you removed (scrambled code, like likes).',
-        $d['bell'] !== null ? $list(['Notifications opened: ' . $d['bell']['read'], 'Notifications removed: ' . $d['bell']['removed']]) : $none);
+    $h .= $sec('Notifications', 'Which notifications of the bell you opened (so its number shows only the ones you haven’t), which you removed, which kinds you switched off on your Settings page, and what you bookmarked (scrambled code, like likes).',
+        $d['bell'] !== null ? $list(['Notifications opened: ' . $d['bell']['read'], 'Notifications removed: ' . $d['bell']['removed'],
+            'Switched off: ' . ($d['bell']['off'] ? implode(', ', $d['bell']['off']) : 'none'),
+            'Bookmarked: ' . ($d['bell']['bookmarks'] ? implode(', ', $d['bell']['bookmarks']) : 'none'),
+            'Downloads un-bookmarked: ' . ($d['bell']['unbookmarked'] ? implode(', ', $d['bell']['unbookmarked']) : 'none')]) : $none);
+    if (($d['bell']['render'] ?? null) !== null) $h .= $sec('Render Defaults', 'What the Share window of patron renders starts with, from your Settings page.',
+        $list(['Show my name: ' . ($d['bell']['render']['named'] ? 'yes' : 'no'), 'Link on my name: ' . ($d['bell']['render']['link'] !== '' ? $d['bell']['render']['link'] : 'none')]));
 
     $h .= $sec('Poll Votes', 'Your choices in polls under blog posts, so each patron votes once (scrambled code, like likes); only the totals are shown.',
         $list(array_map(fn($r) => $r['post'] . ($r['question'] !== '' ? ': ' . $r['question'] : '') . ' → ' . implode(', ', $r['choices']), $d['votes'])));
@@ -287,7 +336,7 @@ function pd_html(array $d): string
     if ($d['reports'] || $d['comments'] || $d['metoo'] || $d['following'] || $d['blocked']) {
         $b = '';
         foreach ($d['reports'] as $r) {
-            $facts = array_filter(['About' => $r['about'], 'Version' => $r['version'], 'Blender' => $r['blender'], 'MustardUI' => $r['mustardui'], 'Shown as' => $r['shown_as']]);
+            $facts = array_filter(['About' => $r['about'], 'Version' => $r['version'], 'Blender' => $r['blender'], (m3d_bug_tool()['name'] ?? 'Add-on') => $r['mustardui'], 'Shown as' => $r['shown_as']]);
             $b .= '<div class="card"><p class="card-h">#' . $r['n'] . ' ' . e($r['title']) . '<span class="sub"> · ' . $t($r['at']) . '</span></p>'
                 . ($facts ? '<p class="sub">' . e(implode(' · ', array_map(fn($k, $v) => "$k: $v", array_keys($facts), $facts))) . '</p>' : '')
                 . ($r['text'] !== '' ? $text($r['text']) : '') . ($r['steps'] !== '' ? '<p class="sub">Steps</p>' . $text($r['steps']) : '')
@@ -306,13 +355,34 @@ function pd_html(array $d): string
 
     if ($d['page_comments'] || $d['cm_blocked']) {
         $c = '';
-        $what = ['models' => 'Model', 'outfits' => 'Accessory', 'posts' => 'Blog post'];
+        $what = ['models' => 'Model', 'outfits' => 'Accessory', 'scenes' => 'Scene', 'posts' => 'Blog post'];
         foreach ($d['page_comments'] as $r) {
             $c .= '<div class="card"><p class="card-h">On ' . e($r['page']) . '<span class="sub"> · ' . e($what[$r['kind']] ?? '') . ' · ' . $t($r['at']) . ($r['pending'] ? ' · waiting for approval' : '') . '</span></p>'
                 . ($r['url'] !== '' ? '<p class="sub">' . e($r['url']) . '</p>' : '') . $text($r['text']) . '</div>';
         }
-        $h .= $sec('Comments', 'Comments you wrote under models, accessories and blog posts, shown publicly with your Patreon name.', $c !== '' ? $c : $none);
+        $h .= $sec('Comments', 'Comments you wrote under models, accessories, scenes and blog posts, shown publicly with your Patreon name.', $c !== '' ? $c : $none);
         if ($d['cm_blocked']) $h .= '<p>You can’t comment any more (see Bans).</p>';
+    }
+
+    if ($d['ideas'] || $d['idea_votes']) {
+        $c = '';
+        foreach ($d['ideas'] as $r) {
+            $c .= '<div class="card"><p class="card-h">' . e($r['title']) . '<span class="sub"> · on ' . e($r['item']) . ' · ' . $t($r['at']) . ' · ' . e($r['status']) . ($r['pending'] ? ' · waiting for approval' : '') . '</span></p>'
+                . ($r['url'] !== '' ? '<p class="sub">' . e($r['url']) . '</p>' : '') . ($r['text'] !== '' ? $text($r['text']) : '') . '</div>';
+        }
+        if ($d['idea_votes']) $c .= '<h3>Your Votes</h3>' . $list(array_map(fn($r) => $r['title'] . ' (' . $r['item'] . ')', $d['idea_votes']));
+        $h .= $sec('Ideas', 'Ideas you suggested on model, accessory and scene pages, shown publicly with your Patreon name, and the ideas you voted for (votes are stored under a scrambled code, never with your name).', $c);
+    }
+
+    if ($d['reactions']) {
+        $h .= $sec('Reactions', 'Reactions you gave to comments and bug reports, stored under a scrambled code, never with your name; only the numbers are shown.',
+            $list(array_map(fn($r) => $r['emoji'] . ' on ' . $r['on'], $d['reactions'])));
+    }
+
+    if ($d['moderator'] || $d['modlog']) {
+        $c = $d['moderator'] ? '<p>You are a moderator of ' . e(site_name()) . ': your Patreon user ID and name are stored for that.</p>' : '';
+        if ($d['modlog']) $c .= $list(array_map(fn($r) => m3d_site_time($r['at'], 'j M Y, H:i T') . ' · ' . $r['what'] . ' · by ' . ($r['by_them'] ? 'you' : ($r['by'] ?: 'a moderator')) . ($r['why'] !== '' ? ' · reason: ' . $r['why'] : ''), $d['modlog']));
+        $h .= $sec('Moderation', 'Steps moderators took about your posts or your account (publishing, hiding, banning), and the ones you took as a moderator.', $c);
     }
 
     $h .= $sec('Not in This File', '', $list(pd_not_included()));
@@ -338,8 +408,9 @@ function pd_html(array $d): string
 
 /**
  * Deletes everything pd_collect() finds for one Patreon user (Settings → Privacy, after a typed confirmation): their download log lines
- * (so their unlocks start from zero), their exception, likes, ignored updates, welcome-page mark, poll votes, shared renders (with their pictures), bug reports (with every comment on
- * them and their uploaded pictures), their comments, Me Too and follows, and their comments under models, accessories and blog posts.
+ * (so their unlocks start from zero), their profile picture, their exception, likes, ignored updates, welcome-page mark, poll votes, shared renders (with their pictures), bug reports (with every comment on
+ * them and their uploaded pictures), their comments, Me Too and follows, their comments under models, accessories, scenes and blog posts, their ideas and idea votes,
+ * and their reactions on comments and bug reports.
  * The all-time download counters stay (totals only), and so do their bans (the ID, what is banned and the reason, kept so the ban still works). Copies inside backups stay until those backups go.
  * Returns [what was deleted (lines for the message), what failed].
  */
@@ -353,6 +424,10 @@ function pd_delete(string $id): array
         $n = m3d_log_remove_patron($id);
         if ($n) $done[] = m3d_plural($n, 'download log line'); else $fail[] = 'download log';
     }
+    if ($d['avatar'] !== '' || $d['avatar_off']) {
+        m3d_avatar_delete($id, true);
+        $done[] = 'their profile picture';
+    }
     if ($d['exception']) {   // a banned person keeps a record with only the ID, the bans and their reason
         $people = [];
         foreach (m3d_exceptions(true) as $x) {
@@ -361,11 +436,11 @@ function pd_delete(string $id): array
         }
         if (m3d_save_exceptions($people)) $done[] = 'their access exception'; else $fail[] = 'access exception';
     }
-    $likes = count($d['likes']['models']) + count($d['likes']['outfits']) + count($d['likes']['stills']) + count($d['likes']['posts']);
+    $likes = count($d['likes']['models']) + count($d['likes']['outfits']) + count($d['likes']['scenes']) + count($d['likes']['stills']) + count($d['likes']['posts']);
     if ($likes) {
         $ok = m3d_json_update('likes', function ($l) use ($code) {
             $l = is_array($l) ? $l : [];
-            foreach (['models', 'outfits', 'stills', 'posts'] as $k) {
+            foreach (['models', 'outfits', 'scenes', 'stills', 'posts'] as $k) {
                 foreach ((array) ($l[$k] ?? []) as $key => $codes) {
                     $left = array_values(array_filter((array) $codes, fn($c) => $c !== $code));
                     if ($left) $l[$k][$key] = $left; else unset($l[$k][$key]);
@@ -441,6 +516,36 @@ function pd_delete(string $id): array
             return [$all, $n];
         });
         if ($ok !== null) $done[] = m3d_plural((int) $ok, 'comment') . ' on models, accessories and blog posts'; else $fail[] = 'comments';
+    }
+    if ($d['ideas'] || $d['idea_votes']) {
+        $r = m3d_ideas_forget_person($id);
+        if ($r !== null) $done[] = implode(', ', array_filter([$r[0] ? m3d_plural($r[0], 'idea') : '', $r[1] ? m3d_plural($r[1], 'idea vote') : ''])); else $fail[] = 'ideas';
+    }
+    if ($d['reactions']) {   // their reactions on comments and bug reports (stored under the scrambled code)
+        $strip = function (array $x) use ($code): array {
+            if (empty($x['rx'])) return $x;
+            $rx = array_filter(array_map(fn($v) => array_values(array_diff((array) $v, [$code])), (array) $x['rx']));
+            if ($rx) $x['rx'] = $rx; else unset($x['rx']);
+            return $x;
+        };
+        $okC = m3d_comments_update(function (array $all) use ($strip) {
+            foreach (array_keys(COMMENT_KINDS) as $k) foreach ($all[$k] as $key => $list) $all[$k][$key] = array_map(fn($c) => is_array($c) ? $strip($c) : $c, (array) $list);
+            return [$all, true];
+        });
+        $okB = m3d_bugs_update(function ($bugs, $next) use ($strip) {
+            foreach ($bugs as &$b) { $b = $strip($b); $b['log'] = array_map(fn($x) => is_array($x) ? $strip($x) : $x, (array) ($b['log'] ?? [])); }
+            unset($b);
+            return [$bugs, $next, true];
+        });
+        if ($okC !== null && $okB) $done[] = m3d_plural(count($d['reactions']), 'reaction'); else $fail[] = 'reactions';
+    }
+    if ($d['modlog']) {
+        $r = m3d_modlog_forget($id);
+        if ($r !== null) $done[] = m3d_plural($r, 'moderation log step'); else $fail[] = 'moderation log';
+    }
+    if ($d['moderator'] || isset(m3d_settings()['moderation']['bell'][$id])) {   // the role, and its row in their bell
+        $ok = m3d_mod_settings_save(['mods' => array_values(array_filter(m3d_mod_settings()['mods'], fn($m) => $m['id'] !== $id)), 'bell' => array_diff_key((array) (m3d_settings()['moderation']['bell'] ?? []), [$id => 1])]);
+        if ($ok) $done[] = 'moderator role'; else $fail[] = 'moderator role';
     }
     return [$done, $fail];
 }

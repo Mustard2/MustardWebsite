@@ -96,20 +96,16 @@ $keyText = $keyState === 'ok' ? 'Key works' . ($expires !== '' ? ' · expires ' 
     <?= settings_menu('update') ?>
 
     <?php if ($result): ?>
-      <section class="sec ok-box">
-        <p><b class="res-ok">Update installed ✓</b> <?= $result['files'] ? (int) $result['files'] . ' files changed' : 'No file needed changing' ?> (<?= e($result['from']) ?> → <?= e($result['to']) ?>).</p>
-        <?php if ($result['backup'] !== ''): ?><p class="muted small">The previous code was saved as <code><?= e($result['backup']) ?></code>: you can go back to it in <a href="/admin/backups.php#all">Backups</a>.</p><?php endif; ?>
-        <p><a class="btn btn-ghost btn-sm" href="/" target="_blank">Check the Site ↗</a></p>
+      <section class="sec ok-box ok-row">
+        <p><b class="res-ok">✓ Updated to <?= e($result['to']) ?>.</b></p>
+        <a class="btn btn-ghost btn-sm" href="/" target="_blank">Homepage ↗</a>
       </section>
     <?php elseif ($error): ?>
       <section class="sec err-box"><p><b class="res-err">Not done.</b> <?= e($error) ?></p></section>
     <?php endif ?>
 
     <section class="sec up-card" style="margin-top:20px">
-      <div class="up-head">
-        <h2 class="small-h">Update from Remote</h2>
-        <span class="badge ic tone-grey"><svg viewBox="0 0 24 24" aria-hidden="true"><?= CHANNEL_ICONS[$channel] ?></svg><?= e($chName) ?></span>
-      </div>
+      <h2 class="small-h">Update from Remote</h2>
       <div class="up-row">
         <div><span>Installed</span><div class="up-val"><b><?= e($installed) ?></b><?php
           if ($check['error'] === '' && $newest && !$newer): ?><em class="up-ok"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>Up to Date</em><?php endif ?></div></div>

@@ -187,7 +187,7 @@ function m3d_post_items(array $p): array
     $out = [];
     foreach ((array) ($p['items'] ?? []) as $ref) {
         [$kind, $slug] = explode(':', (string) $ref, 2) + [1 => ''];
-        if (!in_array($kind, ['models', 'outfits'], true) || !($it = m3d_item($kind, $slug)) || !m3d_listed($it)) continue;
+        if (!in_array($kind, M3D_ITEM_KINDS, true) || !($it = m3d_item($kind, $slug)) || !m3d_listed($it)) continue;
         $out[] = [$kind, $it];
     }
     return $out;
@@ -302,6 +302,11 @@ function m3d_blog_discord_embed(array $p): array
     $color = ltrim((string) (m3d_identity()['color'] ?? ''), '#');
     if (preg_match('/^[0-9a-f]{6}$/i', $color)) $e['color'] = hexdec($color);
     if (($c = (string) ($p['cover'] ?? '')) !== '' && !$patrons) $e['image'] = ['url' => abs_url(img_small($c))];   // like link previews: Public posts only
+    // the card (m3d_discord_card()): the blog's title over the post's, topics · date under it, the site's icon, a button
+    $e['sub'] = discord_md_text((string) m3d_blog_settings()['title']);
+    $e['below'] = implode(' · ', array_merge(array_map('discord_md_text', (array) ($p['topics'] ?? [])), ['<t:' . m3d_post_ts($p) . ':d>']));
+    if (($logo = preview_logo()) !== '') $e['thumb'] = abs_url($logo);
+    $e['buttons'] = [['Read the Post', $e['url']]];
     return $e;
 }
 
@@ -502,7 +507,7 @@ function m3d_poll_opt_view(array $o): array
     $link = '';
     if (($o['item'] ?? '') !== '') {
         [$kind, $slug] = explode(':', (string) $o['item'], 2) + [1 => ''];
-        $it = in_array($kind, ['models', 'outfits'], true) ? m3d_item($kind, $slug) : null;
+        $it = in_array($kind, M3D_ITEM_KINDS, true) ? m3d_item($kind, $slug) : null;
         if ($it && m3d_listed($it)) {
             $link = m3d_item_url($kind, $slug);
             if (($o['pic'] ?? '') === '') return [...card_pic($kind, $it), $link];

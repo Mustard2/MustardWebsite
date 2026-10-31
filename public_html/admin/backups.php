@@ -6,7 +6,7 @@ require __DIR__ . '/_admin.php';
 require_once __DIR__ . '/_backup.php';
 admin_require($M3D);
 
-const DATA_LABELS = ['models' => 'Models', 'outfits' => 'Accessories', 'faq' => 'FAQ', 'docs' => 'Docs', 'settings' => 'Settings', 'blog' => 'Blog', 'gallery' => 'Gallery', 'exceptions' => 'Access Exceptions'];
+const DATA_LABELS = ['models' => 'Models', 'outfits' => 'Accessories', 'scenes' => 'Scenes', 'faq' => 'FAQ', 'docs' => 'Docs', 'settings' => 'Settings', 'blog' => 'Blog', 'gallery' => 'Gallery', 'exceptions' => 'Access Exceptions'];
 const PART_LABELS = ['code' => 'Code', 'content' => 'Content', 'counters' => 'Download Counts, Likes & Comments', 'bugs' => 'Bug Reports', 'log' => 'Download Log', 'media' => 'Media'];
 
 // ── Download ─────────────────────────────────────────────────────────────────
@@ -23,6 +23,8 @@ if (isset($_GET['download'])) {
     exit;
 }
 
+admin_auto_backup();   // when due, made before the list below is read, so it shows at once
+
 // ── Actions ──────────────────────────────────────────────────────────────────
 $done = $error = null;
 $partial = false;   // a restore that failed halfway: the error says so instead of "Nothing was changed"
@@ -35,7 +37,7 @@ if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST') {
             case 'create':
                 if (!class_exists('ZipArchive')) throw new RuntimeException('Zip support is missing on this server.');
                 $name = backup_full('manual', !empty($_POST['media']), clean_text($_POST['note'] ?? '', 60));
-                $done = 'Backup created: ' . $name . ' (' . m3d_size((int) filesize(bk_dir() . "/$name")) . ').';
+                $done = 'Backup created.';
                 break;
             case 'upload':
                 $f = $_FILES['zip'] ?? null;
@@ -45,7 +47,7 @@ if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST') {
                 $created = strtotime((string) ($m['created'] ?? '')) ?: time();
                 $name = 'full-' . gmdate('Ymd-His', $created) . '-uploaded.zip';
                 if (!move_uploaded_file($f['tmp_name'], bk_dir() . "/$name")) throw new RuntimeException('Could not save the uploaded backup.');
-                $done = 'Backup uploaded. You can restore it below.';
+                $done = 'Backup uploaded.';
                 break;
             case 'restore-full':
                 $p = bk_file($file);
@@ -58,7 +60,7 @@ if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST') {
                 keep_running(900);
                 $safety = backup_full('before-restore');
                 try {
-                    $what = restore_full($p, $parts);
+                    restore_full($p, $parts);
                 } catch (RestorePartial $ex) {
                     $partial = true;
                     throw new RuntimeException($ex->getMessage() . ' To undo it, restore ' . $safety . ' (the state saved just before), with the same parts ticked.');
@@ -66,7 +68,7 @@ if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST') {
                     @unlink(bk_dir() . '/' . $safety);   // nothing changed: this copy isn't needed
                     throw $ex;
                 }
-                $done = 'Restored ' . implode(', ', $what) . ' from ' . $file . '. The previous state was saved first as ' . $safety . '.';
+                $done = 'Backup restored.';
                 break;
             case 'restore-code':
                 $p = bk_file($file);
@@ -77,23 +79,22 @@ if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST') {
                 keep_running();
                 [$safety, $n, $v] = install_with_backup($zip);
                 $zip->close();
-                $done = $safety === '' ? "Code restored to version $v: it was already the same, nothing changed."
-                    : "Code restored to version $v ($n files changed). The code you had before was saved as $safety.";
+                $done = "Code restored to version $v.";
                 break;
             case 'restore-data':
                 $name = restore_data_version($file);
-                $done = (DATA_LABELS[$name] ?? ucfirst($name)) . ' restored to the version of ' . $file . '. The version you had before is now at the top of its history.';
+                $done = (DATA_LABELS[$name] ?? ucfirst($name)) . ' restored.';
                 break;
             case 'delete':
                 $p = bk_file($file);
                 if (!$p) throw new RuntimeException('Backup not found.');
                 if (!@unlink($p)) throw new RuntimeException('Could not delete the file.');
-                $done = 'Deleted ' . $file . '.';
+                $done = 'Backup deleted.';
                 break;
             case 'prune-history':
                 $n = 0;
                 foreach (data_history() as $list) foreach (array_slice($list, 5) as $v) if (@unlink(bk_dir() . '/' . $v['file'])) $n++;
-                $done = "$n older versions deleted (the newest 5 of each are kept).";
+                $done = "$n old versions deleted.";
                 break;
         }
     } catch (Throwable $ex) {

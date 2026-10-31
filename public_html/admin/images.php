@@ -30,8 +30,8 @@ function external_images(): array
     $inText = function (string $text, string $folder) use (&$found) {
         if (str_contains($text, '](') && preg_match_all('/!\[[^\]]*\]\((https?:\/\/[^\s)]+)\)/i', $text, $mm)) foreach ($mm[1] as $u) if (!preg_match('/\.(mp4|webm)(?:[?#]|$)/i', $u)) $found[$u] ??= $folder;   // a video on another website stays a link (md_media())
     };
-    foreach (['models', 'outfits'] as $kind) foreach (m3d_items($kind) as $m) {
-        $folder = ($kind === 'outfits' ? 'outfit-' : '') . $m['slug'];
+    foreach (M3D_ITEM_KINDS as $kind) foreach (m3d_items($kind) as $m) {
+        $folder = (['outfits' => 'outfit-', 'scenes' => 'scene-'][$kind] ?? '') . $m['slug'];
         foreach (['thumb', 'cover', 'gallery', 'images', 'notes', 'changelog'] as $field) {
             if (!isset($m[$field])) continue;
             $v = [$field => $m[$field]];
@@ -348,7 +348,7 @@ $todoExt = array_diff_key($todoExtAll, array_flip($extFailed));
 // 'videos' = the videos of texts (app/video.php, with their covers), '3d' = the 3D preview files (.glb, `model3d`): listed only there, so
 // each of these tabs shows only when there is one. 'patrons' = From Patrons, the renders patrons shared (admin/_showcase.php): while patron renders
 // are on or stored, its number = the renders, plus the waiting ones; Unused Only and the upload don't apply to it.
-const IMG_TABS = ['models' => 'Models', 'outfits' => 'Accessories', 'gallery' => 'Gallery', 'blog' => 'Blog', 'docs' => 'Docs', 'faq' => 'FAQ', 'other' => 'Other', 'videos' => 'Videos', '3d' => '3D Files', 'patrons' => 'From Patrons'];
+const IMG_TABS = ['models' => 'Models', 'outfits' => 'Accessories', 'scenes' => 'Scenes', 'gallery' => 'Gallery', 'blog' => 'Blog', 'docs' => 'Docs', 'faq' => 'FAQ', 'other' => 'Other', 'videos' => 'Videos', '3d' => '3D Files', 'patrons' => 'From Patrons'];
 $modelSlugs = array_flip(array_column($models, 'slug'));
 $folderSection = fn(string $folder): string => match (true) {
     $folder === 'docs' => 'docs',
@@ -356,11 +356,12 @@ $folderSection = fn(string $folder): string => match (true) {
     $folder === 'blog' => 'blog',
     $folder === 'faq' => 'faq',
     str_starts_with($folder, 'outfit-') => 'outfits',
+    str_starts_with($folder, 'scene-') => 'scenes',
     isset($modelSlugs[$folder]) => 'models',
     default => 'other',
 };
 // a use ('models:<slug>', 'outfits:<slug>', 'docs:<slug>', 'faq:<n>' / 'faq:intro', 'blog:<id>', 'other:outfits-page' / 'other:welcome') → the group it is listed under
-$useGroup = fn(string $key): string => match (explode(':', $key)[0]) { 'models' => explode(':', $key, 2)[1], 'outfits' => 'outfit-' . explode(':', $key, 2)[1], 'gallery' => 'gallery', 'other' => 'misc', default => $key };
+$useGroup = fn(string $key): string => match (explode(':', $key)[0]) { 'models' => explode(':', $key, 2)[1], 'outfits' => 'outfit-' . explode(':', $key, 2)[1], 'scenes' => 'scene-' . explode(':', $key, 2)[1], 'gallery' => 'gallery', 'other' => 'misc', default => $key };
 // A picture used in several kinds of places (a model's gallery and the Gallery) is listed in each of their tabs
 $listed = [];
 foreach ($items as $i) {
@@ -406,7 +407,7 @@ if ($tab === '3d' || $tab === 'videos') {   // listed under the item / post usin
 }
 $folders = array_values(array_unique(array_merge(...array_column($items, 'groups') ?: [[]])));
 $uploadDefault = ['gallery' => 'gallery', 'blog' => 'blog', 'docs' => 'docs', 'faq' => 'faq', 'other' => 'misc'][$tab] ?? null;
-$whatName = ['models' => 'model', 'outfits' => 'accessory', 'blog' => 'post', 'docs' => 'page', 'faq' => 'question', '3d' => 'item', 'videos' => 'post or page'][$tab] ?? 'folder';
+$whatName = ['models' => 'model', 'outfits' => 'accessory', 'scenes' => 'scene', 'blog' => 'post', 'docs' => 'page', 'faq' => 'question', '3d' => 'item', 'videos' => 'post or page'][$tab] ?? 'folder';
 $fileTab = $tab === '3d' || $tab === 'videos' || $tab === 'patrons';   // files (or From Patrons), not the library's pictures: no upload button here, no picture window
 // what the folder pickers show for each folder (admin.js turns the two menus into a search picker: one row per character, its generations as buttons)
 [$pick, $names] = admin_folder_picks($models);
@@ -437,6 +438,7 @@ admin_start('Media', 'images');
         <select class="input" data-upload-folder aria-label="Upload into" hidden><?php /* the upload window's first folder (admin.js), picked again inside it */ ?>
           <optgroup label="Models"><?php foreach ($models as $m) echo folder_option($m['slug'], $pick, $names) ?></optgroup>
           <?php if (m3d_outfits()): ?><optgroup label="Accessories"><?php foreach (m3d_outfits() as $k => $o) echo folder_option('outfit-' . $o['slug'], $pick, $names, $tab === 'outfits' && $k === 0) ?></optgroup><?php endif ?>
+          <?php if (m3d_items('scenes')): ?><optgroup label="Scenes"><?php foreach (m3d_items('scenes') as $k => $o) echo folder_option('scene-' . $o['slug'], $pick, $names, $tab === 'scenes' && $k === 0) ?></optgroup><?php endif ?>
           <optgroup label="Other"><?php foreach (array_merge(['gallery'], m3d_blog_on() || m3d_blog()['posts'] ? ['blog'] : [], ['docs', 'faq', 'misc']) as $f) echo folder_option($f, $pick, $names, $uploadDefault === $f) ?></optgroup>
         </select>
         <button type="button" class="btn btn-primary" data-upload-open>Upload Images</button>
@@ -444,7 +446,7 @@ admin_start('Media', 'images');
       </div>
     </div>
 
-    <?php if (isset($purged)) admin_flash($purged[0] || $purged[2] || $purged[3] ? '✓ Deleted ' . unused_words($purged[0], $purged[2], $purged[3]) . ' that weren’t used, ' . m3d_size($purged[1]) . ' freed.' : 'There were no unused files to delete.', $purged[0] || $purged[2] || $purged[3] ? 'ok' : 'info') ?>
+    <?php if (isset($purged)) admin_flash($purged[0] || $purged[2] || $purged[3] ? '✓ ' . unused_words($purged[0], $purged[2], $purged[3]) . ' deleted.' : 'No unused files.', $purged[0] || $purged[2] || $purged[3] ? 'ok' : 'info') ?>
     <?php if ($unused): ?>
       <form method="post" class="notice opt-notice" onsubmit="return confirm(<?= e(json_encode('Delete ' . $unusedWhat . ' that aren’t used (' . m3d_size($unusedBytes) . ')? No model, accessory, FAQ answer, docs page, blog post or gallery picture uses them. This can’t be undone.')) ?>)">
         <span><b><?= e($unusedWhat) ?></b> <?= $unused === 1 ? 'isn’t' : 'aren’t' ?> used anywhere (<?= m3d_size($unusedBytes) ?>). Turn on “Unused Only” to review them first.</span>
@@ -497,17 +499,24 @@ admin_start('Media', 'images');
     <?php elseif (!$items): ?>
       <?php if ($tab === '3d'): ?><p class="muted">No 3D files yet. Upload one in a model or accessory editor (Images → 3D Preview).</p>
       <?php elseif ($tab === 'videos'): ?><p class="muted">No videos yet. Add one to a blog post or a docs page with the editor’s Video button.</p>
-      <?php else: ?><p class="muted">No <?= e(strtolower(IMG_TABS[$tab])) ?> images yet. Upload some with the button above<?= ['models' => ', or from the editor', 'outfits' => ', or from the editor', 'gallery' => ', or with Add Pictures in Admin → Gallery', 'blog' => ', or from the Blog editor', 'docs' => ', or with Image in the Docs editor', 'faq' => ', or with Add Image in the FAQ editor'][$tab] ?? '' ?>.</p><?php endif ?>
+      <?php else: ?><p class="muted">No <?= e(strtolower(IMG_TABS[$tab])) ?> images yet. Upload some with the button above<?= ['models' => ', or from the editor', 'outfits' => ', or from the editor', 'scenes' => ', or from the editor', 'gallery' => ', or with Add Pictures in Admin → Gallery', 'blog' => ', or from the Blog editor', 'docs' => ', or with Image in the Docs editor', 'faq' => ', or with Add Image in the FAQ editor'][$tab] ?? '' ?>.</p><?php endif ?>
     <?php else: ?>
       <div class="lib-filters">
         <input class="input" type="search" placeholder="Search <?= $tab === 'videos' ? 'file name, post or page' : 'file name or ' . $whatName ?>…" data-lib-search aria-label="Search <?= ['3d' => '3D files', 'videos' => 'videos'][$tab] ?? 'images' ?>" />
-        <select class="input" data-lib-folder data-folder-pick="filter" data-search-ph="Search <?= ['outfits' => 'accessories', 'blog' => 'posts', 'docs' => 'pages', 'faq' => 'questions', 'models' => 'models', '3d' => 'items', 'videos' => 'posts and pages'][$tab] ?? 'folders' ?>…" aria-label="<?= e(ucfirst($whatName)) ?>" <?= count($folders) < 2 ? 'hidden' : '' ?>>
-          <option value=""><?= ['models' => 'All Models', 'outfits' => 'All Accessories', 'blog' => 'All Posts', 'docs' => 'All Pages', 'faq' => 'All Questions', '3d' => 'All Items', 'videos' => 'All Posts and Pages'][$tab] ?? 'All Folders' ?></option>
+        <select class="input" data-lib-folder data-folder-pick="filter" data-search-ph="Search <?= ['outfits' => 'accessories', 'scenes' => 'scenes', 'blog' => 'posts', 'docs' => 'pages', 'faq' => 'questions', 'models' => 'models', '3d' => 'items', 'videos' => 'posts and pages'][$tab] ?? 'folders' ?>…" aria-label="<?= e(ucfirst($whatName)) ?>" <?= count($folders) < 2 ? 'hidden' : '' ?>>
+          <option value=""><?= ['models' => 'All Models', 'outfits' => 'All Accessories', 'scenes' => 'All Scenes', 'blog' => 'All Posts', 'docs' => 'All Pages', 'faq' => 'All Questions', '3d' => 'All Items', 'videos' => 'All Posts and Pages'][$tab] ?? 'All Folders' ?></option>
           <?php foreach ($folders as $f) echo folder_option($f, $pick, $names) ?>
         </select>
         <label class="toggle lib-unused"><input type="checkbox" class="switch" data-lib-unused <?= $onlyUnused ? 'checked' : '' ?> /><span>Unused Only</span></label>
       </div>
 
+      <?php
+      // every card (pictures, videos, 3D files): where it's used (one line, full text on hover), and ✕ only while nothing uses it
+      $useLine = fn(array $i, array $u): string => '<span class="small lib-use" title="' . e($u ? 'Used by ' . implode(', ', $u) : 'Not used · folder: ' . ($names[$i['group']] ?? $i['group'])) . '">'
+          . ($u ? 'Used by ' . implode(', ', array_map(fn($key, $n) => '<a href="' . e(use_href($key)) . '">' . e($n) . '</a>', array_keys($u), $u))
+              : '<span class="warn-dot">Not Used</span> <span class="muted">· ' . e($names[$i['group']] ?? $i['group']) . '</span>') . '</span>';
+      $delBtn = fn(array $u): string => '<button type="button" class="icon-btn del" data-del title="' . ($u ? 'In use: remove it there first' : 'Delete') . '" aria-label="Delete"' . ($u ? ' disabled' : '') . '>✕</button>';
+      ?>
       <div class="lib" data-lib>
         <?php foreach ($items as $i): $u = $use[$i['url']] ?? []; ?>
           <?php if ($tab === '3d'): $g = $i['info']; ?>
@@ -516,14 +525,11 @@ admin_start('Media', 'images');
             <figcaption>
               <span class="lib-name" title="<?= e($i['name']) ?>"><?= e($i['name']) ?></span>
               <span class="muted small lib-meta"><?= m3d_size($i['bytes']) ?><?php if ($g): ?> · <?= $g['tris'] >= 1000 ? number_format($g['tris'] / 1000) . 'k' : $g['tris'] ?> triangles<?php if (!$g['light']): ?> · <span class="m3d-warn" title="<?= e('May be slow on phones: ' . implode(', ', $g['heavy'])) ?>">Heavy</span><?php endif ?><?php else: ?> · <span class="m3d-bad">Can’t Be Read</span><?php endif ?></span>
-              <span class="small lib-use" title="<?= e($u ? 'Used by ' . implode(', ', $u) : 'Not used · folder: ' . ($names[$i['group']] ?? $i['group'])) ?>">
-                <?php if ($u): ?>Used by <?= implode(', ', array_map(fn($key, $n) => '<a href="' . e(use_href($key)) . '">' . e($n) . '</a>', array_keys($u), $u)) ?>
-                <?php else: ?><span class="warn-dot">Not Used</span> <span class="muted">· <?= e($names[$i['group']] ?? $i['group']) ?></span><?php endif ?>
-              </span>
+              <?= $useLine($i, $u) ?>
               <span class="row-btns">
                 <button type="button" class="btn btn-ghost btn-sm" data-v3d title="Preview in 3D">View</button>
                 <button type="button" class="btn btn-ghost btn-sm" data-copy title="Copy the file address">Copy<span class="lib-t"> Link</span></button>
-                <button type="button" class="icon-btn del" data-del title="<?= $u ? 'In use: remove it there first' : 'Delete' ?>" aria-label="Delete" <?= $u ? 'disabled' : '' ?>>✕</button>
+                <?= $delBtn($u) ?>
               </span>
             </figcaption>
           </figure>
@@ -537,14 +543,11 @@ admin_start('Media', 'images');
             <figcaption>
               <span class="lib-name" title="<?= e($i['name']) ?>"><?= e($i['name']) ?></span>
               <span class="muted small lib-meta"><?php if ($vok): ?><?= $vi['w'] ?>×<?= $vi['h'] ?> · <?= m3d_duration((float) $vi['dur']) ?> · <?php endif ?><?= m3d_size($i['bytes']) ?><?php if (!$vok): ?> · <span class="m3d-bad">Can’t Be Read</span><?php elseif (!$vi['plays']): ?> · <span class="m3d-warn" title="<?= e($vi['codec'] . ': doesn’t play in every browser') ?>"><?= e($vi['codec']) ?></span><?php endif ?></span>
-              <span class="small lib-use" title="<?= e($u ? 'Used by ' . implode(', ', $u) : 'Not used · folder: ' . ($names[$i['group']] ?? $i['group'])) ?>">
-                <?php if ($u): ?>Used by <?= implode(', ', array_map(fn($key, $n) => '<a href="' . e(use_href($key)) . '">' . e($n) . '</a>', array_keys($u), $u)) ?>
-                <?php else: ?><span class="warn-dot">Not Used</span> <span class="muted">· <?= e($names[$i['group']] ?? $i['group']) ?></span><?php endif ?>
-              </span>
+              <?= $useLine($i, $u) ?>
               <span class="row-btns">
                 <button type="button" class="btn btn-ghost btn-sm" data-video-cover title="Choose a frame or a picture shown before it plays">Cover</button>
                 <button type="button" class="btn btn-ghost btn-sm" data-copy title="Copy the file address">Copy<span class="lib-t"> Link</span></button>
-                <button type="button" class="icon-btn del" data-del title="<?= $u ? 'In use: remove it there first' : 'Delete' ?>" aria-label="Delete" <?= $u ? 'disabled' : '' ?>>✕</button>
+                <?= $delBtn($u) ?>
               </span>
             </figcaption>
           </figure>
@@ -555,14 +558,11 @@ admin_start('Media', 'images');
               <span class="lib-name" title="<?= e($i['name']) ?>"><?= e($i['name']) ?></span>
               <!-- same rows on every card: name, size, where it's used (one line each, full text on hover), buttons at the bottom -->
               <span class="muted small lib-meta"><?= $i['w'] ?>×<?= $i['h'] ?> · <?= m3d_size($i['bytes']) ?></span>
-              <span class="small lib-use" title="<?= e($u ? 'Used by ' . implode(', ', $u) : 'Not used · folder: ' . ($names[$i['group']] ?? $i['group'])) ?>">
-                <?php if ($u): ?>Used by <?= implode(', ', array_map(fn($key, $n) => '<a href="' . e(use_href($key)) . '">' . e($n) . '</a>', array_keys($u), $u)) ?>
-                <?php else: ?><span class="warn-dot">Not Used</span> <span class="muted">· <?= e($names[$i['group']] ?? $i['group']) ?></span><?php endif ?>
-              </span>
+              <?= $useLine($i, $u) ?>
               <span class="row-btns">
                 <button type="button" class="btn btn-ghost btn-sm" data-copy title="Copy the image address">Copy<span class="lib-t"> Link</span></button>
                 <?php if (!str_ends_with(strtolower($i['name']), '.gif')): ?><button type="button" class="btn btn-ghost btn-sm" data-crop>Crop</button><?php endif ?>
-                <button type="button" class="icon-btn del" data-del title="<?= $u ? 'In use: remove it there first' : 'Delete' ?>" aria-label="Delete" <?= $u ? 'disabled' : '' ?>>✕</button>
+                <?= $delBtn($u) ?>
               </span>
             </figcaption>
           </figure>

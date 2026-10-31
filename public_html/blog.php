@@ -33,9 +33,34 @@ if ($slug !== '') {
     $patreon = social_url('patreon');
 
     $free = m3d_post_free($p);   // null = no "--- Patreon ---" line
-    if (m3d_get_text('poll') === 'voted') site_flash('✓ Thanks for voting!');
+    // the post's text (the free part of a teaser), its headings for "On This Page", In This Post and the comments: printed in the column and the sidebar
+    $toc = [];
+    $bodyHtml = $view === 'full' ? md_html((string) ($p['body'] ?? ''), ['docs' => true, 'paywall' => $admin ? true : 'skip'], $toc)
+        : ($free !== null && trim($free) !== '' ? md_html($free, ['docs' => true], $toc) : '');
+    $toc = array_values(array_filter($toc ?? [], fn($h) => $h['level'] <= 3));
+    if (count($toc) < 2) $toc = [];
+    $itemsHtml = '';
+    if ($items) {
+        $itemsHtml = '<section class="bl-items" aria-label="In this post"><h2>In This Post</h2><div class="bl-mini">';
+        foreach ($items as [$kind, $it]) {
+            [$src, $hidden] = card_pic($kind, $it);
+            $what = $kind === 'models' ? trim('Model · ' . ($it['franchise'] ?? ''), ' ·') : m3d_item_type($kind, $it);
+            $ver = m3d_released_label($it);
+            $itemsHtml .= '<a class="bl-mini-card" href="' . e(m3d_item_url($kind, (string) $it['slug'])) . '"><span class="bl-mini-pic' . ($hidden ? ' is-blurred' : '') . '">'
+                . card_img($src, (string) $it['name']) . '</span><span>' . e($what) . '<b>' . e(m3d_model_name($it)) . '</b>' . ($ver !== '' ? e(is_numeric($ver) ? 'Version ' . $ver : $ver) : '') . '</span></a>';
+        }
+        $itemsHtml .= '</div></section>';
+    }
+    $comments = $view === 'full' ? comments_block('posts', $p['id'], $p, 'post') : '';
+    $more = array_slice(array_values(array_filter($all, fn($q) => $q['id'] !== $p['id'])), 0, 3);   // the sidebar's More Posts: the newest others this visitor sees
+    $side = $toc || $items || $more;
+    if (m3d_get_text('poll') === 'voted') site_flash('✓ Vote saved.');
     elseif (isset(POLL_ERRORS[m3d_get_text('pollerr')])) site_flash('<b>Not saved:</b> ' . e(POLL_ERRORS[m3d_get_text('pollerr')]), 'err');
     $first = trim(html_entity_decode(strip_tags(md_inline(md_first_text($free ?? (string) ($p['body'] ?? '')))), ENT_QUOTES | ENT_HTML5, 'UTF-8'));   // without the format's marks (**bold**, links…)
+    // Discord's link preview: a card like the models' (preview_box()): blog · topics · date under the title, the summary, the cover (Public posts only, as og:image)
+    $below = discord_md_text(implode(' · ', array_merge([$cfg['title']], ($p['visibility'] ?? 'public') === 'patrons' ? ['🔒 Patrons Only'] : [], array_slice((array) ($p['topics'] ?? []), 0, 3))));
+    $GLOBALS['m3d_page_card'] = preview_box((string) $p['title'], abs_url($path), $below . (m3d_post_ts($p) ? ' · <t:' . m3d_post_ts($p) . ':d>' : ''),
+        discord_md_text(mb_substr($sum !== '' ? $sum : $first, 0, 600)), (string) ($GLOBALS['m3d_page_image'] ?? ''), 'Read the Post');
     layout_start($p['title'] . ' · ' . $cfg['title'], $sum !== '' ? $sum : ($first ?: $cfg['title'] . ' · ' . site_name()), 'page-blog');
     ?>
   <article class="bl-post<?= $cover ? ' has-hero' : '' ?>">
@@ -59,9 +84,10 @@ if ($slug !== '') {
       <?= admin_edit_button('/admin/blog.php?post=' . rawurlencode($p['id']), 'Edit Post') ?>
     </div>
     <?php if ($cover): ?></header><?php endif ?>
-    <div class="bl-wrap">
+    <div class="bl-wrap bl-main<?= $side ? ' has-side' : '' ?>">
+      <div class="bl-col">
       <?php if ($view === 'teaser' && $free !== null): // everything above the "--- Patreon ---" line, its end slowly fading ?>
-        <?php if (trim($free) !== ''): ?><div class="md docs-body bl-body bl-fade-end"><?= md_html($free, ['docs' => true]) ?></div><?php endif ?>
+        <?php if ($bodyHtml !== ''): ?><div class="md docs-body bl-body bl-fade-end"><?= $bodyHtml ?></div><?php endif ?>
       <?php elseif ($view === 'teaser'): $first = md_first_text((string) ($p['body'] ?? '')); ?>
         <?php if ($first !== ''): ?><div class="md docs-body bl-body bl-fade"><p><?= md_inline($first) ?></p></div><?php endif ?>
       <?php endif ?>
@@ -79,23 +105,9 @@ if ($slug !== '') {
           <?php endif ?>
         </div>
       <?php else: ?>
-        <div class="md docs-body bl-body"><?= md_html((string) ($p['body'] ?? ''), ['docs' => true, 'paywall' => $admin ? true : 'skip']) ?></div>
+        <div class="md docs-body bl-body"><?= $bodyHtml ?></div>
         <?= blog_poll($p) ?>
-        <?php if ($items): ?>
-          <section class="bl-items" aria-label="In this post">
-            <h2>In This Post</h2>
-            <div class="bl-mini">
-              <?php foreach ($items as [$kind, $it]): [$src, $hidden] = card_pic($kind, $it);
-                $what = $kind === 'outfits' ? m3d_accessory_type($it) : trim('Model · ' . ($it['franchise'] ?? ''), ' ·');
-                $ver = m3d_released_label($it); ?>
-                <a class="bl-mini-card" href="<?= e(m3d_item_url($kind, (string) $it['slug'])) ?>">
-                  <span class="bl-mini-pic<?= $hidden ? ' is-blurred' : '' ?>"><?= card_img($src, (string) $it['name']) ?></span>
-                  <span><?= e($what) ?><b><?= e(m3d_model_name($it)) ?></b><?= $ver !== '' ? e(is_numeric($ver) ? 'Version ' . $ver : $ver) : '' ?></span>
-                </a>
-              <?php endforeach ?>
-            </div>
-          </section>
-        <?php endif ?>
+        <?= $itemsHtml ?>
       <?php endif ?>
 
       <?php if ($older || $newer): ?>
@@ -105,7 +117,30 @@ if ($slug !== '') {
         </nav>
       <?php endif ?>
 
-      <?php if ($view === 'full') echo comments_block('posts', $p['id'], $p, 'post') ?>
+      <?= $comments ?>
+      </div>
+      <?php if ($side): // wide screens: the headings, the post's models / accessories and More Posts on the right, in view while scrolling (under 1100 px: hidden, In This Post stays under the text) ?>
+        <aside class="bl-side" aria-label="About this post">
+          <?php if ($toc): ?>
+            <nav class="bl-toc" aria-label="On this page">
+              <p class="docs-group-title">On This Page</p>
+              <ul data-docs-toc>
+                <?php foreach ($toc as $h): ?><li class="lvl-<?= (int) $h['level'] ?>"><a href="#<?= e($h['id']) ?>"><?= e($h['text']) ?></a></li><?php endforeach ?>
+                <?php if ($comments !== '' && m3d_comments_open('posts', $p)): ?><li class="lvl-2"><a href="#comments">Comments</a></li><?php endif ?>
+              </ul>
+            </nav>
+          <?php endif ?>
+          <?= $itemsHtml ?>
+          <?php if ($more): ?>
+            <section class="bl-more" aria-label="More posts">
+              <p class="docs-group-title">More Posts</p>
+              <?php foreach ($more as $q): ?>
+                <a class="bl-more-post" href="<?= e(m3d_post_url($q)) ?>"><span class="bl-more-pic"><?= blog_cover($q, '96px') ?></span><span><b><?= blog_title($q) ?></b><?= when_html(m3d_post_ts($q), 'date') ?></span></a>
+              <?php endforeach ?>
+            </section>
+          <?php endif ?>
+        </aside>
+      <?php endif ?>
     </div>
   </article>
 <?php

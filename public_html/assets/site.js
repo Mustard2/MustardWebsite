@@ -81,6 +81,7 @@ const updIgnore = async (code, ignore) => {
 };
 // a floating message in the page's stack (flash_stack() in view.php), with an optional button after the text (Undo)
 const siteToast = (text, kind = 'info', act = null) => {
+  text = String(text).replace(/^✓\s*/, '');   // the round icon (CSS) says it
   const stack = document.querySelector('[data-toasts]');
   if (!stack) return;
   const t = document.createElement('div');
@@ -105,7 +106,7 @@ const siteToast = (text, kind = 'info', act = null) => {
   toastWire(t);
 };
 
-// ── Header: show the account button (name) / Admin / Log out when logged in ──────────────
+// ── Header: what the visitor's status adds to the page (admin shortcuts, catalog checks and update tags) ──────────────
 (async () => {
   const box = document.querySelector('[data-account]');
   // data-session: the page was made for someone logged in; nobody else has anything to ask the server for
@@ -116,41 +117,6 @@ const siteToast = (text, kind = 'info', act = null) => {
     if (!s?.loggedIn) return;
     // admin shortcuts first, so nothing below can stop them from appearing
     if (s.admin) document.querySelectorAll('[data-admin-only]').forEach((n) => (n.hidden = false));
-    const ret = encodeURIComponent(location.pathname);
-    box.innerHTML = '';
-    // My account: a button with the person's name (shaped like the Admin one; mustard outline for paying patrons)
-    const who = document.createElement('a');
-    who.className = 'btn btn-sm btn-who' + (s.access ? ' ok' : '');
-    who.href = '/account/';
-    who.title = s.access ? 'My account · Patron' : 'My account';
-    const nm = document.createElement('span');
-    nm.className = 'who-name';
-    nm.textContent = s.name;
-    who.append(nm);
-    // unlocks left under the download limits (only when rules apply to this patron): a person icon (models) and a
-    // hanger icon (accessories), each with its number; red when none are left. The title says it in words.
-    if (s.left) {
-      const L = s.left;
-      const ICONS = {
-        models: '<circle cx="12" cy="8.2" r="4.2"/><path d="M4.5 20.5c.8-4 3.8-6.3 7.5-6.3s6.7 2.3 7.5 6.3"/>',
-        outfits: '<path d="M9.8 6.3a2.2 2.2 0 1 1 3 2.05c-.5.2-.8.6-.8 1.1v.55"/><path d="M12 10 3.6 16.1c-.7.5-.35 1.6.5 1.6h15.8c.85 0 1.2-1.1.5-1.6L12 10z"/>',
-      };
-      const parts = [['models', 'model'], ['outfits', 'accessory']].filter(([k]) => L[k] !== null);
-      const c = document.createElement('a');
-      c.className = 'dl-left';
-      c.href = '/account/';
-      parts.forEach(([k]) => {
-        const n = document.createElement('span');
-        n.className = 'dl-k' + (L[k] === 0 ? ' is-out' : '');
-        n.innerHTML = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linejoin="round" stroke-linecap="round" aria-hidden="true">${ICONS[k]}</svg>`;
-        n.append(document.createTextNode(String(L[k])));
-        c.append(n);
-      });
-      c.title = parts.map(([k, one]) => `${L[k]} ${one} unlock${L[k] === 1 ? '' : 's'} left`).join(' · ') + (L.next ? ` · next on ${localTime(L.nextTs, 'full') || L.next}` : '') + ' · See your unlock limits';
-      c.setAttribute('aria-label', c.title);
-      box.append(c);
-    }
-    box.append(who);   // after the unlocks counter
     // catalogs: a check on what this patron already downloaded or never counts (free to download) and the Unlocked filter,
     // only when download limits apply to them (s.left)
     try { if (s.left?.owned) {
@@ -166,7 +132,8 @@ const siteToast = (text, kind = 'info', act = null) => {
         if (corner) corner.prepend(b); else (c.querySelector(holder) || c).append(b);
       });
       mark('[data-card]', 'models', '.cover, .ocard-img');
-      mark('[data-ocard]', 'outfits', '.ocard-img');
+      mark('[data-ocard]:not([data-scard])', 'outfits', '.ocard-img');
+      mark('[data-scard]', 'scenes', '.ocard-img');
       document.querySelectorAll('[data-owned-row]').forEach((n) => (n.hidden = false));
     } } catch { /* a nicety */ }
     // catalogs: a round "↑" on the picture of what this patron downloaded and now has a newer version (s.updates, codes
@@ -174,7 +141,7 @@ const siteToast = (text, kind = 'info', act = null) => {
     try { (Array.isArray(s.updates) ? s.updates : []).forEach((code) => {
       const kind = code.slice(0, code.indexOf(':')), at = code.indexOf('@');
       const slug = code.slice(kind.length + 1, at), ver = code.slice(at + 1);
-      const sel = kind === 'models' ? '[data-card]' : '[data-ocard]';
+      const sel = { models: '[data-card]', outfits: '[data-ocard]:not([data-scard])', scenes: '[data-scard]' }[kind] || '[data-card]';
       const tags = [];
       document.addEventListener('m3d-upd', (e) => { if (e.detail.code === code) tags.forEach((t) => (t.hidden = !e.detail.on)); });   // the bell's ✕, My account's ✕ / Stop Ignoring
       document.querySelectorAll(sel).forEach((c) => {
@@ -189,19 +156,18 @@ const siteToast = (text, kind = 'info', act = null) => {
         (c.querySelector('.cover, .ocard-img') || c).append(t);
       });
     }); } catch { /* a nicety */ }
-    if (s.admin) {
-      const a = document.createElement('a');
-      a.className = 'btn btn-primary btn-sm';
-      a.href = '/admin/';
-      a.textContent = 'Admin';
-      box.append(a);
-    }
-    const out = document.createElement('a');
-    out.className = 'btn btn-ghost btn-sm';
-    out.href = `/auth/logout.php?return=${ret}`;
-    out.textContent = 'Log Out';
-    box.append(out);
   } catch { /* status endpoint not available */ }
+})();
+
+// ── A switch that saves at once (the Settings page's switches, form[data-autosubmit]) ──
+document.querySelectorAll('form[data-autosubmit]').forEach((f) => f.addEventListener('change', () => f.requestSubmit ? f.requestSubmit() : f.submit()));
+
+// ── Header: the account menu (account_box() in view.php, <details data-acct>): closed by a click elsewhere or Esc ──
+(() => {
+  const m = document.querySelector('details[data-acct]');
+  if (!m) return;
+  document.addEventListener('click', (e) => { if (m.open && !m.contains(e.target)) m.open = false; });
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && m.open) { m.open = false; m.querySelector('summary').focus(); } });
 })();
 
 // ── "?" help next to a label (help_tip() in view.php): one floating box shows its text on hover, focus or tap, kept inside the window ──
@@ -402,7 +368,7 @@ document.querySelectorAll('[data-filter-toggle]').forEach((toggle) => toggle.add
 // (chip_row() in view.php: .chip[data-pick], one value per row, several in a [data-multi] row; [data-default] = no filter; the page
 // picks the first ones, e.g. from the address), the badge, [data-cat-count], [data-cat-empty] with its [data-cat-reset] button and
 // the pager. o: items (cards or tiles), box (they are put back in it in the sorted order), sorts {value: compare}, text(item) = what
-// the search looks in, test(item, sel) = the chip rows' filters, count(shown, all) = the count line, params {sel key: address
+// the search looks in, test(item, sel) = the chip rows' filters (the count line reads "12" or "3 of 12"), params {sel key: address
 // parameter} kept in the address, per (items per page), more (infinite scroll: catalogMore() on [data-more] instead of the pager),
 // top (where a page change scrolls to), after(match) once the page is shown ──
 function catalogFilters(o) {
@@ -427,6 +393,7 @@ function catalogFilters(o) {
   const pages = o.more ? catalogMore(q('[data-more]'), o.per) : catalogPager(q('[data-pager]'), o.top || o.root, () => apply(true), o.per);
   // a row the page keeps hidden (Unlocked, while no limits apply to this visitor) filters nothing: not in the badge or the address
   const same = (k) => String(sel[k]) === String(defaults[k]) || picks.some((c) => c.dataset.pick === k && c.closest('.chips')?.hidden);
+  let tags = null;   // the tag search (tag_search() in view.php), set up below
 
   function apply(keepPage = false) {
     if (!keepPage) pages.reset();
@@ -436,7 +403,7 @@ function catalogFilters(o) {
     sorted.forEach((c) => o.box.append(c));
     const match = sorted.filter((c) => searchHasAll(o.text(c), words) && o.test(c, sel));
     pages.show(o.items, match);
-    if (count && o.count) count.textContent = o.count(match.length, o.items.length);
+    if (count) count.textContent = match.length === o.items.length ? `${o.items.length}` : `${match.length} of ${o.items.length}`;
     if (empty) empty.hidden = match.length > 0;
     if (badge) {
       const active = Object.keys(sel).filter((k) => !same(k)).length;
@@ -444,6 +411,7 @@ function catalogFilters(o) {
       badge.hidden = !active;
     }
     o.after?.(match, sel);
+    tags?.render();
     const u = new URL(location.href);
     Object.entries(o.params || {}).forEach(([k, p]) => (same(k) ? u.searchParams.delete(p) : u.searchParams.set(p, sel[k])));
     const typed = (search?.value || '').trim();   // the search too (?q=): ?page= is a page of the same list after a reload or Back
@@ -479,6 +447,8 @@ function catalogFilters(o) {
   });
   picks.forEach((chip) => chip.addEventListener('click', () => { pick(chip); apply(); }));
   search?.addEventListener('input', () => apply());
+  const box = q('[data-tsearch]');
+  if (box && search) tags = tagSearch(box, search, picks, (chip) => { pick(chip); apply(); });
   q('[data-cat-reset]')?.addEventListener('click', () => {
     if (search) search.value = '';
     picks.filter((c) => 'default' in c.dataset).forEach(pick);
@@ -486,6 +456,144 @@ function catalogFilters(o) {
   });
   apply(true);   // first page (or the ?page= one)
 }
+
+// ── Tag search (tag_search() in view.php; catalogFilters() sets it up): typing suggests the Filters panel's chips that match the words
+// (every row but Sort, chips and rows the page keeps hidden left out), grouped by row; picking one (click, or ↑ ↓ + Enter) presses that chip
+// and clears the text. The chips pressed (here or in the panel) show as tags before the text, each with an ✕ that lets go of it (a row
+// with one value: back to its first chip); Backspace in an empty field lets go of the last one. toggle(chip) = press it and filter;
+// onText() = what picking the "Search “…”" row does (the catalogs filter as you type: nothing). ──
+function tagSearch(box, input, picks, toggle, onText) {
+  const list = box.querySelector('[data-ts-dd]');
+  const holder = box.querySelector('[data-ts-tags]');
+  const hint = input.placeholder;
+  const isDefault = (c) => 'default' in c.dataset;
+  const rowOf = (c) => c.closest('.chips');
+  const rowName = (c) => rowOf(c)?.querySelector('.chips-lbl')?.textContent.trim() || '';
+  const count = (c) => [...c.children].find((el) => el.tagName === 'SPAN' && !el.className);
+  const icon = (c) => [...c.children].find((el) => el !== count(c));
+  const label = (c) => [...c.childNodes].filter((n) => n.nodeType === 3).map((n) => n.textContent).join('').trim();
+  const usable = picks.filter((c) => c.dataset.pick !== 'sort' && !isDefault(c));
+  const on = (c) => c.getAttribute('aria-pressed') === 'true';
+  const shown = (c) => !c.hidden && !rowOf(c)?.hidden;
+  // "Franchise · Naruto"; no row name where the chip has its own picture or icon, already says it ("Liked") or the row asks (Generation)
+  const prefix = (c) => (icon(c) || 'tagPlain' in (rowOf(c)?.dataset || {}) || searchFold(label(c)).includes(searchFold(rowName(c)))) ? '' : rowName(c);
+  const el = (tag, cls, text) => { const x = document.createElement(tag); if (cls) x.className = cls; if (text) x.textContent = text; return x; };
+  const face = (c) => { const i = icon(c); return i ? Object.assign(i.cloneNode(true), { id: '' }) : null; };
+  let opts = [];
+  let active = -1;
+
+  const render = () => {
+    const tags = usable.filter((c) => on(c) && shown(c)).map((c) => {
+      const t = el('span', 'ts-tag ts-' + c.dataset.pick + (icon(c) ? ' has-ico' : ''));
+      const f = face(c);
+      if (f) t.append(f);
+      if (prefix(c)) t.append(el('span', 'ts-k', prefix(c)));
+      t.append(el('span', 'ts-v', label(c)));
+      const x = el('button', 'ts-x', '✕');
+      x.type = 'button';
+      x.setAttribute('aria-label', 'Remove ' + label(c));
+      x.addEventListener('click', (e) => {
+        e.stopPropagation();
+        toggle(c.closest('[data-multi]') ? c : picks.find((d) => d.dataset.pick === c.dataset.pick && isDefault(d)) || c);
+        input.focus();
+      });
+      t.append(x);
+      return t;
+    });
+    holder.replaceChildren(...tags);
+    input.placeholder = tags.length ? '' : hint;
+  };
+
+  const close = () => {
+    list.hidden = true;
+    input.setAttribute('aria-expanded', 'false');
+    input.removeAttribute('aria-activedescendant');
+    active = -1;
+  };
+  const mark = (i) => {
+    active = i;
+    opts.forEach((o, k) => o.row.setAttribute('aria-selected', String(k === i)));
+    if (opts[i]) { input.setAttribute('aria-activedescendant', opts[i].row.id); opts[i].row.scrollIntoView({ block: 'nearest' }); }
+    else input.removeAttribute('aria-activedescendant');
+  };
+  const choose = (o) => {
+    close();
+    if (o.chip) { input.value = ''; toggle(o.chip); }
+    else onText?.();
+    input.focus();
+  };
+  const open = () => {
+    const words = searchWords(input.value);
+    opts = [];
+    const parts = [];
+    if (!words.length) { close(); return; }
+    let group = null;
+    usable.forEach((c) => {
+      if (on(c) || !shown(c) || !searchHasAll(label(c) + ' ' + rowName(c), words)) return;
+      const name = rowName(c);
+      if (group?.name !== name) { group = { name, n: 0 }; parts.push(el('div', 'ts-h', name)); }
+      if (group.n++ >= 6) return;   // a few of each row: the Filters panel lists them all
+      const row = el('div', 'ts-o ts-' + c.dataset.pick);
+      row.setAttribute('role', 'option');
+      row.id = 'ts-o-' + opts.length;
+      row.append(face(c) || el('span', 'ts-dot'), el('span', 'ts-l', label(c)));
+      const n = count(c);
+      if (n) row.append(el('span', 'ts-n', n.textContent));
+      opts.push({ chip: c, row });
+      parts.push(row);
+    });
+    const row = el('div', 'ts-o ts-text');   // the typed words alone: the text search as it already filters
+    row.setAttribute('role', 'option');
+    row.id = 'ts-o-' + opts.length;
+    row.append(box.querySelector('.ts-ico').cloneNode(true), el('span', 'ts-l', 'Search “' + input.value.trim() + '”'));
+    opts.push({ chip: null, row });
+    if (parts.length) parts.push(el('div', 'ts-sep'));
+    parts.push(row);
+    opts.forEach((o) => {
+      o.row.addEventListener('mousedown', (e) => e.preventDefault());   // the field keeps the focus
+      o.row.addEventListener('click', () => choose(o));
+    });
+    list.replaceChildren(...parts);
+    list.hidden = false;
+    input.setAttribute('aria-expanded', 'true');
+    mark(matchMedia('(pointer: coarse)').matches || opts.length < 2 ? -1 : 0);   // phones: the keyboard's Search key only closes the list
+  };
+
+  input.addEventListener('input', open);
+  input.addEventListener('focus', () => { if (input.value.trim()) open(); });
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      if (list.hidden) open();
+      if (!opts.length) return;
+      e.preventDefault();
+      mark(e.key === 'ArrowDown' ? (active + 1) % opts.length : (active <= 0 ? opts.length : active) - 1);
+    } else if (e.key === 'Enter') {
+      if (list.hidden) return;
+      e.preventDefault();
+      if (opts[active]) choose(opts[active]); else { close(); onText?.(); }
+    } else if (e.key === 'Escape' && !list.hidden) {
+      e.preventDefault();
+      close();
+    } else if (e.key === 'Backspace' && input.value === '' && holder.lastElementChild) {
+      holder.lastElementChild.querySelector('.ts-x')?.click();
+    }
+  });
+  box.addEventListener('focusout', (e) => { if (!box.contains(e.relatedTarget)) close(); });
+  box.addEventListener('mousedown', (e) => {   // a click on the box's free space types in the field
+    if (e.target === box || e.target === holder) { e.preventDefault(); input.focus(); }
+  });
+  return { render };
+}
+
+// ── The bug list's search field (bugs.php): the catalogs' tag search over the Filters panel's chips, which are links (the list comes
+// from the server): picking a chip, or a tag's ✕, opens its address; Enter or "Search “…”" sends the typed words (?q=) ──
+(() => {
+  const box = document.querySelector('.bugs-filters [data-tsearch]');
+  const input = box?.querySelector('input');
+  if (!input) return;
+  const t = tagSearch(box, input, [...document.querySelectorAll('#bug-filters .chip[data-pick]')], (chip) => { location.href = chip.href; }, () => input.form.requestSubmit());
+  t.render();
+})();
 
 // Sort orders of the model and accessory cards (data- attributes from model_card() / outfit_card()); ties keep the page's order
 const cardNum = (c, k) => +c.dataset[k] || 0;
@@ -500,12 +608,17 @@ const cardSorts = {
 // the Unlocked row (only shown when download limits apply; data-owned from the header's status)
 // (an ?owned= from the address while the row stays hidden, no limits apply now: no filter)
 const ownedOk = (c, sel) => !sel.owned || document.querySelector('[data-owned-row]')?.hidden !== false || (sel.owned === 'yes') === (c.dataset.owned === '1');
-// the Liked row (liked_row(): only for a visitor who liked one of these; the liked addresses are on the row)
+// the Liked and Bookmarked rows (liked_row(), bookmark_row(): only for a visitor who liked / bookmarked one of these; the addresses are on the row)
 const likedOk = (root) => {
-  let set = new Set();
-  try { set = new Set(JSON.parse(root.querySelector('[data-liked-row]')?.dataset.liked || '[]')); } catch { /* none */ }
-  return (c, sel) => !sel.liked || set.has(c.dataset.slug);
+  const set = (a) => { try { return new Set(JSON.parse(root.querySelector(`[data-${a}-row]`)?.dataset[a] || '[]')); } catch { return new Set(); } };
+  const liked = set('liked'), bm = set('bm');
+  return (c, sel) => (!sel.liked || liked.has(c.dataset.slug)) && (!sel.bm || bm.has(c.dataset.slug));
 };
+
+// the names of a Filters row's chips (value => name, without the count): the search box finds the cards by them too, so typing a name the
+// suggestions offer ("hina" → Hinata) never empties the list before it is picked
+const chipNames = (root, pick) => new Map([...root.querySelectorAll(`.chip[data-pick="${pick}"]:not([data-default])`)]
+  .map((c) => [c.dataset.value, [...c.childNodes].filter((n) => n.nodeType === 3).map((n) => n.textContent).join('').trim()]));
 
 // ── Homepage catalog ──────────────────────────────────────────────────────────
 (() => {
@@ -513,16 +626,17 @@ const likedOk = (root) => {
   const grid = root?.querySelector('[data-grid]');
   if (!grid) return;
   const liked = likedOk(root);
+  const statuses = chipNames(root, 'status');
   catalogFilters({
     root, box: grid, top: root,
     items: [...grid.querySelectorAll('[data-card]')],
     sorts: cardSorts,
-    text: (c) => c.dataset.name + ' ' + c.dataset.franchise,
+    text: (c) => c.dataset.name + ' ' + c.dataset.franchise + ' ' + (statuses.get(c.dataset.status) || '') + ('new' in c.dataset ? ' new' : 'fresh' in c.dataset ? ' updated' : '')
+      + (c.dataset.generation ? ' gen ' + c.dataset.generation : ''),
     test: (c, sel) => (!sel.franchise || c.dataset.franchise === sel.franchise)
       && (!sel.generation?.length || sel.generation.includes((c.dataset.generation || '').trim() || '~other'))   // no Generation row: none
       && (!sel.status || (sel.status === 'new' ? 'new' in c.dataset : sel.status === 'updated' ? 'fresh' in c.dataset : c.dataset.status === sel.status)) && ownedOk(c, sel) && liked(c, sel),
-    count: (n, all) => `${n} of ${all} ${all === 1 ? 'model' : 'models'}`,
-    params: { sort: 'sort', status: 'status', franchise: 'franchise', generation: 'gen', liked: 'liked', owned: 'owned' },   // ?page= stays a page of the same list
+    params: { sort: 'sort', status: 'status', franchise: 'franchise', generation: 'gen', liked: 'liked', bm: 'bm', owned: 'owned' },   // ?page= stays a page of the same list
   });
 })();
 
@@ -630,6 +744,7 @@ const likedOk = (root) => {
   const dlBtn = dlg.querySelector('[data-lightbox-dl-btn]');
   const likeBtn = dlg.querySelector('[data-lightbox-like]');   // gallery pictures (slides with like: id); the Gallery script paints and handles it
   const shareBtn = dlg.querySelector('[data-lightbox-share]');
+  const sceneBtn = dlg.querySelector('[data-lightbox-scene]');   // Gallery pictures made in a scene (slides with scene: {href, name}): its page's download box
   const DL_ICON = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v11m0 0-4.5-4.5M12 15l4.5-4.5M5 20h14"/></svg>';
   const LOCK = '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>';
   let slides = [];
@@ -791,9 +906,14 @@ const likedOk = (root) => {
     count.textContent = slides.length > 1 ? `${cur + 1} / ${slides.length}` : '';
     const d = slides[cur].dl;
     const like = slides[cur].like;
+    const sc = slides[cur].scene;
     if (dl) {
-      dl.hidden = !d && !like;
-      dlg.classList.toggle('has-dl', !!(d || like));
+      dl.hidden = !d && !like && !sc;
+      dlg.classList.toggle('has-dl', !!(d || like || sc));
+      if (sceneBtn) {
+        sceneBtn.hidden = !sc;
+        if (sc) { sceneBtn.href = sc.href; sceneBtn.title = 'The scene this was made in: ' + sc.name; }
+      }
       if (likeBtn) likeBtn.hidden = !like;
       if (shareBtn) shareBtn.hidden = !like;   // gallery pictures: a link to this one picture (the Gallery script handles it)
       dlNote.hidden = dlBtn.hidden = !d;
@@ -1011,16 +1131,35 @@ document.querySelectorAll('[data-to-top]').forEach((btn) => {
   const root = document.querySelector('[data-outfits]');
   const grid = root?.querySelector('[data-ogrid]');
   if (!grid) return;
-  const word = (k) => (k === 1 ? 'accessory' : 'accessories');
   const liked = likedOk(root);
+  const models = chipNames(root, 'model');
+  const allModels = [...models.values()].join(' ');
   catalogFilters({
     root, box: grid, top: grid.closest('section') || grid,
     items: [...grid.querySelectorAll('[data-ocard]')],
     sorts: cardSorts,
-    text: (c) => c.dataset.name,
-    test: (c, sel) => (!sel.model || c.dataset.models === '*' || c.dataset.models.split(' ').includes(sel.model)) && (!sel.type || c.dataset.type === sel.type) && ownedOk(c, sel) && liked(c, sel),
-    count: (n, all) => (n === all ? `${all} ${word(all)}` : `${n} of ${all} ${word(all)}`),
-    params: { model: 'model', type: 'type', sort: 'sort', liked: 'liked', owned: 'owned' },
+    text: (c) => c.dataset.name + ' ' + c.dataset.type + ' '   // the models it fits ("All Models": every one) and its type, as the suggestions name them
+      + (c.dataset.fit ? c.dataset.fit + ' ' : '')   // made for Blender: "blender"
+      + (c.dataset.models === '*' ? allModels : c.dataset.models.split(' ').map((m) => models.get(m) || '').join(' ')),
+    test: (c, sel) => (c.dataset.models === '*' || sel.model.every((m) => c.dataset.models.split(' ').includes(m))) && (!sel.type || c.dataset.type === sel.type) && ownedOk(c, sel) && liked(c, sel),
+    params: { model: 'model', type: 'type', sort: 'sort', liked: 'liked', bm: 'bm', owned: 'owned' },
+  });
+})();
+
+// ── Scenes catalog (the address keeps the model and the order) ──
+(() => {
+  const root = document.querySelector('[data-scenes]');
+  const grid = root?.querySelector('[data-sgrid]');
+  if (!grid) return;
+  const liked = likedOk(root);
+  const models = chipNames(root, 'model');
+  catalogFilters({
+    root, box: grid, top: grid.closest('section') || grid,
+    items: [...grid.querySelectorAll('[data-scard]')],
+    sorts: cardSorts,
+    text: (c) => c.dataset.name + ' ' + c.dataset.models.split(' ').map((m) => models.get(m) || '').join(' '),
+    test: (c, sel) => sel.model.every((m) => c.dataset.models.split(' ').includes(m)) && ownedOk(c, sel) && liked(c, sel),
+    params: { model: 'model', sort: 'sort', liked: 'liked', bm: 'bm', owned: 'owned' },
   });
 })();
 
@@ -1244,7 +1383,7 @@ document.addEventListener('click', async (e) => {
   });
 })();
 
-// ── Docs: page list open on wide screens (a menu on phones), search, "On this page" highlight ──
+// ── Docs: page list open on wide screens (a menu on phones), search ──
 (() => {
   const nav = document.querySelector('[data-docs-nav]');
   if (!nav) return;
@@ -1273,7 +1412,10 @@ document.addEventListener('click', async (e) => {
     const first = nav.querySelector('[data-docs-item]:not([hidden]) a');
     if (first) location.href = first.href;
   });
+})();
 
+// ── "On This Page" of docs pages and blog posts: the heading in view is lit ──
+(() => {
   const toc = document.querySelector('[data-docs-toc]');
   if (!toc || !('IntersectionObserver' in window)) return;
   const links = new Map([...toc.querySelectorAll('a')].map((a) => [decodeURIComponent(a.hash.slice(1)), a]));
@@ -1291,13 +1433,57 @@ document.addEventListener('click', async (e) => {
   heads.forEach((h) => io.observe(h));
 })();
 
+// ── The bookmark next to the like heart (bookmark_button() in view.php) and on My Account's Bookmarked cards (card_like(…, true)):
+// the bell then lists the item's new versions (not the creator's: bookmarks only list items there) ──
+(() => {
+  if (!document.querySelector('button[data-bm]')) return;
+  const title = (on, st) => (st.bell === false   // the creator: no bell, the words of bookmark_title() in view.php
+    ? (on ? 'Bookmarked (click to remove)' : 'Bookmark this ' + (st.what || 'item'))
+    : (on ? 'Bookmarked: new versions show in your notifications' : 'Bookmark: get a notification for new versions'));
+  const show = (btn, on, st) => {
+    btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+    btn.title = title(on, st);
+    btn.closest('.card, .ocard')?.classList.toggle('is-unbm', !on);   // My Account's Bookmarked rows: the card stays, faded, to bookmark it again
+  };
+  document.addEventListener('click', async (e) => {
+    const btn = e.target.closest('button[data-bm]');
+    if (!btn) return;
+    e.preventDefault();   // a card's bookmark: the card's link stays where it is
+    e.stopPropagation();
+    if (btn.disabled) return;
+    let st = {};
+    try { st = JSON.parse(btn.dataset.bm); } catch { return; }
+    const want = btn.getAttribute('aria-pressed') !== 'true';
+    show(btn, want, st);   // instant feedback
+    if (want) { btn.classList.remove('pop'); void btn.offsetWidth; btn.classList.add('pop'); }
+    btn.disabled = true;
+    try {
+      const r = await fetch('/auth/bookmark.php', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': st.csrf || '' }, body: JSON.stringify({ kind: st.kind, slug: st.slug, on: want }) });
+      let d = {};
+      try { d = await r.json(); } catch { /* not JSON */ }
+      if (!r.ok) throw new Error(d.error || 'Something went wrong, try again.');
+      show(btn, d.on, st);
+      document.dispatchEvent(new CustomEvent('m3d-bm', { detail: { key: st.kind + ':' + st.slug, on: !!d.on } }));   // My Models' update rows
+      const what = st.what || 'item';
+      siteToast(d.bell === false ? (d.on ? 'Bookmarked.' : 'Bookmark removed.')
+        : d.on ? 'Bookmarked. New versions will show in your notifications.' : 'Bookmark removed. No more notifications for this ' + what + '.', 'ok');
+      const n = document.querySelector('[data-bell-count]');   // the bell's number, as the server counts it now
+      if (n && typeof d.count === 'number') { n.textContent = d.count > 99 ? '99+' : String(d.count); n.hidden = !d.count; }
+    } catch (err) {
+      show(btn, !want, st);
+      siteToast(err.message, 'err');
+    }
+    btn.disabled = false;
+  });
+})();
+
 // ── Likes on model, outfit and blog pages (paying patrons; others are told how to get there) ──
 (() => {
   const btn = document.querySelector('[data-like]');
   if (!btn) return;
   const slug = btn.dataset.like;
-  const kind = ['outfits', 'posts'].includes(btn.dataset.likeKind) ? btn.dataset.likeKind : 'models';
-  const what = { outfits: 'accessory', posts: 'post' }[kind] || 'model';
+  const kind = ['outfits', 'scenes', 'posts'].includes(btn.dataset.likeKind) ? btn.dataset.likeKind : 'models';
+  const what = { outfits: 'accessory', scenes: 'scene', posts: 'post' }[kind] || 'model';
   const countEl = btn.querySelector('[data-like-count]');
   const msg = document.querySelector('[data-like-msg]');
   let state = null;
@@ -1344,6 +1530,58 @@ document.addEventListener('click', async (e) => {
   });
 })();
 
+// ── The like heart at the top right of model / accessory / scene cards (card_like()): a button inside the card's link, so a click
+// never opens the item; paying patrons like / unlike there, everyone else is told how (the header's data-me says who may) ──
+(() => {
+  if (!document.querySelector('[data-clike]')) return;
+  const box = document.querySelector('[data-account]');
+  let me = {};
+  try { me = JSON.parse(box?.dataset.me || '{}'); } catch { /* no status */ }
+  const logged = !!box && 'session' in box.dataset;
+  const busy = new Set();
+  const paint = (kind, slug, on, n) => {
+    const what = { outfits: 'accessory', scenes: 'scene' }[kind] || 'model';
+    document.querySelectorAll(`[data-clike="${CSS.escape(slug)}"][data-like-kind="${kind}"]`).forEach((b) => {
+      b.setAttribute('aria-pressed', String(on));
+      b.title = on ? `You like this ${what} (click to remove)` : `Like this ${what}`;
+      b.querySelector('[data-clike-count]').textContent = n > 0 ? n : '';
+      const card = b.closest('[data-likes]');
+      if (card) card.dataset.likes = Math.max(0, n);   // the "Most Liked" sort
+    });
+  };
+  document.addEventListener('click', async (e) => {
+    const b = e.target.closest('[data-clike]');
+    if (!b) return;
+    e.preventDefault();   // the card's link stays where it is
+    e.stopPropagation();
+    const kind = ['outfits', 'scenes'].includes(b.dataset.likeKind) ? b.dataset.likeKind : 'models';
+    const slug = b.dataset.clike;
+    if (!logged || !me.access || !me.csrf) {
+      const what = { outfits: 'accessories', scenes: 'scenes' }[kind] || 'models';
+      if (!logged) siteToast(`Likes are for patrons. Log in with Patreon to like ${what}.`, 'info', { label: 'Log In', fn: () => { location.href = '/auth/login.php?return=' + encodeURIComponent(location.pathname + location.search); } });
+      else { const j = joinAnchor(); siteToast('Likes are for patrons on any paid tier.', 'info', j ? { label: 'See How to Join', fn: () => { location.href = j.href; } } : null); }
+      return;
+    }
+    const key = kind + ':' + slug;
+    if (busy.has(key)) return;
+    const was = b.getAttribute('aria-pressed') === 'true';
+    const n = +b.querySelector('[data-clike-count]').textContent || 0;
+    paint(kind, slug, !was, n + (was ? -1 : 1));   // instant feedback
+    if (!was) { b.classList.remove('pop'); void b.offsetWidth; b.classList.add('pop'); }
+    busy.add(key);
+    try {
+      const r = await fetch('/auth/like.php', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': me.csrf }, body: JSON.stringify({ slug, kind, like: !was }) });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.error || 'Something went wrong.');
+      paint(kind, slug, !!d.liked, d.count);
+    } catch (err) {
+      paint(kind, slug, was, n);
+      siteToast(err.message, 'err');
+    }
+    busy.delete(key);
+  });
+})();
+
 // ── My account → My Models: the like heart of each row (only printed for patrons who can like; auth/like.php) ──
 (() => {
   const btns = document.querySelectorAll('[data-acc-like]');
@@ -1351,7 +1589,7 @@ document.addEventListener('click', async (e) => {
   let csrf = '';
   try { csrf = JSON.parse(document.querySelector('[data-account]')?.dataset.me || '{}').csrf || ''; } catch { /* no status */ }
   const show = (b, on) => {
-    const what = b.dataset.likeKind === 'outfits' ? 'accessory' : 'model';
+    const what = { outfits: 'accessory', scenes: 'scene' }[b.dataset.likeKind] || 'model';
     b.setAttribute('aria-pressed', String(on));
     b.title = on ? `You like this ${what} (click to remove)` : `Like this ${what}`;
   };
@@ -1362,7 +1600,7 @@ document.addEventListener('click', async (e) => {
     if (want) { b.classList.remove('pop'); void b.offsetWidth; b.classList.add('pop'); }
     b.disabled = true;
     try {
-      const kind = b.dataset.likeKind === 'outfits' ? 'outfits' : 'models';
+      const kind = ['outfits', 'scenes'].includes(b.dataset.likeKind) ? b.dataset.likeKind : 'models';
       const r = await fetch('/auth/like.php', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf }, body: JSON.stringify({ slug: b.dataset.accLike, kind, like: want }) });
       const d = await r.json();
       if (!r.ok) throw new Error(d.error || 'Something went wrong.');
@@ -1435,14 +1673,17 @@ document.addEventListener('click', async (e) => {
 
 // ── My account → My Models: the ✕ on an update's tag ignores it (toast with Undo), "Stop Ignoring" under its versions shows it
 // again (the row carries data-upd = its code; ignored rows are greyed without the ✕, the summary counts the others). Rows are
-// painted from the m3d-upd event, so the Liked cards' update tags and these stay in step ──
+// painted from the m3d-upd event (bell.js sends it too). A row whose bookmark is off (data-off, the m3d-bm event) is greyed the same
+// way, without "Stop Ignoring": bookmarking it again shows its updates ──
 (() => {
   const rows = document.querySelectorAll('#my-models tr[data-upd]');
   if (!rows.length) return;
   const paint = (tr, ignored) => {
-    tr.classList.toggle('is-upd-ignored', ignored);
+    tr.toggleAttribute('data-ign', ignored);
+    const off = tr.hasAttribute('data-off');
+    tr.classList.toggle('is-upd-ignored', ignored || off);
     const b = tr.nextElementSibling?.querySelector('[data-upd-ignore]');
-    if (b) b.hidden = !ignored;
+    if (b) b.hidden = !ignored || off;
     const count = document.querySelector('[data-upd-count]');
     if (count) {
       const n = tr.parentElement.querySelectorAll('tr[data-upd]:not(.is-upd-ignored)').length;
@@ -1451,6 +1692,11 @@ document.addEventListener('click', async (e) => {
     }
   };
   document.addEventListener('m3d-upd', (e) => rows.forEach((tr) => { if (tr.dataset.upd === e.detail.code) paint(tr, !e.detail.on); }));
+  document.addEventListener('m3d-bm', (e) => rows.forEach((tr) => {
+    if (!tr.dataset.upd.startsWith(e.detail.key + '@')) return;
+    tr.toggleAttribute('data-off', !e.detail.on);
+    paint(tr, tr.hasAttribute('data-ign'));
+  }));
   document.addEventListener('click', async (ev) => {
     const b = ev.target.closest('[data-upd-x], [data-upd-ignore]');
     if (!b || b.disabled) return;
@@ -1462,7 +1708,7 @@ document.addEventListener('click', async (e) => {
     b.disabled = true;
     try {
       await updIgnore(code, ignore);
-      if (ignore) siteToast('Update hidden until the next version.', 'info', { label: 'Undo', fn: async () => {
+      if (ignore) siteToast('Update hidden.', 'ok', { label: 'Undo', fn: async () => {
         try { await updIgnore(code, false); } catch (e) { siteToast(e.message, 'err'); }
       } });
     } catch (e) { siteToast(e.message, 'err'); }
@@ -1795,7 +2041,7 @@ document.addEventListener('click', (ev) => {
     other: '<circle cx="12" cy="12" r="8.5"/><path d="M9.6 9.6a2.5 2.5 0 1 1 3.4 2.3c-.6.3-1 .8-1 1.5v.4"/><path d="M12 16.8v.2"/>',
     none: '<circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/>',
   };
-  const GROUPS = [['model', 'Models'], ['outfit', 'Accessories'], ['rest', 'Other']];
+  const GROUPS = [['model', 'Models'], ['outfit', 'Accessories'], ['scene', 'Scenes'], ['rest', 'Other']];
   let uid = 0;
   sels.forEach((sel) => {
     const items = [...sel.options].map((o) => ({
@@ -1808,7 +2054,7 @@ document.addEventListener('click', (ev) => {
     const pic = (i) => {
       const box = mk('span', { class: 'ap-pic' + (i.thumb.startsWith('data:') ? ' is-blurred' : '') });
       if (i.thumb) box.append(mk('img', { src: i.thumb, alt: '', loading: 'lazy', decoding: 'async' }));
-      else if (i.kind === 'model' || i.kind === 'outfit') box.textContent = i.name.split(/\s+/).slice(0, 2).map((w) => w[0] || '').join('').toUpperCase();
+      else if (i.kind === 'model' || i.kind === 'outfit' || i.kind === 'scene') box.textContent = i.name.split(/\s+/).slice(0, 2).map((w) => w[0] || '').join('').toUpperCase();
       else box.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true">' + (ICONS[i.kind] || ICONS.other) + '</svg>';
       return box;
     };
@@ -1850,7 +2096,7 @@ document.addEventListener('click', (ev) => {
       list.replaceChildren();
       let n = 0;
       for (const [g, title] of GROUPS) {
-        const rs = items.filter((i) => i.value !== '' && (g === 'rest' ? !['model', 'outfit'].includes(i.kind) : i.kind === g) && words.every((w) => i.text.includes(w)));
+        const rs = items.filter((i) => i.value !== '' && (g === 'rest' ? !['model', 'outfit', 'scene'].includes(i.kind) : i.kind === g) && words.every((w) => i.text.includes(w)));
         if (!rs.length) continue;
         list.append(mk('div', { class: 'ap-h', text: title, role: 'presentation' }));
         for (const i of rs) {
@@ -1926,11 +2172,9 @@ document.addEventListener('click', (ev) => {
   });
 })();
 
-// ── Bug reports (bugs.php): the "pick a model" menu, and the report form (versions of the picked item,
+// ── Bug reports (bugs.php): the report form (versions of the picked item,
 // "Is it one of these?" from /bugs/?index=1, loaded once when a title is typed) ──
 (() => {
-  document.querySelectorAll('[data-bug-about-pick] select').forEach((s) => s.addEventListener('change', () => s.form.submit()));
-
   const form = document.querySelector('[data-bug-form]');
   if (!form) return;
   const versions = JSON.parse(form.dataset.versions || '{}');
@@ -1942,7 +2186,7 @@ document.addEventListener('click', (ev) => {
     verBox.hidden = !list.length;
     ver.replaceChildren(...list.map((v, i) => new Option(v + (i === 0 ? ' (latest)' : ''), v)), new Option('Not Sure', ''));
     // model and accessory reports must give the Blender / MustardUI versions: drop "optional", make them required
-    const need = /^(models|outfits):/.test(about.value);
+    const need = /^(models|outfits|scenes):/.test(about.value);
     form.querySelectorAll('[data-ver-opt]').forEach((o) => (o.hidden = need));
     form.querySelectorAll('[data-ver-in]').forEach((i) => (i.required = need));
   });
@@ -2022,6 +2266,7 @@ document.addEventListener('click', (ev) => {
   const btn = document.querySelector('[data-v3d]');
   if (!btn) return;
   const ico = (d) => `<svg viewBox="0 0 24 24" aria-hidden="true">${d}</svg>`;
+  const SUN = '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>';
   const tool = (attr, label, d, pressed) => `<button type="button" ${attr}${pressed ? ' aria-pressed="true"' : ''} aria-label="${label}" title="${label}">${ico(d)}</button>`;
   btn.addEventListener('click', async () => {
     const media = btn.closest('.media');
@@ -2034,7 +2279,9 @@ document.addEventListener('click', (ev) => {
       + tool('data-v3d-spin', 'Turn by itself', '<path d="M20 12a8 8 0 1 1-2.3-5.6M20 4v5h-5"/>', true)
       + tool('data-v3d-reset', 'Reset view', '<circle cx="12" cy="12" r="3"/><path d="M12 2v4M12 18v4M2 12h4M18 12h4"/>')
       + (document.fullscreenEnabled ? tool('data-v3d-full', 'Full screen', '<path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/>') : '')
-      + '</div><span class="v3d-hint">Drag to turn · scroll or pinch to zoom</span>';
+      + '</div><span class="v3d-hint">Drag to turn · scroll or pinch to zoom</span>'
+      + `<label class="v3d-light-pop" hidden><input type="range" min="20" max="200" step="5" value="100" aria-label="Light"><output>100%</output></label>`   // at the bottom, in the hint's place: never over the face
+      + `<span class="v3d-tools v3d-tools-low">${tool('data-v3d-light', 'Light', SUN, false)}</span>`;
     pics.forEach((n) => (n.hidden = true));
     media.append(box);
     const load = box.querySelector('.v3d-load');
@@ -2057,7 +2304,7 @@ document.addEventListener('click', (ev) => {
     if (!box.isConnected) return;   // closed while it loaded
     const mv = document.createElement('model-viewer');
     for (const [k, v] of Object.entries({ src: btn.dataset.v3d, alt: `${btn.dataset.v3dName} in 3D`, 'camera-controls': '', 'touch-action': 'pan-y',
-      'auto-rotate': '', 'shadow-intensity': '1', exposure: btn.dataset.v3dExposure || '1.1', 'interaction-prompt': 'none' })) mv.setAttribute(k, v);   // exposure: the item's Light (m3d_exposure())
+      'auto-rotate': '', 'shadow-intensity': '1', exposure: btn.dataset.v3dExposure || '0.9', 'interaction-prompt': 'none' })) mv.setAttribute(k, v);   // exposure: the item's Light (m3d_exposure())
     box.prepend(mv);
     const bar = box.querySelector('.v3d-bar');
     mv.addEventListener('progress', (e) => { bar.firstChild.style.width = Math.round(e.detail.totalProgress * 100) + '%'; });
@@ -2065,7 +2312,22 @@ document.addEventListener('click', (ev) => {
     mv.addEventListener('error', () => { load.textContent = 'This 3D file could not be shown.'; bar.remove(); });
     const spin = box.querySelector('[data-v3d-spin]');
     spin.addEventListener('click', () => { mv.autoRotate = !mv.autoRotate; spin.setAttribute('aria-pressed', String(mv.autoRotate)); });
-    box.querySelector('[data-v3d-reset]').addEventListener('click', () => { mv.cameraOrbit = 'auto auto auto'; mv.cameraTarget = 'auto auto auto'; mv.fieldOfView = 'auto'; });
+    // Light: the visitor's own brightness, a percent of the item's (m3d_exposure()); kept only while the viewer is open
+    const base = +mv.getAttribute('exposure');
+    const lightBtn = box.querySelector('[data-v3d-light]');
+    const lightPop = box.querySelector('.v3d-light-pop');
+    const range = lightPop.querySelector('input');
+    const setLight = (pct) => {
+      range.value = String(pct);
+      lightPop.querySelector('output').textContent = range.value + '%';
+      mv.exposure = Math.round(base * range.value * 10) / 1000;
+    };
+    const showLight = (on) => { lightPop.hidden = !on; box.classList.toggle('is-light', on); lightBtn.setAttribute('aria-pressed', String(on)); };
+    lightBtn.addEventListener('click', () => showLight(lightPop.hidden));
+    range.addEventListener('input', () => setLight(+range.value));
+    range.addEventListener('dblclick', () => setLight(100));
+    box.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !lightPop.hidden) { e.stopPropagation(); showLight(false); lightBtn.focus(); } });
+    box.querySelector('[data-v3d-reset]').addEventListener('click', () => { mv.cameraOrbit = 'auto auto auto'; mv.cameraTarget = 'auto auto auto'; mv.fieldOfView = 'auto'; setLight(100); });
     box.querySelector('[data-v3d-full]')?.addEventListener('click', () => (document.fullscreenElement ? document.exitFullscreen() : box.requestFullscreen()));
   });
 })();
@@ -2274,6 +2536,32 @@ document.querySelectorAll('form[data-poll]').forEach((f) => {
   });
 })();
 
+// ── "Link on My Name" of patron renders: the Share window (below) and the Settings page's Patron Renders box (account-settings.php).
+// Only with the name shown; the field opens once X or Patreon is picked. A typed username is checked here like on the server
+// (m3d_render_link_clean()); a pasted address is left to the server, which reads its website ──
+function renderLinkField(root) {
+  const named = root.querySelector('[data-sc-named], input[name=named]');
+  const linkRow = root.querySelector('[data-sc-link]');
+  const linkT = root.querySelector('[data-sc-link-t]');
+  const linkH = root.querySelector('[data-sc-link-h]');
+  if (!named || !linkRow || !linkT || !linkH) return () => {};
+  const linkSync = () => {
+    linkRow.hidden = !named.checked;
+    const ico = root.querySelector('[data-sc-link-ico]');
+    if (ico) ico.dataset.scLinkIco = linkT.value;   // the network's icon (Settings page)
+    linkH.disabled = !named.checked || !linkT.value;
+    const v = linkH.value.trim().replace(/^@/, '');
+    const bad = !linkH.disabled && v !== '' && !/[./]/.test(v)
+      && !(linkT.value === 'x' ? /^[A-Za-z0-9_]{1,15}$/ : /^[A-Za-z0-9_-]{1,64}$/).test(v);
+    linkH.setCustomValidity(bad ? (linkT.value === 'x' ? 'X usernames have up to 15 letters, numbers or _.' : 'Use the name in your Patreon address, or paste the address.') : '');
+  };
+  [named, linkT, linkH].forEach((el) => el.addEventListener(el === linkH ? 'input' : 'change', linkSync));
+  linkT.addEventListener('change', () => { if (linkT.value) linkH.focus(); });
+  linkSync();
+  return linkSync;   // the Share window runs it again when the page comes back from the cache
+}
+document.querySelectorAll('form[data-us-render]').forEach(renderLinkField);
+
 // ── Patron renders (showcase_box() in app/showcase.php): the Share window; the chosen picture shows before it is sent (nothing leaves
 // the browser until Send), a file over the limit is refused here as on the server ──
 (() => {
@@ -2306,26 +2594,7 @@ document.querySelectorAll('form[data-poll]').forEach((f) => {
     meta.textContent = mb;
   };
   file.addEventListener('change', pick);
-  // "Link on My Name": only with the name shown; the field opens once X or Patreon is picked. A typed username is checked here like on the
-  // server (m3d_render_link_clean()); a pasted address is left to the server, which reads its website
-  const named = dlg.querySelector('[data-sc-named]');
-  const linkRow = dlg.querySelector('[data-sc-link]');
-  const linkT = dlg.querySelector('[data-sc-link-t]');
-  const linkH = dlg.querySelector('[data-sc-link-h]');
-  const linkSync = () => {
-    if (!linkRow) return;
-    linkRow.hidden = !named.checked;
-    linkH.disabled = !named.checked || !linkT.value;
-    const v = linkH.value.trim().replace(/^@/, '');
-    const bad = !linkH.disabled && v !== '' && !/[./]/.test(v)
-      && !(linkT.value === 'x' ? /^[A-Za-z0-9_]{1,15}$/ : /^[A-Za-z0-9_-]{1,64}$/).test(v);
-    linkH.setCustomValidity(bad ? (linkT.value === 'x' ? 'X usernames have up to 15 letters, numbers or _.' : 'Use the name in your Patreon address, or paste the address.') : '');
-  };
-  if (linkRow) {
-    [named, linkT, linkH].forEach((el) => el.addEventListener(el === linkH ? 'input' : 'change', linkSync));
-    linkT.addEventListener('change', () => { if (linkT.value) linkH.focus(); });
-    linkSync();
-  }
+  const linkSync = renderLinkField(dlg);
   ['dragenter', 'dragover'].forEach((t) => drop.addEventListener(t, () => drop.classList.add('is-over')));
   ['dragleave', 'drop'].forEach((t) => drop.addEventListener(t, () => drop.classList.remove('is-over')));
   open.addEventListener('click', () => { dlg.showModal(); });
@@ -2336,6 +2605,455 @@ document.querySelectorAll('form[data-poll]').forEach((f) => {
     if (b) b.textContent = 'Sending…';
   });
   window.addEventListener('pageshow', () => { const b = form.querySelector('button[type=submit]'); if (b) b.textContent = 'Send for Approval'; pick(); linkSync(); });
+})();
+
+// ── Ideas boards (ideas_block() in app/ideas.php): sort / filter chips, Show All, votes without leaving the page, the Suggest window ──
+(() => {
+  document.querySelectorAll('[data-ideas]').forEach((box) => {
+    const list = box.querySelector('.ideas-list');
+    const more = box.querySelector('[data-idea-more]');
+    const chips = box.querySelectorAll('[data-idea-sort], [data-idea-only]');
+    let sort = 'votes', only = '', all = false;
+    // the server's order: waiting ones, open ones by votes, done, not planned; Newest keeps waiting ones on top too
+    const rank = (el) => el.classList.contains('is-pending') ? 0 : ({ done: 2, no: 3 }[el.dataset.st] || 1);
+    const draw = () => {
+      if (!list) return;
+      const rows = [...list.querySelectorAll('.idea')];
+      const wait = (el) => (rank(el) === 0 ? 0 : 1);
+      rows.sort((a, b) => sort === 'new'
+        ? wait(a) - wait(b) || b.dataset.at - a.dataset.at
+        : rank(a) - rank(b) || b.dataset.votes - a.dataset.votes || b.dataset.at - a.dataset.at);
+      let n = 0;
+      rows.forEach((r) => {
+        list.append(r);
+        const match = !only || (r.dataset.st === only && !r.classList.contains('is-pending'));
+        r.hidden = !match || (!all && !only && n >= 5);
+        if (match) n++;
+        r.classList.remove('is-extra');
+      });
+      if (more) more.hidden = all || !!only || rows.length <= 5;
+    };
+    chips.forEach((c) => c.addEventListener('click', () => {
+      if (c.dataset.ideaSort) { sort = c.dataset.ideaSort; only = ''; }
+      else only = only === c.dataset.ideaOnly ? '' : c.dataset.ideaOnly;
+      chips.forEach((x) => x.setAttribute('aria-pressed', String(x.dataset.ideaSort ? !only && x.dataset.ideaSort === sort : x.dataset.ideaOnly === only)));
+      draw();
+    }));
+    if (more) more.addEventListener('click', () => { all = true; draw(); });
+    // an address to one idea (#idea-12, from the bell or a Discord post) shows it even when it is past the first five
+    const target = location.hash.startsWith('#idea-') && box.querySelector(location.hash.replace(/[^#\w-]/g, ''));
+    if (target && target.classList.contains('is-extra')) all = true;
+    draw();
+    if (target) {
+      const d = target.querySelector('details.idea-main');   // its details open too
+      if (d) d.open = true;
+      target.scrollIntoView({ block: 'center' });
+    }
+
+    box.querySelectorAll('form[data-idea-vote]').forEach((f) => f.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      if (f.dataset.busy) return;
+      f.dataset.busy = '1';
+      const btn = f.querySelector('.idea-vote');
+      try {
+        const r = await fetch(f.action, { method: 'POST', body: new FormData(f), headers: { Accept: 'application/json' }, credentials: 'same-origin' });
+        const d = await r.json();
+        if (!d.ok) throw new Error();
+        btn.setAttribute('aria-pressed', String(d.on));
+        btn.title = d.on ? 'Remove your vote' : 'Vote for this idea';
+        btn.querySelector('[data-idea-n]').textContent = d.n;
+        f.closest('.idea').dataset.votes = d.n;
+      } catch (err) {
+        delete f.dataset.busy;
+        HTMLFormElement.prototype.submit.call(f);   // the page says what went wrong (a new login, a ban…)
+        return;
+      }
+      delete f.dataset.busy;
+    }));
+
+    const dlg = box.querySelector('dialog[data-idea-dlg]');
+    const open = box.querySelector('[data-idea-open]');
+    if (!dlg || !dlg.showModal) return;
+    if (open) open.addEventListener('click', () => dlg.showModal());
+  // "12 / 60" next to the title and details labels
+  dlg.querySelectorAll('[data-idea-count]').forEach((n) => {
+    const f = n.closest('label') && n.closest('label').querySelector('input, textarea');
+    if (!f) return;
+    const max = f.maxLength;
+    const show = () => { n.textContent = f.value.length + ' / ' + max; n.classList.toggle('is-full', f.value.length >= max); };
+    f.addEventListener('input', show);
+    show();
+  });
+    dlg.querySelectorAll('[data-idea-close]').forEach((b) => b.addEventListener('click', () => dlg.close()));
+    dlg.addEventListener('click', (e) => { if (e.target === dlg) dlg.close(); });   // a click on the dark backdrop
+    if ('open' in dlg.dataset) dlg.showModal();   // sent back after a refusal: what was typed is in it
+  });
+})();
+
+// ── Emoji in comments (comments_block() in app/comments.php): the ☺ picker button and ":heart:" codes of textarea[data-emoji]
+// ("pick", "codes"; the list is assets/vendor/emoji.json, made by make_emoji.py, fetched on first use), and the reactions under each
+// comment (form[data-rx]: sent without leaving the page). localStorage m3d_emoji = {recent, tone}, only once an emoji is picked. ──
+(() => {
+  const boxes = document.querySelectorAll('textarea[data-emoji]');
+  const rxForms = document.querySelectorAll('form[data-rx]');
+  if (!boxes.length && !rxForms.length) return;
+
+  // reactions: a chip or a pick in the ☺+ window toggles that reaction, the answer redraws the chips
+  rxForms.forEach((f) => {
+    const add = f.querySelector('.rx-add');
+    f.addEventListener('submit', async (e) => {
+      const b = e.submitter;
+      if (!b || b.name !== 'r') return;
+      e.preventDefault();
+      if (add) add.open = false;
+      if (f.dataset.busy) return;
+      f.dataset.busy = '1';
+      const body = new FormData(f);
+      body.set('r', b.value);
+      try {
+        const r = await fetch(f.action, { method: 'POST', body, headers: { Accept: 'application/json' }, credentials: 'same-origin' });
+        const d = await r.json();
+        if (!d.ok) throw new Error();
+        f.querySelectorAll('.rx-chip').forEach((c) => c.remove());
+        Object.entries(d.rx || {}).forEach(([emo, [n, mine]]) => {
+          const c = document.createElement('button');
+          c.className = 'rx-chip' + (mine ? ' is-on' : '');
+          c.name = 'r';
+          c.value = emo;
+          c.setAttribute('aria-pressed', String(!!mine));
+          const s = document.createElement('span');
+          s.className = 'rx-e';
+          s.textContent = emo;
+          const k = document.createElement('span');
+          k.textContent = n;
+          c.append(s, k);
+          (add || f.lastChild).before(c);
+        });
+      } catch (err) {   // the page says what went wrong (a new login, a ban…)
+        const h = document.createElement('input');
+        h.type = 'hidden';
+        h.name = 'r';
+        h.value = b.value;
+        f.append(h);
+        delete f.dataset.busy;
+        HTMLFormElement.prototype.submit.call(f);
+        return;
+      }
+      delete f.dataset.busy;
+    });
+  });
+  document.addEventListener('click', (e) => {
+    document.querySelectorAll('.rx-add[open]').forEach((d) => { if (!d.contains(e.target)) d.open = false; });
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') document.querySelectorAll('.rx-add[open]').forEach((d) => { d.open = false; d.querySelector('summary').focus(); });
+  });
+  if (!boxes.length) return;
+
+  const TONES = ['', '\u{1F3FB}', '\u{1F3FC}', '\u{1F3FD}', '\u{1F3FE}', '\u{1F3FF}'];
+  const emoTone = (e, t) => {   // the skin tone goes right after the first character (its U+FE0F dropped), as make_emoji.py checked
+    if (!t) return e;
+    const [first, ...rest] = Array.from(e);
+    if (rest[0] === '️') rest.shift();
+    return first + TONES[t] + rest.join('');
+  };
+  let store = { recent: [], tone: 0 };
+  try { store = Object.assign(store, JSON.parse(localStorage.getItem('m3d_emoji') || '{}')); } catch (e) { /* private window */ }
+  if (!Array.isArray(store.recent)) store.recent = [];
+  store.tone = Math.max(0, Math.min(5, +store.tone || 0));
+  const save = () => { try { localStorage.setItem('m3d_emoji', JSON.stringify(store)); } catch (e) { /* storage off */ } };
+
+  let data = null;
+  const src = boxes[0].dataset.emojiSrc;
+  const load = () => data || (data = fetch(src, { credentials: 'same-origin' }).then((r) => r.json()).then((d) => {
+    d.e.forEach((x) => { x.find = searchFold(x[2] + ' ' + x[3]); });
+    return d;
+  }).catch(() => { data = null; return null; }));
+
+  // put text in at the caret of a box (or in place of the selection), as typing would; nothing past the box's maxlength
+  const insert = (ta, text, from, to) => {
+    const s = from ?? ta.selectionStart, e = to ?? ta.selectionEnd;
+    if (ta.maxLength > 0 && ta.value.length - (e - s) + text.length > ta.maxLength) return false;
+    ta.setRangeText(text, s, e, 'end');
+    ta.dispatchEvent(new Event('input', { bubbles: true }));
+    return true;
+  };
+  const remember = (emo) => {
+    store.recent = [emo, ...store.recent.filter((x) => x !== emo)].slice(0, 16);
+    save();
+  };
+
+  // ── the picker: one window, moved to the box whose button opened it ──
+  const SMILE = '<svg class="bi" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M8.5 14.5c.9 1.2 2.1 1.8 3.5 1.8s2.6-.6 3.5-1.8"/><path d="M9 10h.01M15 10h.01"/></svg>';
+  let pop = null, cur = null, built = false;
+  const fine = matchMedia('(pointer: fine)').matches;
+  const el = (tag, cls, text) => { const x = document.createElement(tag); if (cls) x.className = cls; if (text != null) x.textContent = text; return x; };
+  const makePop = () => {
+    pop = el('div', 'emo-pop');
+    pop.setAttribute('role', 'dialog');
+    pop.setAttribute('aria-label', 'Emoji');
+    pop.hidden = true;
+    pop.append(el('p', 'emo-wait muted small', 'Loading…'));
+    pop.addEventListener('keydown', (e) => { if (e.key === 'Escape') { e.preventDefault(); close(true); } });
+  };
+  const build = (d) => {
+    built = true;
+    pop.replaceChildren();
+    const search = el('input', 'input emo-search');
+    search.type = 'search';
+    search.placeholder = 'Search emoji…';
+    search.setAttribute('aria-label', 'Search emoji');
+    const cats = el('div', 'emo-cats');
+    const list = el('div', 'emo-list');
+    const none = el('p', 'emo-none muted small', 'No emoji found.');
+    none.hidden = true;
+    const foot = el('div', 'emo-foot');
+    const prev = el('span', 'emo-prev');
+    const name = el('span', 'emo-name');
+    const toneBtn = el('button', 'emo-tone-btn');
+    toneBtn.type = 'button';
+    toneBtn.title = 'Skin tone';
+    toneBtn.setAttribute('aria-label', 'Skin tone');
+    const tones = el('div', 'emo-tones');
+    tones.hidden = true;
+    TONES.forEach((t, i) => {
+      const b = el('button', '', emoTone('✋', i));
+      b.type = 'button';
+      b.addEventListener('click', () => { store.tone = i; save(); tones.hidden = true; paint(); });
+      tones.append(b);
+    });
+    toneBtn.addEventListener('click', () => { tones.hidden = !tones.hidden; });
+    foot.append(prev, name, toneBtn);
+    pop.append(search, cats, list, none, tones, foot);
+
+    const btn = (x) => {
+      const b = el('button', 'emo-e');
+      b.type = 'button';
+      b.dataset.n = x[2];
+      b.x = x;
+      return b;
+    };
+    const secs = [];
+    const recent = el('div', 'emo-sec');
+    recent.append(el('div', 'emo-lbl', 'Recently Used'), el('div', 'emo-grid'));
+    list.append(recent);
+    const addCat = (icon, label, sec) => {
+      const c = el('button', '', icon);
+      c.type = 'button';
+      c.title = label;
+      c.setAttribute('aria-label', label);
+      c.addEventListener('click', () => { search.value = ''; filter(); list.scrollTop = sec.offsetTop - list.offsetTop; });
+      cats.append(c);
+      return c;
+    };
+    const recentCat = addCat('🕘', 'Recently Used', recent);
+    d.groups.forEach(([label, icon], g) => {
+      const sec = el('div', 'emo-sec');
+      const grid = el('div', 'emo-grid');
+      d.e.forEach((x) => { if (x[0] === g) grid.append(btn(x)); });
+      sec.append(el('div', 'emo-lbl', label), grid);
+      list.append(sec);
+      secs.push([sec, addCat(icon, label, sec)]);
+    });
+    const byEmo = new Map(d.e.map((x) => [x[1], x]));
+    const paint = () => {   // skin tone + the recently used row
+      list.querySelectorAll('.emo-e').forEach((b) => { if (b.x) b.textContent = b.x[5] ? emoTone(b.x[1], store.tone) : b.x[1]; });
+      toneBtn.textContent = emoTone('✋', store.tone);
+      const g = recent.querySelector('.emo-grid');
+      g.replaceChildren(...store.recent.map((emo) => {
+        const b = btn(byEmo.get(emo) || [0, emo, '', '', '', 0]);
+        b.x = null;
+        b.textContent = emo;
+        b.dataset.n = (byEmo.get(Array.from(emo).filter((ch) => !TONES.includes(ch)).join('')) || [0, '', ''])[2] || (byEmo.get(emo) || [0, '', ''])[2];
+        return b;
+      }));
+      recent.hidden = !store.recent.length || search.value !== '';
+      recentCat.hidden = !store.recent.length;
+    };
+    const filter = () => {
+      const words = searchWords(search.value);
+      let any = false;
+      secs.forEach(([sec]) => {
+        let n = 0;
+        sec.querySelectorAll('.emo-e').forEach((b) => { const ok = !words.length || words.every((w) => b.x.find.includes(w)); b.hidden = !ok; if (ok) n++; });
+        sec.hidden = !n;
+        sec.querySelector('.emo-lbl').hidden = !!words.length;
+        if (n) any = true;
+      });
+      recent.hidden = !store.recent.length || !!words.length;
+      none.hidden = any;
+      if (words.length) list.scrollTop = 0;
+    };
+    search.addEventListener('input', filter);
+    search.addEventListener('keydown', (e) => {
+      if (e.key !== 'Enter') return;
+      e.preventDefault();
+      const first = [...list.querySelectorAll('.emo-sec:not([hidden]) .emo-e:not([hidden])')][0];
+      if (first) first.click();
+    });
+    list.addEventListener('scroll', () => {   // the group in view is lit in the tabs
+      let on = recentCat;
+      secs.forEach(([sec, c]) => { if (!sec.hidden && sec.offsetTop - list.offsetTop <= list.scrollTop + 8) on = c; });
+      cats.querySelectorAll('button').forEach((c) => c.classList.toggle('on', c === on));
+    }, { passive: true });
+    const show = (b) => { prev.textContent = b ? b.textContent : ''; name.textContent = b ? b.dataset.n : ''; };
+    list.addEventListener('pointerover', (e) => show(e.target.closest('.emo-e')));
+    list.addEventListener('focusin', (e) => show(e.target.closest('.emo-e')));
+    list.addEventListener('click', (e) => {
+      const b = e.target.closest('.emo-e');
+      if (!b || !cur) return;
+      if (insert(cur.ta, b.textContent, cur.s, cur.e)) {
+        cur.s = cur.e = cur.ta.selectionStart;
+        remember(b.textContent);
+        if (!search.value) paint();
+      }
+    });
+    pop.paint = () => { paint(); filter(); };
+    paint();
+  };
+  const close = (back) => {
+    if (!pop || pop.hidden) return;
+    pop.hidden = true;
+    if (cur) {
+      cur.btn.setAttribute('aria-expanded', 'false');
+      cur.btn.classList.remove('on');
+      if (back) { cur.ta.focus(); cur.ta.setSelectionRange(cur.s, cur.e); }
+    }
+    cur = null;
+  };
+  const open = async (ta, btn, wrap) => {
+    if (!pop) makePop();
+    cur = { ta, btn, s: ta.selectionStart, e: ta.selectionEnd };
+    wrap.after(pop);
+    wrap.parentElement.classList.add('emo-host');
+    pop.style.top = (wrap.offsetTop + wrap.offsetHeight + 6) + 'px';   // right under the box (phones: in the flow, CSS)
+    pop.hidden = false;
+    btn.setAttribute('aria-expanded', 'true');
+    btn.classList.add('on');
+    if (!built) {
+      const d = await load();
+      if (!d) { pop.firstChild.textContent = 'The emoji couldn’t be loaded. Please try again.'; return; }
+      if (!built) build(d);
+    } else pop.paint();
+    const s = pop.querySelector('.emo-search');
+    if (s) { s.value = ''; pop.paint(); if (fine) s.focus({ preventScroll: true }); }
+    pop.scrollIntoView({ block: 'nearest', behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' });
+  };
+  document.addEventListener('pointerdown', (e) => {
+    if (pop && !pop.hidden && !pop.contains(e.target) && !e.target.closest('.emo-btn')) close(false);
+  });
+
+  // ── ":heart:" codes: a list under the box while a code is typed; a whole code with its closing colon becomes the emoji ──
+  const ac = el('div', 'emo-ac');
+  ac.setAttribute('role', 'listbox');
+  ac.hidden = true;
+  let acFor = null, acAt = 0, acSel = 0, acRows = [];
+  const acClose = () => { ac.hidden = true; acFor = null; };
+  const acPick = (x) => {
+    const ta = acFor;
+    acClose();
+    const emo = x[5] ? emoTone(x[1], store.tone) : x[1];
+    if (insert(ta, emo, acAt, ta.selectionStart)) remember(emo);
+  };
+  const acDraw = () => {
+    ac.replaceChildren(el('small', '', 'Emoji matching “' + acFor.value.slice(acAt + 1, acFor.selectionStart) + '”'));
+    acRows.forEach((x, i) => {
+      const r = el('div', i === acSel ? 'on' : '');
+      r.setAttribute('role', 'option');
+      r.append(el('b', '', x[5] ? emoTone(x[1], store.tone) : x[1]), el('span', '', ':' + x[4] + ':'));
+      r.addEventListener('pointerdown', (e) => { e.preventDefault(); acPick(x); });
+      ac.append(r);
+    });
+  };
+  const acCheck = async (ta) => {
+    const before = ta.value.slice(0, ta.selectionStart);
+    const m = /(^|[\s(]):([a-z0-9_+-]{2,30})(:?)$/i.exec(before);
+    if (!m || ta.selectionStart !== ta.selectionEnd) return acClose();
+    const d = await load();
+    if (!d) return acClose();
+    const q = m[2].toLowerCase();
+    const at = before.length - m[2].length - 1 - m[3].length;
+    if (m[3]) {   // ":heart:" typed whole
+      const x = d.e.find((y) => y[4] === q);
+      if (x) { const emo = x[5] ? emoTone(x[1], store.tone) : x[1]; if (insert(ta, emo, at, ta.selectionStart)) remember(emo); }
+      return acClose();
+    }
+    const starts = [], has = [];
+    d.e.forEach((x) => { if (!x[4]) return; if (x[4].startsWith(q)) starts.push(x); else if (x[4].includes(q)) has.push(x); });
+    starts.sort((a, b) => a[4].length - b[4].length);   // ":fir" → fire before firefighter
+    acRows = [...starts, ...has].slice(0, 6);
+    if (!acRows.length) return acClose();
+    acFor = ta;
+    acAt = at;
+    acSel = 0;
+    ta.closest('.emo-wrap').append(ac);
+    acDraw();
+    ac.hidden = false;
+    // under the line being typed: a hidden copy of the box finds where the caret is
+    const cs = getComputedStyle(ta);
+    const mirror = el('div');
+    ['font', 'letterSpacing', 'lineHeight', 'padding', 'border', 'boxSizing', 'whiteSpace', 'wordWrap', 'overflowWrap', 'tabSize'].forEach((k) => { mirror.style[k] = cs[k]; });
+    Object.assign(mirror.style, { position: 'absolute', visibility: 'hidden', whiteSpace: 'pre-wrap', width: ta.clientWidth + 'px', left: '0', top: '0' });
+    mirror.textContent = ta.value.slice(0, at);
+    const mark = el('span', '', '.');
+    mirror.append(mark);
+    ta.closest('.emo-wrap').append(mirror);
+    const left = Math.min(mark.offsetLeft, ta.clientWidth - ac.offsetWidth);
+    const top = mark.offsetTop - ta.scrollTop + parseFloat(cs.lineHeight || '20') + 4;
+    mirror.remove();
+    ac.style.left = Math.max(0, left) + 'px';
+    ac.style.top = Math.min(Math.max(top, 24), ta.offsetHeight + 4) + 'px';
+  };
+
+  boxes.forEach((ta) => {
+    const modes = ta.dataset.emoji.split(' ');
+    const wrap = el('div', 'emo-wrap');
+    ta.before(wrap);
+    wrap.append(ta);
+    if (modes.includes('pick')) {
+      const b = el('button', 'emo-btn');
+      b.type = 'button';
+      b.innerHTML = SMILE;
+      b.title = 'Emoji';
+      b.setAttribute('aria-label', 'Add emoji');
+      b.setAttribute('aria-expanded', 'false');
+      b.addEventListener('click', () => { if (cur && cur.ta === ta && !pop.hidden) close(true); else { close(false); open(ta, b, wrap); } });
+      wrap.append(b);
+      wrap.classList.add('has-btn');
+    }
+    if (!modes.includes('codes')) return;
+    ta.addEventListener('input', () => acCheck(ta));
+    ta.addEventListener('blur', () => setTimeout(() => { if (acFor === ta) acClose(); }, 150));
+    ta.addEventListener('keydown', (e) => {
+      if (ac.hidden || acFor !== ta) return;
+      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { e.preventDefault(); acSel = (acSel + (e.key === 'ArrowDown' ? 1 : acRows.length - 1)) % acRows.length; acDraw(); }
+      else if (e.key === 'Enter' || e.key === 'Tab') { e.preventDefault(); acPick(acRows[acSel]); }
+      else if (e.key === 'Escape') { e.preventDefault(); acClose(); }
+    });
+  });
+})();
+
+// What's New → Calendar: a click on a day shows its updates under the grid without a reload (the link still works without this)
+// and keeps ?day= in the address, so a reload or a shared link opens the same day.
+(() => {
+  const cal = document.querySelector('[data-wn-cal]');
+  if (!cal) return;
+  const secs = document.querySelectorAll('.wn-cal-day[data-day]');
+  cal.addEventListener('click', (e) => {
+    const a = e.target.closest('a.wn-cal-d[data-day]');
+    if (!a || e.ctrlKey || e.metaKey || e.shiftKey || e.button) return;
+    e.preventDefault();
+    const day = a.dataset.day;
+    cal.querySelectorAll('a.wn-cal-d').forEach((d) => {
+      const on = d === a;
+      d.classList.toggle('is-sel', on);
+      if (on) d.setAttribute('aria-current', 'date'); else d.removeAttribute('aria-current');
+    });
+    let shown = null;
+    secs.forEach((s) => { s.hidden = s.dataset.day !== day; if (!s.hidden) shown = s; });
+    history.replaceState(history.state, '', a.href);
+    if (shown && shown.getBoundingClientRect().top > innerHeight - 80) shown.scrollIntoView({ behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth', block: 'start' });
+  });
 })();
 
 // Forms that send something (a bug report, a comment, Me Too, Follow…): one click only. A second click while the first is on its

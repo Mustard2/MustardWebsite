@@ -2,7 +2,9 @@
 // The bell's list (app/notify.php, assets/bell.js):
 //   GET ?list=1         {ok, html, count}: the panel's content
 //   GET ?go=c<id>       a comment opened from the bell: marked read, then its page (#cm-<id>)
+//   GET ?go=i<id>       an idea (app/ideas.php): the same, #idea-<id>
 //   GET ?go=l<kind>:<key>  an item's new likes: read, then its page
+//   GET ?go=m<id>       a moderator's step: read, then its line in Moderation → Log
 //                       (a link on another website only goes to the page: nothing is marked, m3d_cross_site())
 //   POST do=read-all    Mark All as Read (comments until now, every bug report not opened yet) → {ok, count}
 //   POST do=clear       Clear All: Mark All as Read and the list empties → {ok, count}
@@ -38,10 +40,20 @@ if (isset($_GET['go'])) {
     admin_require($M3D);
     $code = m3d_get_text('go');
     $mark = !m3d_cross_site();
-    if (preg_match('/^l((?:models|outfits|posts|stills):[a-z0-9-]{1,100})$/', $code, $m)) {   // an item's new likes
+    if (preg_match('/^l((?:models|outfits|scenes|posts|stills):[a-z0-9-]{1,100})$/', $code, $m)) {   // an item's new likes
         if (!($it = m3d_notify_like_item($m[1]))) m3d_redirect('/admin/');   // deleted meanwhile
         if ($mark) m3d_notify_read($code);
         m3d_redirect($it[2]);
+    }
+    if (preg_match('/^m(\d{1,9})$/', $code, $m)) {   // a moderator's step (app/moderation.php)
+        if ($mark) m3d_notify_read($code);
+        m3d_redirect('/admin/moderation.php?tab=log#ml-' . (int) $m[1]);
+    }
+    if (preg_match('/^i(\d{1,9})$/', $code, $m)) {   // an idea (app/ideas.php)
+        if (!($idea = m3d_idea_find((int) $m[1]))) m3d_redirect('/admin/');
+        if ($mark) m3d_notify_read($code);
+        [, $url] = m3d_idea_page($idea[0], $idea[1]);
+        m3d_redirect(($url !== '' ? $url : '/admin/') . '#idea-' . (int) $m[1]);
     }
     $found = preg_match('/^c(\d{1,9})$/', $code, $m) ? m3d_comment_find((int) $m[1]) : null;
     if (!$found) m3d_redirect('/admin/');   // deleted meanwhile

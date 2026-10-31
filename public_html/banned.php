@@ -1,5 +1,5 @@
 <?php
-// /banned/?what=login|download|bugs|comments|renders: where someone banned in Admin → Access lands when they log in or try what they are
+// /banned/?what=login|download|bugs|comments|renders|ideas: where someone banned in Admin → Access lands when they log in or try what they are
 // banned from (BAN_KINDS, m3d_ban_url()): what is turned off for them, the creator's reason, how to ask. A Log In ban leaves no login,
 // so the id comes from $_SESSION['ban_id'] (auth/callback.php, m3d_patron()). Anyone not banned goes to the homepage.
 require __DIR__ . '/app/_init.php';
@@ -15,8 +15,9 @@ $what = m3d_get_text('what');
 if (!in_array($what, $bans, true)) $what = in_array('login', $bans, true) ? 'login' : $bans[0];
 
 $titles = ['login' => 'You Can’t Log In on This Site', 'download' => 'You Can’t Download on This Site', 'bugs' => 'You Can’t Post Bug Reports',
-           'comments' => 'You Can’t Comment on This Site', 'renders' => 'You Can’t Share Renders'];
-$words = ['login' => 'logging in', 'download' => 'downloads', 'bugs' => 'bug reports', 'comments' => 'comments', 'renders' => 'sharing renders'];
+           'comments' => 'You Can’t Comment on This Site', 'renders' => 'You Can’t Share Renders',
+           'ideas' => 'You Can’t Suggest Ideas'];
+$words = ['login' => 'logging in', 'download' => 'downloads', 'bugs' => 'bug reports', 'comments' => 'comments', 'renders' => 'sharing renders', 'ideas' => 'ideas and votes'];
 $off = array_map(fn($k) => $words[$k], $bans);
 $list = count($off) > 1 ? implode(', ', array_slice($off, 0, -1)) . ' and ' . end($off) : $off[0];
 $text = in_array('login', $bans, true)

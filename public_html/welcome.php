@@ -32,19 +32,22 @@ $unlocks = [];   // kind => [label, value, note]
 $ownRules = !$owner && ($p['exception']['limits'] ?? '') === 'custom';   // their own unlock rules (Admin → Access) replace the general ones
 $ruleRows = $ownRules ? m3d_welcome_own_rows((array) ($p['exception']['rules'] ?? [])) : m3d_welcome_rule_rows();
 if ($ruleRows) {
-    foreach (['models' => 'Model Unlocks', 'outfits' => 'Accessory Unlocks'] as $kind => $lbl) {
+    foreach (array_intersect_key(['models' => 'Model Unlocks', 'outfits' => 'Accessory Unlocks', 'scenes' => 'Scene Unlocks'], array_flip(m3d_shown_kinds())) as $kind => $lbl) {
         $c = m3d_check_limits($p, $kind, '');
         if ($c['exempt']) { $unlocks[$kind] = [$lbl, 'Unlimited', '']; continue; }
         $tight = m3d_tightest_row($c['rows']);
+        if ($tight && $tight['max'] === 0) { $unlocks[$kind] = [$lbl, 'Not Included', '']; continue; }   // a rule of 0 (Admin → Access)
         $unlocks[$kind] = $tight ? [$lbl, max(0, $tight['max'] - $tight['used']) . ' of ' . $tight['max'] . ' left', 'per ' . m3d_rule_period($tight['rule'])[1]]
                                  : [$lbl, 'Unlimited', ''];
     }
     if (($unlocks['outfits'][1] ?? '') === 'Unlimited' && ($unlocks['models'][1] ?? '') === 'Unlimited') unset($unlocks['outfits']);
+    if (($unlocks['scenes'][1] ?? '') === 'Unlimited' && ($unlocks['models'][1] ?? '') === 'Unlimited') unset($unlocks['scenes']);
 }
+$ruleCols = array_intersect_key(['models' => 'New Models', 'outfits' => 'New Accessories', 'scenes' => 'New Scenes'], array_flip(m3d_shown_kinds()));   // the Download Rules table's columns
 $mine = m3d_check_limits($p);   // every rule that applies to this patron, whatever it counts
 $exempt = $owner || $mine['exempt'];
 // what a first download uses an unlock for: "model", "model or accessory", or nothing (no rule counts this patron)
-$limitedKinds = array_keys(array_filter($unlocks, fn($u) => $u[1] !== 'Unlimited'));
+$limitedKinds = array_keys(array_filter($unlocks, fn($u) => $u[1] !== 'Unlimited' && $u[1] !== 'Not Included'));
 $unlockWhat = $exempt ? '' : implode(' or ', array_map(fn($k) => DL_WHAT[$k][0], $limitedKinds));
 $months = (int) ($counts['months'] ?? 0);
 // the patron's rows: their tier's when it has rules of its own, else the "Any Tier" ones (no tier found too), like m3d_rules_for();
@@ -53,7 +56,7 @@ $tierRules = in_array(true, array_map(fn($r) => $r['tier'] !== null, $ruleRows),
 $myTierRow = $tier && in_array($tier[1], array_column($ruleRows, 'tier'), true) ? $tier[1] : null;
 if (!$owner) {
     $ruleRows = $exempt ? [] : array_values(array_filter($ruleRows, fn($r) => $r['tier'] === $myTierRow));
-    if (!array_filter($ruleRows, fn($r) => $r['models'] || $r['outfits'])) $ruleRows = [];
+    if (!array_filter($ruleRows, fn($r) => array_filter(array_intersect_key($r, $ruleCols)))) $ruleRows = [];   // every row "No limit"
 }
 $tierCol = $owner && $tierRules;
 
@@ -67,10 +70,13 @@ $help = array_filter([
 $guides = array_intersect_key($help, ['Docs' => 1, 'FAQ' => 1]);
 $hasFree = m3d_free_items() !== [];
 $hasReq = false;
-foreach (['models', 'outfits'] as $k) foreach (m3d_listed_items($k) as $it) if (m3d_has_requirements($it) && m3d_release_phase($it) !== 'free') { $hasReq = true; break 2; }
+foreach (M3D_ITEM_KINDS as $k) foreach (m3d_listed_items($k) as $it) if (m3d_has_requirements($it) && m3d_release_phase($it) !== 'free') { $hasReq = true; break 2; }
 $start = array_values(array_filter((array) (m3d_settings()['start']['models']['links'] ?? []), fn($l) => is_array($l) && ($l['url'] ?? '') !== ''));
-// MustardUI's page (Settings → Features → MustardUI) first, unless a Getting Started link already goes there
-if (m3d_mustardui_on() && !array_filter($start, fn($l) => rtrim((string) $l['url'], '/') === '/mustardui')) array_unshift($start, ['label' => 'MustardUI', 'url' => '/mustardui/']);
+// the tools with "Link on the Welcome Page" (Admin → Tools → Options) first, unless a Getting Started link already goes there
+foreach (array_reverse(m3d_tools_listed('welcome')) as $t) {
+    $u = m3d_tool_url($t['slug']);
+    if (!array_filter($start, fn($l) => rtrim((string) $l['url'], '/') . '/' === $u || rtrim((string) $l['url'], '/') === '/' . $t['slug'])) array_unshift($start, ['label' => $t['name'], 'url' => $u]);
+}
 $startLine = trim(m3d_welcome()['start']);
 
 // the main button: back to where they were going (an item: by its name), else the catalog
@@ -98,7 +104,6 @@ if (empty($p['preview']) && !$owner) m3d_welcome_mark((string) $p['id']);
   <div class="wrap welcome">
     <section class="wl-hero">
       <div>
-        <p class="eyebrow">Welcome</p>
         <h1><?= $first !== '' ? 'Hi ' . e($first) . ', you’re in.' : 'You’re in.' ?></h1>
         <div class="lead wl-lead"><?= md_html(m3d_welcome_text()) ?></div>
       </div>
@@ -121,8 +126,9 @@ if (empty($p['preview']) && !$owner) m3d_welcome_mark((string) $p['id']);
         <article class="wl-step">
           <div class="wl-step-top"><?= $ico('<circle cx="11" cy="11" r="6.5"/><path d="m20 20-4.2-4.2"/>') ?><span class="wl-n">01</span></div>
           <h3>Find a Character</h3>
-          <p>Browse the <b>Characters</b> and <b>Accessories</b> catalogs, or <span class="wl-kb">press <kbd>/</kbd> anywhere to search.</span><span class="wl-tap">tap the magnifier to search.</span></p>
-          <?= $links(array_filter(['Characters' => '/', 'Accessories' => '/accessories/', 'Gallery' => m3d_has_gallery() ? '/gallery/' : ''])) ?>
+          <?php $cats = array_merge(['Characters'], m3d_kind_shown('outfits') ? ['Accessories'] : [], m3d_scenes_on() ? ['Scenes'] : []);   // only the catalogs with something in them ?>
+          <p>Browse the <?= count($cats) > 1 ? implode(', ', array_map(fn($c) => "<b>$c</b>", array_slice($cats, 0, -1))) . ' and <b>' . end($cats) . '</b> catalogs' : '<b>Characters</b> catalog' ?>, or <span class="wl-kb">press <kbd>/</kbd> anywhere to search.</span><span class="wl-tap">tap the magnifier to search.</span></p>
+          <?= $links(array_filter(['Characters' => '/', 'Accessories' => m3d_kind_shown('outfits') ? '/accessories/' : '', 'Scenes' => m3d_scenes_on() ? '/scenes/' : '', 'Gallery' => m3d_has_gallery() ? '/gallery/' : ''])) ?>
         </article>
         <article class="wl-step">
           <div class="wl-step-top"><?= $ico('<path d="M12 4v11"/><path d="m7 10.5 5 5 5-5"/><path d="M5 19.5h14"/>') ?><span class="wl-n">02</span></div>
@@ -157,12 +163,12 @@ if (empty($p['preview']) && !$owner) m3d_welcome_mark((string) $p['id']);
       <?php endif ?>
       <div class="wl-rules">
         <table class="wl-table">
-          <thead><tr><th><?= $ownRules ? 'Your Rules' : ($tierCol ? 'Tier · Time as a Patron' : 'Time as a Patron') ?></th><th>New Models</th><th>New Accessories</th></tr></thead>
+          <thead><tr><th><?= $ownRules ? 'Your Rules' : ($tierCol ? 'Tier · Time as a Patron' : 'Time as a Patron') ?></th><?php foreach ($ruleCols as $col): ?><th><?= e($col) ?></th><?php endforeach ?></tr></thead>
           <tbody>
           <?php foreach ($ruleRows as $r): $me = !$exempt && $r['tier'] === $myTierRow && $months >= $r['from'] && ($r['to'] === null || $months < $r['to']); ?>
             <tr<?= $me ? ' class="is-me"' : '' ?>>
               <th scope="row"><?php if ($tierCol): ?><span class="wl-tier"><?= e($r['tier'] === null ? 'Other Tiers' : m3d_tier_label($r['tier'])) ?></span><?php endif ?><?= e($r['label']) ?><?php if ($me): ?> <span class="wl-you">You</span><?php endif ?></th>
-              <?php foreach (['models' => 'New Models', 'outfits' => 'New Accessories'] as $k => $col): ?>
+              <?php foreach ($ruleCols as $k => $col): ?>
                 <td data-k="<?= e($col) ?>"><?= $r[$k] ? e(implode(' · ', $r[$k])) : '<span class="wl-free">No limit</span>' ?></td>
               <?php endforeach ?>
             </tr>

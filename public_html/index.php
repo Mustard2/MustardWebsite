@@ -41,7 +41,6 @@ layout_start('', site_description(), 'page-home');
     <?php foreach ($featured as $i => $f): $fUrl = '/models/' . $f['slug'] . '/'; $tag = $i === 0 ? 'h1' : 'h2'; ?>
       <article class="hero" data-hero-slide aria-roledescription="slide" aria-label="<?= $i + 1 ?> of <?= count($featured) ?>"<?= $i > 0 ? ' hidden' : '' ?>>
         <div class="hero-copy">
-          <p class="eyebrow">Featured Character</p>
           <<?= $tag ?> class="hero-title"><?= e($f['name']) ?></<?= $tag ?>>
           <p class="hero-meta">
             <span><?= e($f['franchise'] ?? '') ?></span>
@@ -103,24 +102,21 @@ layout_start('', site_description(), 'page-home');
   <!-- Catalog -->
   <section id="catalog" class="section wrap" data-catalog>
     <div class="section-head">
-      <div>
-        <h2 class="h2 cat-title">Character Catalogue</h2>
-      </div>
-      <p class="muted" data-cat-count aria-live="polite"><?= count($models) ?> <?= count($models) === 1 ? 'model' : 'models' ?></p>
+      <h2 class="h2 cat-title">Character Catalogue</h2>
     </div>
 
     <div class="filters hfilters" role="search">
-      <input class="input search" type="search" placeholder="Search a character…" aria-label="Search models" autocomplete="off" data-cat-search />
+      <?= tag_search('Search a character, franchise or status…', 'Search models', count($models), count($models) === 1 ? 'model' : 'models') ?>
       <?= filter_toggle('catalog-filters') ?>
     </div>
     <!-- status, sort, franchise and generation: closed by default, the Filters button opens them -->
     <div class="filter-panel" id="catalog-filters" hidden>
       <?= chip_row('Sort', 'sort', ['updated' => 'Recently Updated', 'order' => 'Featured', 'name' => 'A–Z', 'gen' => 'Generation', 'likes' => 'Most Liked', 'downloads' => 'Most Downloaded']) ?>
-      <?= liked_row('models', $models) ?>
+      <?= liked_row('models', $models) ?><?= bookmark_row('models', $models) ?>
       <?= chip_row('Unlocked', 'owned', ['' => 'All', 'yes' => 'Unlocked', 'no' => 'Not Yet'], '', ' data-owned-row hidden') /* shown by site.js when download limits apply */ ?>
       <?= chip_row('Status', 'status', $statusChips) ?>
       <?= chip_row('Franchise', 'franchise', $franchiseChips) ?>
-      <?= $generations ? chip_row('Generation', 'generation', $genChips, []) : '' ?>
+      <?= $generations ? chip_row('Generation', 'generation', $genChips, [], ' data-tag-plain') : '' ?>
     </div>
 
     <div class="grid" data-grid>

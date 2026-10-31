@@ -1,6 +1,7 @@
 <?php
 // Download gate of a picture's full size file: /get/still/<id>/ (a Gallery picture) or /get/still/<m|o>/<slug>/<code>/ (a picture of a
-// model's gallery row or of an accessory, code = m3d_pic_code()), rewritten here by .htaccess.
+// model's gallery row or of an accessory, code = m3d_pic_code()), rewritten here by .htaccess. Also /get/still/r/<id>/: a patron render whose
+// full-quality link is a file in the MEGA S4 bucket (render_full_dl()): shown on its item's page = free to download, like the render's other links, not counted.
 // Like the model links (auth/get.php): the real address is never in a page; patron links need a fresh paid tier check and the waiting
 // page first, public links start at once. Pictures are not part of the download limits or the extra requirements, and not in the patron download log:
 // only the all-time counter (stats.json → downloads.stills, downloads.pics for model / accessory pictures under "kind:slug:code").
@@ -11,7 +12,22 @@ header('X-Robots-Tag: noindex, nofollow');
 header('Referrer-Policy: no-referrer');
 maintenance_gate();
 
-$kind = ['m' => 'models', 'o' => 'outfits'][m3d_get_text('kind')] ?? '';
+$kind = array_flip(M3D_KIND_CODES)[m3d_get_text('kind')] ?? '';
+$rid = m3d_get_text('render');
+if ($rid !== '') {   // a patron render: shown on its item's page (approved, not hidden, the item's pictures shown to this visitor)
+    $r = preg_match('/^[a-f0-9]{8}$/D', $rid) ? m3d_render($rid) : null;
+    $it = $r ? m3d_item($r['kind'], $r['slug']) : null;
+    $full = (string) ($r['full'] ?? '');
+    if (!$it || (!m3d_is_admin($M3D) && (empty($r['ok']) || !empty($r['hidden']) || !m3d_showcase_here($r['kind'], $it))) || !m3d_render_full_s4($full)) dl_unavailable(404, 'This download is not available.');
+    if (m3d_download_url($full) === null) dl_unavailable(503, 'This download isn’t ready yet.');
+    $here = "/get/still/r/$rid/";
+    age_gate_page($here);
+    $back = m3d_item_url($r['kind'], $r['slug']);
+    $item = ['slug' => "r-$rid", 'name' => ($r['kind'] === 'models' ? m3d_model_name($it) : (string) $it['name']) . ' · ' . m3d_render_by($r)];
+    dl_wait_gate('renders', $rid, 0, $item, 'Full quality render', $here, back: $back, free: true);
+    if (m3d_preview()) preview_download_page('renders', $item, 'Full quality render', $back);
+    m3d_redirect(m3d_download_url($full));
+}
 if ($kind !== '') {   // a model / accessory picture: the page's own rules (draft, password, blurred) decide
     $slug = m3d_get_text('slug');
     $pc = m3d_get_text('code');

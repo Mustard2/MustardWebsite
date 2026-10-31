@@ -5,11 +5,11 @@
 //   Requirements: Bypass = minimum tier, months as a patron and total support of models and outfits aren't checked; Custom = they count as at least N months / a total
 //   Unlock Limits: Bypass ("No Limits") = the unlock limit rules below don't apply to them; Custom = their own rules replace them
 // A person's switch (`paused`) turns their Tier / Requirements / Unlock Limits off without deleting them (bans still apply),
-// and bans (BAN_KINDS: Log In, Downloads, Bug Reports, Comments, Renders) with a reason shown to them on /banned/.
+// and bans (BAN_KINDS: Log In, Downloads, Bug Reports, Comments, Renders, Ideas) with a reason shown to them on /banned/.
 // The list: one collapsed row per person (name, ID, short tags, date), search `q`, `f` = all | ex | banned, `sort` = name | new | old,
 // EX_PER_PAGE a page (`page`); `ex` = the row opened (also "Edit Exception" on the Patron Log), `new` = the Add User box open.
 // Three tabs (`tab`, ACCESS_TABS; access_menu()): Downloads = the download settings for everyone (settings.json → downloads, see m3d_dl_settings()): the waiting
-// time before a download, the daily cap, the grace period (m3d_pledge_since()) and the download limit rules (several, each can be turned off without deleting it); Exceptions = the list above
+// time before a download (one per kind, DL_WAIT_KINDS), the daily cap, the grace period (m3d_pledge_since()) and the download limit rules (several, each can be turned off without deleting it); Exceptions = the list above
 // (an address with `ex`, `add`, `new`, `f`, `q`, `sort` or `page` and no tab opens it); Temporary Links (admin/_shares.php).
 require __DIR__ . '/_admin.php';
 require __DIR__ . '/_shares.php';   // the Temporary Links tab
@@ -24,10 +24,30 @@ function dl_rules_sorted(array $rules): array
 }
 
 /** A download limit rule from the posted fields (throws on bad values). */
+/** What a rule counts, in a tag: "Models", "Models + Accessories", "Everything". */
+function dl_what_label(string $w): string
+{
+    $ks = m3d_rule_kinds(['what' => $w]);
+    return $ks === M3D_ITEM_KINDS ? 'Everything' : implode(' + ', array_map(fn($k) => ucfirst(DL_WHAT[$k][1]), $ks));
+}
+
+/** What a rule counts (Pi): one toggle icon per kind, any mix, at least one (admin.js [data-rule-what]), over a hidden field holding them joined by "+"
+ *  (m3d_what_clean() saves every kind as 'all'). Scenes are offered before the first scene is saved, so a rule can be ready for them. */
+function dl_what_field(string $name, string $what, string $form = ''): string
+{
+    $on = m3d_rule_kinds(['what' => $what]);
+    $h = '<span class="rule-kinds" data-rule-what role="group" aria-label="What counts"><input type="hidden" name="' . e($name) . '" value="' . e(implode('+', $on)) . '"' . ($form !== '' ? ' form="' . e($form) . '"' : '') . ' />';
+    foreach (KIND_ICONS as $k => $paths) {
+        $label = ucfirst(DL_WHAT[$k][1]);
+        $h .= '<button type="button" class="rule-kind" data-k="' . $k . '" aria-pressed="' . (in_array($k, $on, true) ? 'true' : 'false') . '" title="' . $label . '" aria-label="' . $label . '"><svg viewBox="0 0 24 24" aria-hidden="true">' . $paths . '</svg></button>';
+    }
+    return $h . '</span>';
+}
+
 function dl_rule_post(string $id, bool $on): array
 {
     $max = (int) ($_POST['max'] ?? 0);
-    $what = (string) ($_POST['what'] ?? '');
+    $what = m3d_what_clean((string) ($_POST['what'] ?? ''));
     $per = (string) ($_POST['per'] ?? '');
     $month = function (string $f): ?int {
         $v = trim((string) ($_POST[$f] ?? ''));
@@ -39,8 +59,8 @@ function dl_rule_post(string $id, bool $on): array
     $to = $month('to');
     $tier = trim((string) ($_POST['tier'] ?? ''));
     if ($tier !== '' && (!preg_match('/^\d{1,7}$/', $tier) || (int) $tier < 1)) throw new InvalidArgumentException('Pick a tier from the list.');
-    if ($max < 1 || $max > 999) throw new InvalidArgumentException('The number of downloads is between 1 and 999.');
-    if (!isset(DL_WHAT[$what]) || !isset(DL_PERIODS[$per])) throw new InvalidArgumentException('Pick what the rule counts and the period.');
+    if ($max < 0 || $max > 999) throw new InvalidArgumentException('The number of downloads is between 0 (not included) and 999.');
+    if ($what === null || !isset(DL_PERIODS[$per])) throw new InvalidArgumentException('Pick what the rule counts and the period.');
     if ($from !== null && $to !== null && $to <= $from) throw new InvalidArgumentException('“Less than” months must be more than “at least” months.');
     if ($to === 0) throw new InvalidArgumentException('“Less than 0 months” matches nobody: leave it empty for no upper limit.');
     return ['id' => $id, 'on' => $on, 'max' => $max, 'what' => $what, 'per' => $per, 'from' => $from ?? '', 'to' => $to ?? '', 'tier' => $tier === '' ? '' : (int) $tier];
@@ -77,8 +97,8 @@ function ex_post(array $old): array
             $what = ((array) ($_POST['rwhat'] ?? []))[$i] ?? '';
             $per = ((array) ($_POST['rper'] ?? []))[$i] ?? '';
             if (!is_string($max) || trim($max) === '') continue;   // an empty new row
-            if (!preg_match('/^\d{1,3}$/', trim($max)) || (int) $max < 1) throw new InvalidArgumentException('The number of unlocks is between 1 and 999.');
-            if (!is_string($what) || !is_string($per) || !isset(DL_WHAT[$what]) || !isset(DL_PERIODS[$per])) throw new InvalidArgumentException('Pick what each rule counts and the period.');
+            if (!preg_match('/^\d{1,3}$/D', trim($max))) throw new InvalidArgumentException('The number of unlocks is between 0 (not included) and 999.');
+            if (!is_string($what) || !is_string($per) || ($what = m3d_what_clean($what)) === null || !isset(DL_PERIODS[$per])) throw new InvalidArgumentException('Pick what each rule counts and the period.');
             $rules[] = ['max' => (int) $max, 'what' => $what, 'per' => $per];
         }
         if (!$rules) throw new InvalidArgumentException('Add at least one unlock rule, or pick No Limits.');
@@ -115,7 +135,7 @@ function ex_tags(array $x): array
     if ($extra === 'custom') $t[] = ['As ' . implode(' · ', array_filter([isset($x['months']) ? m3d_plural((int) $x['months'], 'Month') : '', isset($x['totalCents']) ? m3d_money((int) $x['totalCents']) . ' Total' : ''])), 'custom'];
     $limits = m3d_ex_mode($x['limits'] ?? null);
     if ($limits === 'bypass') $t[] = ['No Limits', ''];
-    if ($limits === 'custom') foreach (m3d_ex_rules($x) as $r) $t[] = [$r['max'] . ' ' . ucfirst(DL_WHAT[$r['what']][$r['max'] === 1 ? 0 : 1]) . ' / ' . ucwords(DL_PERIODS[$r['per']][1]), 'custom'];
+    if ($limits === 'custom') foreach (m3d_ex_rules($x) as $r) $t[] = [$r['max'] === 0 ? dl_what_label($r['what']) . ' Not Included' : $r['max'] . ' ' . dl_what_label($r['what']) . ' / ' . ucwords(DL_PERIODS[$r['per']][1]), 'custom'];
     if (!empty($x['paused'])) {   // switched off: its exception tags greyed after a "Paused" one, the bans as they are
         $bans = array_values(array_filter($t, fn($g) => $g[1] === 'ban'));
         $t = array_merge($bans, [['Paused', 'paused']], array_map(fn($g) => [$g[0], 'off'], array_values(array_filter($t, fn($g) => $g[1] !== 'ban'))));
@@ -136,39 +156,42 @@ if ($posted && str_starts_with((string) ($_POST['do'] ?? ''), 'share-')) {
     foreach ($rules as $i => $r) if ((string) ($r['id'] ?? '') === $rid) $index = $i;
     try {
         if ($do === 'dl-wait') {
-            $wait = trim((string) ($_POST['wait'] ?? ''));
-            if (!preg_match('/^\d{1,2}$/', $wait) || (int) $wait > 60) throw new InvalidArgumentException('The waiting time is between 0 and 60 seconds.');
-            $dl['wait'] = (int) $wait;
-            $done = $dl['wait'] ? "Patron downloads now start after {$dl['wait']} seconds." : 'Patron downloads now start right away (no waiting page).';
+            foreach (DL_WAIT_KINDS as $k => $name) {
+                $wait = trim((string) ($_POST['wait'][$k] ?? ''));
+                if (!preg_match('/^\d{1,2}$/D', $wait) || (int) $wait > DL_WAIT_MAX) throw new InvalidArgumentException('The countdown of ' . strtolower($name) . ' is between 0 and ' . DL_WAIT_MAX . ' seconds.');
+                $dl['waits'][$k] = (int) $wait;
+            }
+            $dl['wait'] = $dl['waits']['models'];
+            $done = 'Countdown saved.';
         } elseif ($do === 'dl-cap') {
             $cap = trim((string) ($_POST['cap'] ?? ''));
             if (!preg_match('/^\d{1,3}$/', $cap)) throw new InvalidArgumentException('The daily download cap is a number from 0 (off) to 999.');
             $dl['cap'] = (int) $cap;
-            $done = $dl['cap'] ? 'Each patron can now download ' . m3d_plural($dl['cap'], 'time') . ' in 24 hours, then waits 24 hours.' : 'Daily download cap off.';
+            $done = 'Daily cap saved.';
         } elseif ($do === 'dl-grace') {
             $grace = trim((string) ($_POST['grace'] ?? ''));
             if (!preg_match('/^\d{1,2}$/D', $grace) || (int) $grace > DL_GRACE_MAX) throw new InvalidArgumentException('The grace period is a number of days from 0 (off) to ' . DL_GRACE_MAX . '.');
             $dl['grace'] = (int) $grace;
-            $done = $dl['grace'] ? 'A pledge removed and made again within ' . m3d_plural($dl['grace'], 'day') . ' now keeps its months (from each patron’s next login).' : 'Grace period off: a removed pledge starts the months again.';
+            $done = 'Grace period saved.';
         } elseif ($do === 'dl-updates') {
             $dl['updates'] = !empty($_POST['updates']);
-            $done = $dl['updates'] ? 'A new version of an item already unlocked now uses another unlock.' : 'New versions of an item already unlocked are free again.';
+            $done = $dl['updates'] ? 'Updates use an unlock.' : 'Updates are free.';
         } elseif ($do === 'dl-add') {
             $rules[] = $r = dl_rule_post(bin2hex(random_bytes(4)), true);
-            $done = 'Rule added: ' . m3d_rule_text($r) . '.';
+            $done = 'Rule added.';
         } else {
             if ($index === null) throw new InvalidArgumentException('This rule is no longer in the list.');
             if ($do === 'dl-delete') {
-                $done = 'Rule deleted: ' . m3d_rule_text($rules[$index]) . '.';
+                $done = 'Rule deleted.';
                 array_splice($rules, $index, 1);
             } elseif ($do === 'dl-save') {
                 $rules[$index] = $r = dl_rule_post($rid, !empty($_POST['on']));
-                $done = 'Rule saved' . ($r['on'] ? '' : ' (off)') . ': ' . m3d_rule_text($r) . '.';
+                $done = 'Rule saved.';
             } else {
                 throw new InvalidArgumentException('Unknown action.');
             }
         }
-        if (!m3d_save_settings(['downloads' => ['wait' => $dl['wait'], 'rules' => dl_rules_sorted($rules)] + ($dl['updates'] ? ['updates' => true] : []) + ($dl['cap'] ? ['cap' => $dl['cap']] : []) + ($dl['grace'] ? ['grace' => $dl['grace']] : [])])) throw new RuntimeException(m3d_write_error());
+        if (!m3d_save_settings(['downloads' => ['wait' => $dl['wait'], 'waits' => array_diff_key($dl['waits'], ['models' => 1]), 'rules' => dl_rules_sorted($rules)] + ($dl['updates'] ? ['updates' => true] : []) + ($dl['cap'] ? ['cap' => $dl['cap']] : []) + ($dl['grace'] ? ['grace' => $dl['grace']] : [])])) throw new RuntimeException(m3d_write_error());
     } catch (InvalidArgumentException | RuntimeException $ex) {
         $error = $ex->getMessage();
     }
@@ -192,7 +215,7 @@ if ($posted && str_starts_with((string) ($_POST['do'] ?? ''), 'share-')) {
             $name = ($people[$index]['name'] ?? '') ?: $id;
             array_splice($people, $index, 1);
             if (!m3d_save_exceptions($people)) throw new RuntimeException(m3d_write_error('data'));
-            $done = "$name removed from the users list.";
+            $done = "$name removed.";
         } elseif ($do === 'add' || $do === 'save') {
             if (in_array($id, m3d_owner_ids($M3D), true)) throw new InvalidArgumentException('This ID is an admin (owner_user_ids): admins already pass every check.');
             $x = ['id' => $id, 'name' => mb_substr(trim((string) ($_POST['name'] ?? '')) ?: $foundName, 0, 80), 'note' => mb_substr(trim((string) ($_POST['note'] ?? '')), 0, 200)]
@@ -202,9 +225,9 @@ if ($posted && str_starts_with((string) ($_POST['do'] ?? ''), 'share-')) {
             if ($index !== null) $people[$index] = $x; else $people[] = $x;
             if (!m3d_save_exceptions($people)) throw new RuntimeException(m3d_write_error('data'));
             $who = $x['name'] !== '' ? $x['name'] : "ID $id";
-            $done = $do === 'add' && $index === null ? "$who added. It counts right away."
-                : (!empty($x['paused']) && !$was ? "{$who}’s exception is off: kept, but the normal rules apply" . (m3d_ex_bans($x) ? ' (the bans still do)' : '') . '.'
-                : ($was && empty($x['paused']) ? "{$who}’s exception is on again." : "$who saved."));
+            $done = $do === 'add' && $index === null ? "$who added."
+                : (!empty($x['paused']) && !$was ? "{$who}’s exception off."
+                : ($was && empty($x['paused']) ? "{$who}’s exception on." : "$who saved."));
         }
     } catch (InvalidArgumentException | RuntimeException $ex) {
         $error = $ex->getMessage();
@@ -258,10 +281,14 @@ admin_start('Access', 'users');
 <?php if ($tab === 'downloads'): ?>
     <div class="users-grid">
     <section class="sec" id="wait">
-      <h2 class="small-h">Download Countdown<?= tip('Countdown before every patron download. Free downloads (public links) start at once. 0 = off.') ?></h2>
-      <form method="post" class="dl-wait-form">
+      <h2 class="small-h">Download Countdown<?= tip('Countdown before every patron download, one for each kind: Pictures = the full size files of Gallery pictures and of model / accessory pictures. Free downloads (public links) start at once. 0 = off.') ?></h2>
+      <form method="post" class="dl-wait-form dl-waits">
         <?= form_keys() ?>
-        <label class="dl-secs"><input class="input input-sm" type="number" name="wait" min="0" max="60" step="1" value="<?= (int) $dl['wait'] ?>" required aria-label="Seconds before each patron download" /> <span class="muted">seconds</span></label>
+        <div class="dl-wait-rows">
+        <?php foreach (DL_WAIT_KINDS as $k => $name): if ($k === 'scenes' && !m3d_scenes_on(true)): ?><input type="hidden" name="wait[scenes]" value="<?= (int) $dl['waits'][$k] ?>" /><?php continue; endif ?>
+          <label class="dl-secs"><span class="dl-wait-k"><?= e($name) ?></span><input class="input input-sm" type="number" name="wait[<?= $k ?>]" min="0" max="<?= DL_WAIT_MAX ?>" step="1" value="<?= (int) $dl['waits'][$k] ?>" required aria-label="Seconds before each patron download of <?= e(strtolower($name)) ?>" /> <span class="muted">seconds</span></label>
+        <?php endforeach ?>
+        </div>
         <button class="btn btn-primary btn-sm" name="do" value="dl-wait">Save</button>
       </form>
     </section>
@@ -304,8 +331,8 @@ admin_start('Access', 'users');
               <span class="muted">months</span>
             </span>
             <span class="rule-cell rule-what" data-lbl="Max Unlocks">
-              <input class="input input-sm rule-num" form="<?= $f ?>" type="number" name="max" min="1" max="999" value="<?= (int) ($r['max'] ?? 1) ?>" required aria-label="How many" />
-              <select class="input input-sm" form="<?= $f ?>" name="what" aria-label="What counts"><?php foreach (DL_WHAT as $k => [$one, $many]): ?><option value="<?= e($k) ?>" <?= ($r['what'] ?? 'models') === $k ? 'selected' : '' ?>><?= e($k === 'all' ? 'Models + Accessories' : ucfirst($many)) ?></option><?php endforeach ?></select>
+              <input class="input input-sm rule-num" form="<?= $f ?>" type="number" name="max" min="0" max="999" value="<?= (int) ($r['max'] ?? 1) ?>" required aria-label="How many" />
+              <?= dl_what_field('what', (string) ($r['what'] ?? 'models'), $f) ?>
             </span>
             <span class="rule-cell rule-per" data-lbl="Period">
               <select class="input input-sm" form="<?= $f ?>" name="per" aria-label="Period"><?php foreach (DL_PERIODS as $k => [$secs, $label]): ?><option value="<?= e($k) ?>" <?= ($r['per'] ?? 'week') === $k ? 'selected' : '' ?>><?= e(ucwords($label)) ?></option><?php endforeach ?></select>
@@ -349,8 +376,8 @@ admin_start('Access', 'users');
         $cur = preg_replace('/[\d.,\s]+/u', '', m3d_money(100));   // "€", or "CHF"
         $ruleRow = function (array $r): void { ?>
             <div class="ex-c-rule" data-ex-rule>
-              <input class="input input-sm rule-num" type="number" name="rmax[]" min="1" max="999" value="<?= e((string) ($r['max'] ?? '')) ?>" aria-label="How many" />
-              <select class="input input-sm" name="rwhat[]" aria-label="What counts"><?php foreach (DL_WHAT as $k => [$one, $many]): ?><option value="<?= e($k) ?>" <?= ($r['what'] ?? 'models') === $k ? 'selected' : '' ?>><?= e($k === 'all' ? 'Models + Accessories' : ucfirst($many)) ?></option><?php endforeach ?></select>
+              <input class="input input-sm rule-num" type="number" name="rmax[]" min="0" max="999" value="<?= e((string) ($r['max'] ?? '')) ?>" aria-label="How many" />
+              <?= dl_what_field('rwhat[]', (string) ($r['what'] ?? 'models')) ?>
               <span class="muted">every</span>
               <select class="input input-sm" name="rper[]" aria-label="Period"><?php foreach (DL_PERIODS as $k => [$secs, $label]): ?><option value="<?= e($k) ?>" <?= ($r['per'] ?? 'week') === $k ? 'selected' : '' ?>><?= e(ucwords($label)) ?></option><?php endforeach ?></select>
               <button type="button" class="icon-btn del rule-del" data-ex-rule-del title="Delete this rule" aria-label="Delete this rule"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-12M9 7V4h6v3"/></svg></button>
@@ -407,13 +434,13 @@ admin_start('Access', 'users');
         <form method="post" class="ex-form" data-ex>
           <?= form_keys('add') ?>
           <div class="ex-ids">
-            <label class="field"><span class="lbl">Patreon User ID or Name<?= tip('The ID is shown to each patron on My account (/account/). A name finds people who downloaded something or wrote a bug report.') ?></span><input class="input" name="id" required maxlength="80" placeholder="e.g. 12345678 or Anna" list="known-patrons" data-ex-id autocomplete="off" value="<?= e($pre['id'] !== '' ? $pre['id'] : ($posted && ($_POST['do'] ?? '') === 'add' && $error !== null ? (string) ($_POST['id'] ?? '') : '')) ?>" /></label>
+            <label class="field"><span class="lbl">Patreon User ID or Name<?= tip('The ID is shown to each patron on My account (/account/). A name finds people who downloaded something or wrote a bug report.') ?></span><input class="input" name="id" required maxlength="80" placeholder="e.g. 12345678 or Anna" data-person-pick="user" data-ex-id autocomplete="off" value="<?= e($pre['id'] !== '' ? $pre['id'] : ($posted && ($_POST['do'] ?? '') === 'add' && $error !== null ? (string) ($_POST['id'] ?? '') : '')) ?>" /></label>
             <label class="field"><span class="lbl">Name</span><input class="input" name="name" maxlength="80" placeholder="e.g. Anna (tester)" data-ex-name value="<?= e($pre['name']) ?>" /></label>
             <label class="field ex-note"><span class="lbl">Note</span><input class="input" name="note" maxlength="200" placeholder="Why, until when…" /></label>
           </div>
           <?php $exFields([], false) ?>
           <div class="form-actions"><button type="button" class="btn btn-ghost btn-sm" data-ex-add-close>Cancel</button><button class="btn btn-primary btn-sm">Add User</button></div>
-          <datalist id="known-patrons"><?= m3d_patron_options() ?></datalist>
+          <?= person_pick_js() ?>
         </form>
       </div>
 
@@ -433,7 +460,7 @@ admin_start('Access', 'users');
             <details class="exl-row<?= !empty($x['paused']) ? ' is-paused' : '' ?>" id="ex-<?= e($xid) ?>"<?= $openId === $xid ? ' open' : '' ?>>
               <summary>
                 <svg class="exl-chev" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 6 6 6-6 6"/></svg>
-                <span class="exl-nm"><?= ($x['name'] ?? '') !== '' ? e($nm) : '<span class="muted">No Name</span>' ?> <code><?= e($xid) ?></code></span>
+                <span class="exl-nm"><?= avatar_html($xid, (string) ($x['name'] ?? ''), false, 'ava-sm') ?><span class="exl-n<?= ($x['name'] ?? '') !== '' ? '' : ' muted' ?>"><?= ($x['name'] ?? '') !== '' ? e($nm) : 'No Name' ?></span><code><?= e($xid) ?></code></span>
                 <span class="exl-tags"><?php foreach (ex_tags($x) as [$t, $tone]): ?><span class="exl-tg<?= $tone !== '' ? ' is-' . $tone : '' ?>"><?= e($t) ?></span><?php endforeach ?></span>
                 <span class="exl-dt"><?= e($date((string) ($x['added'] ?? ''))) ?></span>
               </summary>

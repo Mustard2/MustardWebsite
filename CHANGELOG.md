@@ -1,5 +1,205 @@
 # Changelog
 
+## 2026.10.31-47 · 31 Oct 2026
+
+- New: Patron renders' full-quality links can be a file in your MEGA S4 bucket, picked with the S4… file browser in Media → From Patrons.
+- New: Admin → Gallery's full size link fields have the S4… file browser.
+- New: the download countdown can be set separately for models, accessories and pictures (Access → Downloads).
+- Change: Corners of cards, boxes, pictures and fields across the site and the admin are less rounded.
+- Change: Every corner's roundness now comes from one setting in the stylesheet (no visible change).
+- Change: Corners are a little rounder again, halfway between the old and the new look.
+- New: Patreon profile pictures next to comments and bug reports, on My Account and in the admin's patron lists (Settings → Patreon → Profile Pictures, off by default)
+- New: "Show My Patreon Picture" switch on My Account
+- Change: the header shows only your account picture; clicking it opens a menu with your unlocks left, My Account, Admin and Log Out
+- Fix: the header's tighter layout for small tablets (721–860 px wide) works again
+- Change: Patreon profile pictures are on by default (Settings → Patreon → Profile Pictures turns them off)
+- Fix: The weekly automatic backup runs again even when you make manual backups in between, and no longer waits for you to open the admin.
+- New: Quick Add ("+" in the header) has New Gallery Picture, which opens the Gallery's Add Pictures window.
+- Fix: the Unlocks Left row in the account menu highlights like the other rows when you point at it
+- Fix: in Admin → Access → Exceptions, the profile picture, name and ID now sit on one centred line, with the IDs lined up in a column.
+- New: a Settings page for logged-in visitors (header menu → Settings) with your picture, which notifications the bell shows, ignored updates, followed bug reports and your patron render defaults
+- New: the ring around your account picture turns green while you have unlocks left and red once one kind is used up
+- Change: "Show My Patreon Picture" moved from My Account to the Settings page
+- Change: the Share window of patron renders starts with your name and profile link as set in Settings
+- Change: profile pictures are sharper on My Account, in the account menu and on Settings
+- Change: the privacy page is shorter and easier to read, in bullet lists
+- Change: the Settings page is as wide as the other pages.
+- Fix: the Settings page title starts at the same height as on the other pages.
+- Change: on My Account, Settings and Log Out are icon buttons at the right end of the row.
+- Change: the Settings page shows only titles and switches, without the explanation lines.
+- New: Settings → Maintenance → Tools shows how many Patreon profile pictures are stored and can delete them all.
+- New: "Clear When Eligible" visibility keeps a model's or accessory's pictures blurred until a patron meets its requirements (tier, months, total support), and tells them what is still missing.
+- Change: shorter visibility badges in the admin lists ("Blurred · Patrons", "Blurred · Eligible"), so they no longer get cut off.
+- New: When adding a required add-on in the editor, pick one you already used on another model or accessory, from a list while typing its name or the "Used Before" chips, so its link and version fill in by themselves
+- New: Required add-ons can have a minimum version, shown as "2025.3+" next to the add-on on the download box and the download page
+- Fix: the notification bell no longer fails to open for visitors who follow a bug report with news.
+- New: "Ideas for …" boards on model and accessory pages, where patrons suggest outfits, features and fixes and vote on them, and the creator sets a status such as Planned or Done in a version (Settings → Features → Ideas, off by default).
+- New: Settings → Features starts with an "At a Glance" box listing every feature as On or Off, each linking to its settings.
+- Change: the Ideas settings box no longer has an intro line.
+- Fix: the "Suggest an Idea" window no longer changes size when "Fix" is picked.
+- New: Model and accessory links pasted in Discord show a card with the item's facts (Generation, Latest Version, Blender, Status), its picture and a View button, instead of the description.
+- Change: The Discord link card shows the name first, with less space above it, and the site's icon next to it.
+- Change: on Ideas boards the creator approves a waiting idea with Publish / Reject buttons on its row, and changes a status from its status pill.
+- Change: the "Under Review" idea status is removed.
+- Change: an idea's title is limited to 60 characters and its details to 500, with a character count under each field.
+- Change: the status pills and ⋯ buttons on Ideas boards are bigger and easier to tap.
+- Change: Discord announcements of new versions are cards: the model's facts, What's New, the picture, and View Model / Full Changelog buttons.
+- Change: Gallery, blog and "now free" announcements and the private Discord notifications use the same card style, with buttons that open the item.
+- Fix: A site whose logo is an SVG gets proper PNG icons for browser tabs, iPhones and Discord after pressing Save in Site identity.
+- New: The logo can be uploaded as an SVG file.
+- Change: on Ideas boards the status pills sit at the right of each row, next to ⋯.
+- New: Moderators: patrons you pick in Admin → Moderation can approve, hide and ban on comments, bug reports and ideas, without deleting anything
+- New: Admin → Moderation with posts waiting for a check, hidden posts, a log of every action with Undo, and the moderators list
+- New: Moderators get a "Mustard3D Mod" admin with only the Moderation page
+- New: Hidden posts stay greyed with the reason for the creator and moderators, and disappear for everyone else
+- New: Posts by moderators carry a "Moderator" tag and never wait for approval
+- Change: Discord link previews and announcements show the site line above the name and a smaller site icon.
+- Change: The moderators' ban switch now reads "Ban People (Comments, Bugs, Ideas)"
+- Change: Discord link previews and announcements show the site name above the name and the franchise under it, with the site icon at full size.
+- Change: Confirmation messages are now short, e.g. "Site identity saved."
+- Change: Floating messages have a new darker look with a round icon
+- Change: The site icon in Discord cards is a bit smaller.
+- New: Docs pages and blog posts show a card in Discord link previews, like models and accessories.
+- Change: The Moderators box in Admin → Moderation has no intro text and no "No moderators yet." line.
+- Change: Docs link previews on Discord no longer list the page's headings.
+- Change: After an update, the "Homepage" button sits on the right of the "Updated to …" box.
+- New: "Patreon ID or name" fields in the admin list people with their profile picture, tags, tier, months and last download, and show the picked person as a card.
+- New: People added or removed as moderators get a notification in their bell.
+- Change: Saving what moderators can do shows a short "Saved." message.
+- New: The search fields of the catalogue, Accessories and Gallery suggest characters, franchises, statuses and other filters as you type, and picked ones become tags with an ✕ inside the field
+- Change: Blog posts line up with the other pages; the text and comments keep a comfortable reading width.
+- New: On wide screens, blog posts have a sidebar with the post's headings, its models / accessories and more posts.
+- Change: The Moderation page shows waiting and hidden posts in one Messages tab; hidden ones appear greyed with the Show Hidden switch.
+- Change: "What Moderators Can Do" has no explanation line under it.
+- New: Emoji button in comment and bug report boxes, with search, recently used and skin tones
+- New: Emoji codes like :heart: while typing a comment or bug report
+- New: Reactions under comments, bug reports and bug comments
+- Change: A comment that is only one to three emoji shows bigger
+- Fix: A comment that is a single emoji (like 👍) is no longer refused as too short
+- New: Bell notice when someone reacts to your comment, bug report or bug report comment
+- New: "Skip for Paying Patrons" for bug reports: with Check Before Showing on, reports from paying patrons show at once.
+- Change: the Bug Reports and Comments settings boxes have the same groups, names and order ("Review Before Publishing" is now "Check Before Showing").
+- Change: those boxes show where notifications go as bell and Discord icons, lined up in columns.
+- New: a Light slider in the 3D viewer to make the model brighter or darker.
+- Change: the 3D viewer's default light is dimmer.
+- Fix: Discord cards no longer show stray backslashes, e.g. "Update available\: 2026.10.30\-28".
+- Fix: The "Done in Version" field of an idea's status menu sits on the right and no longer shows an example version.
+- Fix: A bug report's Fixed In field no longer shows an example version.
+- New: Moderators get a bell row for every post waiting for their check, under a Moderator tab next to their User notifications.
+- New: The creator's bell (and Discord, if switched on) shows every step a moderator takes, bans with their reason.
+- Fix: The Ban window of the Moderation page didn't open.
+- Change: the 3D viewer's Light button and slider moved to the bottom right, so they no longer cover the character.
+- Change: the 3D viewer's default light is a little brighter than in the last update.
+- Fix: Moderation's empty Messages and Log tabs show their message at the same height.
+- Fix: the Home and Stats titles line up with the other admin pages.
+- Fix: a moderator's report and idea titles were lost in Moderation, the bell and the log (only the text showed).
+- Fix: a moderator could show again a post the creator hid; now only the creator can.
+- Fix: a moderator banned from logging in kept moderating until their session ended.
+- Fix: bug reports hidden from Creator Tools or the bug list's batch bar now carry the "Hidden by the creator" mark like the other hidden posts, and lose it when shown again.
+- Fix: ideas from moderators no longer say "it will be checked first" in the Suggest window (they never wait).
+- Fix: a name or text with @everyone / @here / a role mention inside a Discord card no longer pings the channel (the intro message is left as typed).
+- Fix: On the Accessories page, model filters and their search tags show the model's picture and its plain name instead of "Hinata G4"
+- Fix: Typing a model, type or status name in the catalogue and Accessories search no longer empties the list before the suggested tag is picked
+- Fix: On the Accessories page you can search for and pick any model, also those only "All Models" accessories fit
+- Change: The number of models and accessories now shows inside the catalogue's search bar.
+- Fix: Docs cards in the Accessories intro are centred and use the full width.
+- Fix: the Moderator tag now shows on every comment and bug report of a current moderator, including ones written before they became one.
+- Fix: the notification bell of a newly added moderator opens again instead of failing.
+- New: Scenes section (off by default): Blender scenes made with the models, with their own catalog, pages, unlock limits and download countdown
+- New: each scene lists the models in it and the version of each model it was made with
+- New: model pages list the scenes made with that model
+- New: Gallery pictures can link to the scene they were made in, with a "Download Scene" button in the viewer
+- Change: the Discord Announcements settings box no longer shows "?" help tips.
+- Change: Scenes have no on/off switch any more: they show on the site as soon as one scene is published
+- Change: unlock explanations (My Account, the header, the welcome page, How Unlocks Work) leave out accessories or scenes while none is published
+- New: an unlock rule can be set to 0, which shows as "Not Included" for those patrons
+- Change: the Discord Announcements box keeps its "?" tips on Webhook URL and Intro Message (only the title and switch tips are gone).
+- New: an unlock rule can count any mix of models, accessories and scenes, picked with three icons in Access → Downloads
+- New: scenes have a Blender version, shown on the scene page and in link previews
+- New: a download link can have its own password, set in the editor with a random password generator; only people who have it can download through it.
+- New: "New Password" button for an item's page password in the editor.
+- Fix: the main picture of a scene page shows whole and sharp, also when it's an upright render
+- Change: a scene whose main picture is upright shows it on the left, like a model page.
+- New: Admin → Gallery's character filter also lists scenes, so a scene's pictures can be found there.
+- New: pictures added to the Gallery from a scene's folder are linked to that scene and tagged with its models.
+- Fix: reordering a scene's patron renders in Media → From Patrons now saves them under that scene.
+- Change: scene pages no longer repeat the models under the download box ("Models Needed"). They stay listed under "Models in This Scene".
+- New: In Development models can offer downloads to selected people: download links with a password show and work, while the others stay hidden.
+- New: Expected Release field for In Development models, shown on the model page ("To Be Announced" when empty).
+- New: New versions of In Development models are announced on Discord, with a note that they might not be downloadable yet.
+- New: The admin Models / Accessories / Scenes lists show a lock on download links that have a password.
+- Change: the "Unlocks by Tier" table shows only icons and values in its cells, with a legend row under it naming the icons.
+- Fix: in Admin → Gallery → Add Pictures, a scene's pictures show under that scene even when they were uploaded for another model or accessory.
+- Change: admin tab bars are more compact, so every Media tab fits on one row.
+- Change: Admin → Gallery's Download Scene is a search field like Characters, showing each scene's models as small faces
+- Fix: Scene cards show an upright picture whole instead of cutting it
+- Change: Accessories and Scenes can be filtered by several models at once, showing the items with all of them
+- New: The bug report search suggests models, accessories, tags and filters as you type, shown as tags in the field like the catalogue search
+- New: Bug reports can be filtered by several models or accessories at once
+- Fix: the Filters panel no longer opens by itself after picking something in the search field (Bug Reports, Accessories, Scenes, Gallery).
+- Change: Bug Reports items are picked only in the search field; the Filters panel no longer repeats them.
+- Change: accessory cards show the models they fit as small faces, like scene cards.
+- Change: Less empty space between the top menu and the page title, on every page and on phones.
+- Fix: accessory and scene cards in a row line up, even when one has no version, no models or no likes.
+- New: What's New has a calendar view (List | Calendar switch) showing each day's updates with their pictures
+- New: a like heart at the top right of every model, accessory and scene card; patrons can like from the catalogue without opening the item.
+- New: A little calendar to pick dates in every date field of the admin
+- Fix: the site search now finds Gallery pictures of a model, and of the scenes made with it.
+- New: Bookmark a model, accessory or scene to get a notification when a new version comes out, even without downloading it.
+- New: Downloaded items are bookmarked by themselves; removing the bookmark stops their update notifications.
+- New: "Bookmarked" filter in the catalogs.
+- Change: What's New's "Only What I Downloaded" is now "Downloaded / Bookmarked".
+- New: The notification bell tells you about new Gallery pictures, accessories and scenes for the characters you bookmarked or downloaded.
+- Fix: Character, accessory and scene cards line up again when a franchise or name is long; the line next to the heart ends with "…".
+- Change: The like heart on character, accessory and scene cards sits on the picture's bottom right corner.
+- Change: Cards no longer show the comments count.
+- Fix: a download or "why can't I download" address with a crafted `type` value no longer shows an error page.
+- Fix: Stop Ignoring on the Settings page now works for scene updates.
+- Fix: How Unlocks Work and the Welcome page count scenes when they say some items ask for more or have free downloads.
+- Fix: a bookmarked model that later became a draft, password-locked or deleted no longer shows its name in bell rows about new pictures and accessories.
+- Change: My Account shows your bookmarked models, accessories and scenes instead of the liked ones.
+- New: Remove a bookmark straight from its card on My Account.
+- New: The creator can bookmark items too, without notifications.
+- New: Model and accessory pages with a wide main picture show it across the top of the page, with the text and download box side by side under it, like scene pages.
+- New: Bookmark button next to the heart in My Account → My Models.
+- New: Accessories have a Catalog Image and a Main Image like models; an empty one falls back to the other, then to the first picture.
+- Fix: the Blog and Docs editors are full width again (the calendar popup's styles had squashed the post and page pane).
+- Fix: a scene card added to a blog post's text adds the scene to "In This Post", like model and accessory cards.
+- Fix: My Models no longer shows an update as new for an item whose bookmark you removed.
+- Change: My Models shows the version you downloaded in its own column.
+- New: Accessories can be made for Blender instead of a model (generic assets), with a Blender chip on cards and a Blender pill on their page.
+- Change: The accessory editor's Optimized For is one bar: Selected Models, All Models or Blender.
+- New: Accessories have a Blender Supported field, shown on their page like a model's.
+- New: the MustardUI page shows the MustardUI logo next to its title.
+- Change: The Settings page is a narrower column with the profile as a banner on top and an icon, title and short line over each section.
+- Change: The Settings page is full width again, the same as My Account.
+- Change: The Settings page's "Show My Patreon Picture" switch has no explanation line under it.
+- Change: The Settings page's "Link on My Name" shows the X or Patreon icon next to the menu.
+- Change: the Update page no longer repeats the update channel as a pill in the Update from Remote box.
+- Change: My Account's sections have an icon, a title and a short line on top, like the Settings page.
+- Change: My Account and Settings no longer show the small "My Account" line above the title.
+- Change: My Account's Bookmarked rows say which notifications you get for them.
+- Change: Code clean-up with no visible change (shared helpers for the JSON answers, the download log and repeated page parts; unused code removed)
+- Change: Page titles no longer have a small label above them, so every title starts at the same height.
+- Change: The Gallery page is titled "Gallery".
+- Change: Code clean-up with no visible change (Admin → Accessories and Admin → Scenes share one page's code)
+- Change: The homepage slideshow no longer shows "Featured Character" above the name.
+- New: Tool pages with tutorials (Admin → Assets → Tools); tutorials are written pages with an optional video, a level and a cover.
+- New: MustardUI is a draft tool on every site; publish it to show its page.
+- Change: the MustardUI switch in Settings → Features is gone; its menu item, bug form field, changelog badge, welcome link and Contacts card are now options of the tool.
+- Change: /mustardui/ redirects to /tools/mustardui/.
+- Fix: the numbers in the admin tabs (Assets, Media) no longer touch the tab names.
+- Change: tool pages no longer show a small label above the tool name or above their section titles, and the tool editor no longer has a field for it.
+- Fix: Drop the hint lines under Patron Renders settings (#424)
+- Change: the admin Tools list has a "Go to Page" button on each row instead of the address column.
+- New: simple pages (a title, a text and optional tutorials) in Admin → Assets → Pages, next to tool pages.
+- Change: the Tools tab is now Pages; "+ Add Page" starts a simple page, and a switch at the top of the editor turns it into a tool and back.
+- Change: the Simple Page | Tool switch in the page editor is full width.
+- Change: the page editor's Public / Draft switch has icons, like the model editor's.
+- Change: Admin is now a small yellow button next to your name in the account menu.
+- Change: the page editor's Public / Draft switch is full width.
+- Change: Header menu links are now buttons with a visible box on hover and on the current page, and the whole area around each word can be clicked (public site and admin).
+
 ## 2026.10.26-9 · 26 Oct 2026
 
 - Fix: The heart on Gallery pictures with no likes sits in the middle of its button.

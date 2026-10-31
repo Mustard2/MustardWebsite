@@ -1,12 +1,12 @@
 <?php
-// Editor for a model (default) or an outfit (?kind=outfits). New entry when there is no ?slug=.
+// Editor for a model (default), an outfit (?kind=outfits) or a scene (?kind=scenes). New entry when there is no ?slug=.
 // The form is built by admin.js from the JSON below.
 require __DIR__ . '/_admin.php';
 admin_require($M3D);
 
-$kind = ($_GET['kind'] ?? '') === 'outfits' ? 'outfits' : 'models';
-$what = $kind === 'outfits' ? 'accessory' : 'model';
-$list = $kind === 'outfits' ? '/admin/outfits.php' : '/admin/models.php';
+$kind = in_array($_GET['kind'] ?? '', M3D_ITEM_KINDS, true) ? (string) $_GET['kind'] : 'models';
+$what = m3d_kind_word($kind);
+$list = '/admin/' . $kind . '.php';
 $slug = m3d_get_text('slug');
 $item = $slug !== '' ? m3d_item($kind, $slug) : null;
 if ($slug !== '' && !$item) m3d_redirect($list);
@@ -60,7 +60,7 @@ if ($copyOf) {
     for ($n = 1; isset($taken[$copySlug = substr((string) $copyOf['slug'], 0, 50) . '-copy' . ($n > 1 ? "-$n" : '')]); $n++);
     $item = ['slug' => '', 'name' => mb_substr($copyOf['name'], 0, 110) . ($n > 1 ? " (Copy $n)" : ' (Copy)'), 'visibility' => 'draft'] + $item;
 } elseif ($isNew) {
-    $item = $kind === 'outfits'
+    $item = $kind !== 'models'
         ? ['slug' => '', 'name' => '', 'models' => [], 'images' => [], 'links' => []]
         : ['slug' => '', 'name' => '', 'franchise' => '', 'status' => 'in-development', 'links' => []];
 }
@@ -91,15 +91,18 @@ $payload = [
     'model3d'    => m3d_model3d_facts($item),   // the 3D preview's facts (size, triangles, textures) or why it can't be shown
     's4'         => m3d_s4()['bucket'] !== '' && m3d_s4_on(),   // MEGA S4 on with a bucket: download links may be "s4:<file>" (the S4… picker)
     'discord'    => admin_discord_state($kind, $isNew ? null : m3d_item($kind, (string) $item['slug'])),   // the line under "Add New Version": what Discord does with the top version on save
+    'addons'     => admin_addon_choices(),   // Add-Ons Required: the ones other items use, to add again without looking up their address
     'deadLinks'  => array_map(fn() => true, lc_dead_for($item)),   // Link Check: these addresses get red fields + a broken chain (markDead() in admin.js)
     // typing # in a version's changes lists the reports (bugMention() in admin.js): newest first, this item's own marked
     'bugs'       => m3d_bugs_on() ? array_map(fn($b) => ['n' => (int) $b['n'], 't' => (string) $b['title'], 's' => isset(BUG_STATUSES[$b['status'] ?? '']) ? $b['status'] : 'new',
         'mine' => !$isNew && ($b['about'] ?? '') === $kind . ':' . $item['slug'], 'a' => m3d_bug_about($b)['name'], 'f' => ($b['status'] ?? '') === 'fixed' ? bug_version_words(m3d_bug_fixed_in($b)) : ''],
         array_slice(m3d_bugs(), 0, 500)) : [],
     'bugStatuses' => array_map(fn($s) => [$s[0], $s[2]], BUG_STATUSES),
-    // the Optimized For picker: name on one line, Gen / major version / franchise under it
+    // the Optimized For / Models in This Scene picker: name on one line, Gen / major version / franchise under it; a scene also
+    // picks the version of each model it was made with: `vers` = the model's changelog labels, newest first
     'models'     => array_map(fn($m) => ['slug' => $m['slug'], 'name' => (string) $m['name'], 'thumb' => img_small(item_pic('models', $m)),
-        'sub' => implode(' · ', array_filter([($m['generation'] ?? '') !== '' ? 'Gen ' . $m['generation'] : '', m3d_model_versions($m) ? 'v' . (int) $m['majorVersion'] : '', (string) ($m['franchise'] ?? '')]))], $models),
+        'sub' => implode(' · ', array_filter([($m['generation'] ?? '') !== '' ? 'Gen ' . $m['generation'] : '', m3d_model_versions($m) ? 'v' . (int) $m['majorVersion'] : '', (string) ($m['franchise'] ?? '')]))]
+        + ($kind === 'scenes' ? ['vers' => array_values(array_unique(array_filter(array_map(fn($v) => is_array($v) ? m3d_version_label($v) : '', (array) ($m['changelog'] ?? [])))))] : []), $models),
 ];
 $public = m3d_item_url($kind, $item['slug']);
 
@@ -107,11 +110,11 @@ admin_start($isNew ? 'New ' . ucfirst($what) : 'Edit ' . $item['name'], $kind);
 ?>
     <div class="admin-head sticky-head">
       <div>
-        <a class="back" href="<?= e($list) ?>">← All <?= $kind === 'outfits' ? 'Accessories' : 'Models' ?></a>
+        <a class="back" href="<?= e($list) ?>">← All <?= m3d_kind_word($kind, true, true) ?></a>
         <h1><?= $isNew ? 'New ' . ucfirst($what) : e($item['name']) ?></h1>
       </div>
       <div class="head-actions">
-        <?php if (!$isNew): ?><a class="btn btn-ghost" href="/admin/edit.php?kind=<?= e($kind) ?>&amp;copy=<?= e(rawurlencode((string) $item['slug'])) ?>" title="A new <?= e($what) ?> that starts as a copy of this one (a draft, saved only when you press Save)" data-duplicate>Duplicate</a><button type="button" class="btn btn-ghost" data-history>History</button><a class="btn btn-ghost" href="/admin/stats.php?of=<?= e($kind . ':' . rawurlencode((string) $item['slug'])) ?>">Stats</a><a class="btn btn-ghost" href="<?= e($public) ?>">View Page</a><?php endif ?>
+        <?php if (!$isNew): ?><a class="btn btn-ghost" href="/admin/edit.php?kind=<?= e($kind) ?>&amp;copy=<?= e(rawurlencode((string) $item['slug'])) ?>" title="A new <?= e($what) ?> that starts as a copy of this one (a draft, saved only when you press Save)">Duplicate</a><button type="button" class="btn btn-ghost" data-history>History</button><a class="btn btn-ghost" href="/admin/stats.php?of=<?= e($kind . ':' . rawurlencode((string) $item['slug'])) ?>">Stats</a><a class="btn btn-ghost" href="<?= e($public) ?>">View Page</a><?php endif ?>
         <button class="btn btn-primary" data-save>Save</button>
       </div>
       <nav class="set-menu ed-menu" aria-label="Sections" data-ed-menu hidden></nav>   <!-- admin.js: one button per section of the form -->

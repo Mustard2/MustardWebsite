@@ -76,8 +76,8 @@ $n = m3d_bugs_update(function (array $bugs, int $next) use ($ns, $op, $now, &$pi
             if (in_array($id, array_map('strval', (array) ($b['tags'] ?? [])), true)) continue;
             $b['tags'][] = $id;
             $b['log'][] = ['t' => 'tag', 'at' => $now, 'add' => [$id]];
-        } elseif ($op === 'hide') $b['hidden'] = true;
-        elseif ($op === 'show') unset($b['hidden']);
+        } elseif ($op === 'hide') { if (empty($b['hidden'])) $b['hid'] = m3d_mod_mark(''); $b['hidden'] = true; }   // by the creator: only they show it again
+        elseif ($op === 'show') unset($b['hidden'], $b['hid']);
         elseif ($op === 'publish') unset($b['pending']);
         elseif ($op === 'seen') $b['seen'] = true;
         $bugs[$i] = $b;

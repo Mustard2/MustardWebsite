@@ -69,31 +69,34 @@ if (admin_form_post()) {
     switch ($_POST['do'] ?? '') {
         case 'opcache':
             $ok = function_exists('opcache_reset') && @opcache_reset();
-            $done = $ok ? 'PHP cache cleared.' : 'PHP cache is not active on this server: nothing to clear.';
+            $done = $ok ? 'PHP cache cleared.' : 'PHP cache isn’t on.';
             break;
         case 'sessions':
-            $done = $del(session_files()) . ' sessions ended. Everyone except you has to log in again.';
+            $done = $del(session_files()) . ' sessions ended.';
             break;
         case 'login-days':
             $d = (int) ($_POST['login_days'] ?? 0);
             if ($d < 1 || $d > 365) { $error = 'Choose between 1 and 365 days.'; break; }
-            $was = intdiv(m3d_session_lifetime(), 86400);
-            if (!$save(['login_days' => $d], 'Logins now last ' . m3d_plural($d, 'day') . ($d < $was ? '. Logins older than that have ended.' : '.'))) break;
+            if (!$save(['login_days' => $d], 'Logins saved.')) break;
             $_SESSION['started'] = time();   // your own login doesn't end because of the change
             m3d_session_cleanup(true);
             break;
         case 'log':
-            $done = m3d_log_clear() ? 'Download log cleared.' : 'The download log was already empty.';
+            $done = m3d_log_clear() ? 'Download log cleared.' : 'Download log already empty.';
             break;
         case 'unused':   // the same as Images → "Delete all unused"
             [$n, , $n3, $nv] = media_purge_unused();
-            $done = $n || $n3 || $nv ? unused_words($n, $n3, $nv) . ' that weren’t used deleted.' : 'There were no unused files to delete.';
+            $done = $n || $n3 || $nv ? unused_words($n, $n3, $nv) . ' deleted.' : 'No unused files.';
             break;
         case 'temp':
             $done = $del(temp_files()) . ' temporary files deleted.';
             break;
+        case 'avatars':   // the same as turning Profile Pictures off, without turning them off
+            $n = m3d_avatars_delete_all();
+            $done = $n ? m3d_plural($n, 'profile picture') . ' deleted.' : 'No profile pictures.';
+            break;
         case 'problems-clear':
-            $done = !is_file(m3d_problems_file()) || @unlink(m3d_problems_file()) ? 'The list of site problems is empty again.' : '';
+            $done = !is_file(m3d_problems_file()) || @unlink(m3d_problems_file()) ? 'Site problems cleared.' : '';
             if ($done === '') $error = m3d_write_error();
             break;
         case 'identity':
@@ -114,11 +117,14 @@ if (admin_form_post()) {
                     [$id['logo'], $id['icon']] = img_site_logo($f['tmp_name']);
                 } elseif (!empty($_POST['id_nologo'])) {
                     [$id['logo'], $id['icon']] = ['', ''];
+                } elseif (str_starts_with($id['logo'], 'data:image/svg+xml') && is_uploaded_file($_FILES['id_icon_png']['tmp_name'] ?? '')) {
+                    $id['icon'] = img_site_icon($_FILES['id_icon_png']['tmp_name']);   // an SVG logo: its icons from the PNG admin.js drew (GD can't read SVG)
                 }
                 $store = $id;   // every value, so a later change of the built-in defaults never changes this site
                 if (!m3d_save_settings(['identity' => $store])) throw new RuntimeException(m3d_write_error());
                 if ($old['logo'] !== $id['logo']) img_site_logo_delete($old['logo'], $old['icon']);
-                $done = 'Site identity saved. Open the site to see it (the browser may keep the old tab icon for a little while).';
+                elseif ($old['icon'] !== $id['icon']) img_site_logo_delete('', $old['icon']);
+                $done = 'Site identity saved.';
             } catch (InvalidArgumentException | RuntimeException $ex) {
                 $error = $ex->getMessage();
             }
@@ -139,20 +145,20 @@ if (admin_form_post()) {
                     $links[] = ['type' => $type, 'url' => mb_substr($url, 0, 500)];
                 }
                 if (count($links) > 16) throw new InvalidArgumentException('16 links at most.');
-                $save(['social' => $links], 'Links saved: ' . count($links) . ' shown in the footer.');
+                $save(['social' => $links], 'Social links saved.');
             } catch (InvalidArgumentException $ex) {
                 $error = $ex->getMessage();
             }
             break;
         case 'menu':
             try {
-                $save(['menu' => admin_menu_posted()], 'Menu saved: the header and the footer show it in this order.');
+                $save(['menu' => admin_menu_posted()], 'Menu saved.');
             } catch (InvalidArgumentException $ex) {
                 $error = $ex->getMessage();
             }
             break;
         case 'menu-reset':
-            $save(['menu' => null], 'Menu back to the built-in items in their usual order.');
+            $save(['menu' => null], 'Menu reset.');
             break;
         case 'maintenance':
             $on = ($_POST['state'] ?? '') === 'on';
@@ -160,7 +166,7 @@ if (admin_form_post()) {
             $old = m3d_settings()['maintenance'] ?? [];
             $since = $on ? (!empty($old['on']) ? (string) ($old['since'] ?? gmdate('c')) : gmdate('c')) : '';
             $save(['maintenance' => ['on' => $on, 'message' => $msg, 'since' => $since]],
-                $on ? 'Maintenance mode is on: visitors now see the “Back Soon” page. You can still use the site.' : 'Maintenance mode is off: the site is open again.');
+                $on ? 'Maintenance mode on.' : 'Maintenance mode off.');
             break;
         case 'notice':
             $until = is_string($_POST['notice_until'] ?? null) ? trim($_POST['notice_until']) : '';
@@ -177,7 +183,7 @@ if (admin_form_post()) {
                 $error = 'The last day isn’t a real date: pick it again, or leave it empty.'; break;
             }
             if ($n['on'] && $n['text'] === '') { $error = 'Write the message, or untick “Show Notice”.'; break; }
-            $save(['notice' => $n], $n['on'] ? 'Notice saved: it is shown on ' . ($n['where'] === 'home' ? 'the homepage' : 'every page') . ($n['until'] !== '' ? ' until ' . date_create_immutable($n['until'])->format('j F Y') : '') . '.' : 'Notice saved and hidden.');
+            $save(['notice' => $n], 'Site notice saved.');
             break;
         case 'patreon':
             try {
@@ -199,7 +205,7 @@ if (admin_form_post()) {
                 }
                 if ($new['campaign_id'] !== '' && !ctype_digit($new['campaign_id'])) throw new InvalidArgumentException('The campaign ID is a number (digits only).');
                 if (!m3d_patreon_save($new)) throw new RuntimeException('Could not write ' . basename(M3D_PRIVATE) . '/patreon.php. Check that the ' . basename(M3D_PRIVATE) . ' folder is writable.');
-                $done = 'Patreon keys saved. Test the login in a private window before you log out here: if it fails, fix the keys.';
+                $done = 'Patreon keys saved.';
             } catch (InvalidArgumentException | RuntimeException $ex) {
                 $error = $ex->getMessage();
                 break;
@@ -218,7 +224,7 @@ if (admin_form_post()) {
                     $paying++;
                     if (!empty($m['relationships']['pledge_history']['data'])) $withHistory++;
                 }
-                if ($withHistory > 0) $done = 'Patreon keys saved. Creator token tested: Patreon sent the pledge history of ' . $withHistory . ' of the ' . m3d_plural($paying, 'paying patron') . ' checked, so a patron who came back counts from their new pledge.';
+                if ($withHistory > 0) $done = 'Patreon keys saved. Creator token works.';
                 elseif ($paying > 0) $failed('Patreon sent no pledge history for the ' . m3d_plural($paying, 'paying patron') . ' checked. Months as a patron keep counting from Patreon’s start date.');
                 else admin_flash('Patreon accepted the creator token, but none of the first ' . m3d_plural(count($r['json']['data'] ?? []), 'member') . ' is a paying patron, so the pledge history couldn’t be checked.', 'info');
             } else {
@@ -239,14 +245,14 @@ if (admin_form_post()) {
                 ];
             }
             $plans = ['on' => !empty($_POST['pl_on']), 'eyebrow' => $one('pl_eyebrow', 40), 'title' => $one('pl_head', 80), 'boxes' => $boxes];
-            $save(['plans' => $plans], $plans['on'] ? 'Homepage section saved: visitors who can’t download yet see it.' : 'Homepage section saved and hidden.');
+            $save(['plans' => $plans], 'Homepage section saved.');
             break;
         case 'legal':
             $one = fn(string $k) => mb_substr(trim((string) ($_POST[$k] ?? '')), 0, 120);
             $lg = ['name' => $one('legal_name'), 'address' => clean_text($_POST['legal_address'] ?? '', 300), 'email' => $one('legal_email')];
             $sup = $one('support_email');
             if (($lg['email'] !== '' && !filter_var($lg['email'], FILTER_VALIDATE_EMAIL)) || ($sup !== '' && !filter_var($sup, FILTER_VALIDATE_EMAIL))) { $error = 'Check the email addresses.'; break; }
-            $save(['legal' => $lg, 'support_email' => $sup], 'Legal details and support email saved.');
+            $save(['legal' => $lg, 'support_email' => $sup], 'Legal & contact saved.');
             break;
         case 'pd-delete':   // Privacy → Personal Data → Delete All Their Data (the ID typed again to confirm)
             require_once __DIR__ . '/_privacy.php';
@@ -254,13 +260,13 @@ if (admin_form_post()) {
             if (!preg_match('/^[\w-]{1,40}$/', $pdId) || trim((string) ($_POST['typed'] ?? '')) !== $pdId) { $error = 'Type the Patreon user ID exactly to confirm: nothing was deleted.'; break; }
             [$pdDone, $pdFail] = pd_delete($pdId);
             if ($pdFail) $error = 'Could not delete: ' . implode(', ', $pdFail) . ($pdDone ? '. Deleted: ' . implode(', ', $pdDone) : '') . '.';
-            else $done = $pdDone ? 'Deleted for Patreon ID ' . $pdId . ': ' . implode(', ', $pdDone) . '.' : 'Nothing was stored for Patreon ID ' . $pdId . '.';
+            else $done = $pdDone ? 'Personal data deleted.' : 'Nothing stored for this ID.';
             break;
         case 'timezone':
             $tzId = (string) ($_POST['timezone'] ?? '');
             if (!in_array($tzId, DateTimeZone::listIdentifiers(), true)) { $error = 'Pick a time zone from the list.'; break; }
             $tzDone = (array) (m3d_settings(true)['release']['done'] ?? []);
-            if (!$save(['timezone' => $tzId === SITE_TZ_DEFAULT ? null : $tzId], 'Time zone saved: ' . str_replace('_', ' ', $tzId) . '.')) break;
+            if (!$save(['timezone' => $tzId === SITE_TZ_DEFAULT ? null : $tzId], 'Time zone saved.')) break;
             // a version day starts at another moment now: its release code changes, so the posted ones keep their mark and the next due time is worked out again
             $tzKeys = [];
             foreach (m3d_release_events() as $code => $ev) $tzKeys["$ev[0]:$ev[1]:$ev[2]"] = $code;
@@ -284,7 +290,7 @@ if (admin_form_post()) {
             if (empty($new['stills'])) unset($new['stills_queue'], $new['stills_due'], $new['stills_tries']);   // off: pictures waiting aren't posted
             // turning it on: every version already out counts as posted, so only new ones are announced
             if ($on && (!$dc['on'] || $hook !== $dc['webhook'])) $new['sent'] = array_slice(array_values(array_unique(array_merge($dc['sent'], m3d_discord_current_codes()))), -DISCORD_SENT_MAX);
-            if (!$save(['discord' => $new], $forget ? 'Webhook removed: Discord announcements are off.' : ($on ? 'Discord announcements are on: the next new version you save goes to the channel.' : 'Discord announcements are off.'))) break;
+            if (!$save(['discord' => $new], $forget ? 'Webhook removed.' : 'Discord announcements saved.')) break;
             if ($_POST['do'] === 'discord-test') {
                 $done = null;
                 if ($hook === '') { $error = 'Paste the webhook address first.'; break; }
@@ -292,7 +298,7 @@ if (admin_form_post()) {
                 $embed = discord_sample_embed();
                 $embed['author'] = ['name' => 'Test message: this is how new versions will look'];
                 $res = m3d_session_pause(fn() => m3d_discord_post($hook, $msg, [$embed]));
-                if ($res['ok']) $done = 'Test message sent: check the Discord channel.' . ($on ? '' : ' Turn on “Announce New Versions” to turn the announcements on.');
+                if ($res['ok']) $done = 'Test message sent.';
                 else $error = $res['error'];
             }
             break;
@@ -312,7 +318,7 @@ if (admin_form_post()) {
             if ($hook === '' && (array_filter($new['discord']) || $_POST['do'] === 'notify-test')) { $error = 'Paste the webhook address of your private channel first.'; break; }
             // the old Bug Reports / Comments webhooks are read only until this is saved (m3d_notify_settings()): they go
             if (!m3d_webhooks_save(['notify' => $hook, 'bugs' => null, 'comments' => null])) { $error = 'Could not write ' . basename(M3D_PRIVATE) . '/webhooks.php. Check that the ' . basename(M3D_PRIVATE) . ' folder is writable.'; break; }
-            $ntOk = $save(['notify' => $new], $forget ? 'Webhook removed: nothing goes to Discord.' : 'Notifications saved.');
+            $ntOk = $save(['notify' => $new], $forget ? 'Webhook removed.' : 'Notifications saved.');
             m3d_notify_settings(true);   // the form below shows what is saved now
             if (!$ntOk) break;
             if ($_POST['do'] === 'notify-test') {
@@ -321,7 +327,7 @@ if (admin_form_post()) {
                 $res = m3d_session_pause(fn() => m3d_discord_post($hook, '', [['title' => 'Test message from ' . site_name(), 'url' => abs_url('/admin/settings.php?tab=notify'),
                     'description' => $on ? "This channel gets:\n• " . implode("\n• ", $on) : 'Nothing is switched on for Discord yet.', 'color' => hexdec('e8b931'),
                     'footer' => ['text' => 'Settings → Notifications']]]));
-                if ($res['ok']) $done = 'Test message sent: check the Discord channel.';
+                if ($res['ok']) $done = 'Test message sent.';
                 else $error = $res['error'];
             }
             break;
@@ -385,10 +391,10 @@ if (admin_form_post()) {
                 }
             }
             if (!m3d_s4_save($s4)) { $error = 'Could not write ' . basename(M3D_PRIVATE) . '/s4.php. Check that the ' . basename(M3D_PRIVATE) . ' folder is writable.'; $s4Test = null; break; }
-            $done = $_POST['do'] === 's4-test' ? null : ($s4['on'] ? 'S4 downloads on: download links to S4 files get a temporary address.' : 'S4 downloads off: S4 is hidden everywhere else and "s4:" links don’t download; the keys and bucket stay saved here.');
+            $done = $_POST['do'] === 's4-test' ? null : 'S4 downloads saved.';
             break;
         case 's4-remove':
-            $done = m3d_s4_save([]) ? 'S4 keys removed: S4 links are no longer signed (they won’t download while the bucket is private).' : null;
+            $done = m3d_s4_save([]) ? 'S4 keys removed.' : null;
             if (!$done) $error = 'Could not delete ' . basename(M3D_PRIVATE) . '/s4.php.';
             break;
         case 'bugs':
@@ -396,24 +402,26 @@ if (admin_form_post()) {
             if ($host !== '' && !is_https_url($host)) { $error = 'The upload website must be an address starting with https://'; break; }
             $on = !empty($_POST['bugs_on']);
             $ok = m3d_bug_settings_save(['on' => $on, 'who' => ($_POST['bugs_who'] ?? '') === 'paying' ? 'paying' : 'any', 'host' => mb_substr($host, 0, 300),
-                'uploads' => !empty($_POST['bugs_uploads']), 'moderate' => !empty($_POST['bugs_moderate']),
+                'uploads' => !empty($_POST['bugs_uploads']), 'moderate' => !empty($_POST['bugs_moderate']), 'paid_skip' => !empty($_POST['bugs_paid_skip']),
+                'emoji' => !empty($_POST['bugs_emoji']), 'codes' => !empty($_POST['bugs_codes']), 'reactions' => !empty($_POST['bugs_reactions']),
                 'per_day' => max(1, min(50, (int) ($_POST['bugs_per_day'] ?? 5)))]);
-            if ($ok) $done = $on ? 'Bug reports are on: /bugs/ is in the footer and on model and accessory pages.' : 'Bug reports are off: /bugs/ shows “not found” to visitors.';
+            if ($ok) $done = 'Bug reports saved.';
             else $error = m3d_write_error();
             break;
         case 'comments':
             $on = !empty($_POST['cm_on']);
-            $ok = m3d_comment_settings_save(['on' => $on, 'models' => !empty($_POST['cm_models']), 'outfits' => !empty($_POST['cm_outfits']), 'posts' => !empty($_POST['cm_posts']),
+            $ok = m3d_comment_settings_save(['on' => $on, 'models' => !empty($_POST['cm_models']), 'outfits' => !empty($_POST['cm_outfits']), 'scenes' => m3d_scenes_on(true) ? !empty($_POST['cm_scenes']) : m3d_comment_settings()['scenes'], 'posts' => !empty($_POST['cm_posts']),
                 'who' => ($_POST['cm_who'] ?? '') === 'paying' ? 'paying' : 'any', 'moderate' => !empty($_POST['cm_moderate']),
-                'paid_skip' => !empty($_POST['cm_paid_skip']), 'per_day' => max(1, min(100, (int) ($_POST['cm_per_day'] ?? 10)))]);
-            if ($ok) $done = $on ? 'Comments are on: they show under the pages you picked (each page can turn them off in its editor).' : 'Comments are off: none are shown, and they are kept.';
+                'paid_skip' => !empty($_POST['cm_paid_skip']), 'per_day' => max(1, min(100, (int) ($_POST['cm_per_day'] ?? 10))),
+                'emoji' => !empty($_POST['cm_emoji']), 'codes' => !empty($_POST['cm_codes']), 'reactions' => !empty($_POST['cm_reactions'])]);
+            if ($ok) $done = 'Comments saved.';
             else $error = m3d_write_error();
             break;
         case 'comments-approve':
         case 'comments-delete':
             $id = (int) ($_POST['id'] ?? 0);
             $del = $_POST['do'] === 'comments-delete';
-            if (!m3d_comment_find($id)) { $done = 'That comment is gone already.'; break; }
+            if (!m3d_comment_find($id)) { $done = 'Comment already gone.'; break; }
             if (m3d_comment_change($id, function ($c) use ($del) { if ($del) return null; unset($c['pending']); return $c; })) {
                 $done = $del ? 'Comment deleted.' : 'Comment published.';
                 if (!$del) m3d_notify_read('c' . $id);   // read in the bell too, as Publish there does
@@ -422,13 +430,26 @@ if (admin_form_post()) {
         case 'comments-clear':
             $n = m3d_comments_clear();
             if ($n === null) $error = m3d_write_error();
-            else $done = $n ? 'Deleted ' . m3d_plural($n, 'comment') . ': every page starts with none.' : 'There were no comments to delete.';
+            else $done = $n ? m3d_plural($n, 'comment') . ' deleted.' : 'No comments to delete.';
+            break;
+        case 'ideas':
+            $on = !empty($_POST['idea_on']);
+            $ok = m3d_idea_settings_save(['on' => $on, 'models' => !empty($_POST['idea_models']), 'outfits' => !empty($_POST['idea_outfits']), 'scenes' => m3d_scenes_on(true) ? !empty($_POST['idea_scenes']) : m3d_idea_settings()['scenes'],
+                'who' => ($_POST['idea_who'] ?? '') === 'any' ? 'any' : 'paying', 'moderate' => !empty($_POST['idea_moderate']),
+                'per_day' => max(1, min(50, (int) ($_POST['idea_per_day'] ?? 5)))]);
+            if ($ok) $done = 'Ideas saved.';
+            else $error = m3d_write_error();
+            break;
+        case 'ideas-clear':
+            $n = m3d_ideas_clear();
+            if ($n === null) $error = m3d_write_error();
+            else $done = $n ? m3d_plural($n, 'idea') . ' deleted.' : 'No ideas to delete.';
             break;
         case 'blog':
             $on = !empty($_POST['blog_on']);
             $txt = fn(string $k, int $max) => trim(mb_substr(preg_replace('/\s+/u', ' ', is_string($_POST[$k] ?? null) ? $_POST[$k] : ''), 0, $max));
             $save(['blog' => ['on' => $on, 'title' => $txt('blog_title', 80), 'intro' => $txt('blog_intro', 300)]],
-                $on ? 'The blog is on: it is in the menu once it has a post.' : 'The blog is off: /blog/ shows “not found” to visitors.');
+                'Blog saved.');
             break;
         case 'welcome':
             $old = m3d_welcome();
@@ -438,37 +459,37 @@ if (admin_form_post()) {
                 'text' => trim(mb_substr($txt('welcome_text'), 0, WELCOME_TEXT_MAX)),
                 'start' => trim(mb_substr(preg_replace('/\s+/u', ' ', $txt('welcome_start')), 0, WELCOME_START_MAX)),
                 'since' => $on && !$old['on'] ? time() : $old['since']]],   // switched on now: patrons who downloaded before count as old
-                $on ? 'Welcome page is on: new patrons see it after their first login.' : 'Welcome page is off.');
+                'Welcome page saved.');
+            break;
+        case 'avatars':   // Patreon → Profile Pictures (app/avatars.php)
+            $on = !empty($_POST['avatars_on']);
+            if (!$save(['avatars' => ['on' => $on]], $on ? 'Profile pictures on.' : 'Profile pictures off.')) break;
+            if (!$on && ($n = m3d_avatars_delete_all())) $done .= ' ' . m3d_plural($n, 'picture') . ' deleted.';
             break;
         case 'welcome-reset':
-            if (m3d_welcome_reset()) $done = 'Everyone will see the welcome page again after their next login.';
+            if (m3d_welcome_reset()) $done = 'Welcome page reset.';
             else $error = m3d_write_error();
             break;
         case 'showcase':
             $on = !empty($_POST['sc_on']);
             $max = trim((string) ($_POST['sc_per_day'] ?? ''));
             if (m3d_showcase_settings_save(['on' => $on, 'per_day' => $max === '' ? 0 : max(0, min(SHOWCASE_PER_DAY_MAX, (int) $max))]))
-                $done = $on ? 'Patron renders are on: patrons can share theirs from model and accessory pages.' : 'Patron renders are off: nobody can share new ones and none show on the pages.';
+                $done = 'Patron renders saved.';
             else $error = m3d_write_error();
-            break;
-        case 'mustardui':
-            $k = $_POST['do'];
-            $on = !empty($_POST[$k . '_on']);
-            $save([$k => ['on' => $on]], FEATURE_SWITCHES[$k][$on ? 4 : 5]);
             break;
         case 'tiers-sync':
             $st = m3d_session_pause(fn() => m3d_tiers_sync());
-            if ($st['ok']) $done = 'Tiers read from Patreon: ' . m3d_plural(count(m3d_known_tiers()), 'paid tier') . '.';
+            if ($st['ok']) $done = 'Tiers updated.';
             else $error = 'Tiers not read: ' . ($st['err'] ?? 'unknown error');
             break;
         case 'currency':
             $c = strtoupper((string) ($_POST['currency'] ?? ''));
             if (!preg_match('/^[A-Z]{3}$/', $c)) { $error = 'Choose a currency.'; break; }
-            $save(['currency' => $c], "Currency set to $c.");
+            $save(['currency' => $c], 'Currency saved.');
             break;
         case 'identity-reset':
             $old = m3d_identity();
-            if ($save(['identity' => null], 'Site identity reset to the default.')) img_site_logo_delete($old['logo'], $old['icon']);
+            if ($save(['identity' => null], 'Site identity reset.')) img_site_logo_delete($old['logo'], $old['icon']);
             break;
     }
 }
@@ -502,6 +523,7 @@ if (isset($_GET['tools'])) {
                 'sessions' => ['text' => $sessN . ' other active ' . ($sessN === 1 ? 'session' : 'sessions') . ' (' . m3d_size($sessB) . ').', 'n' => $sessN],
                 'log' => ['text' => $logLines . ' entries, kept ' . (int) ($M3D['log_retention_days'] ?? 365) . ' days.', 'n' => $logLines],
                 'backups' => ['text' => m3d_size($bkB) . ' of backups.'],
+                'avatars' => ['text' => ($avN = m3d_avatars_count()) ? m3d_plural($avN, 'picture') . ' stored (' . m3d_size(files_stats(glob(m3d_avatar_dir() . '/*.webp') ?: [])[1]) . ').' : 'None stored.', 'n' => $avN],
                 'disk' => ['text' => $free ? m3d_size((int) $free) : 'unknown'],
             ];
         } elseif ($part === 'media') {
@@ -600,7 +622,8 @@ admin_start('Settings', 'settings');
           </div>
           <div class="field"><span class="lbl">Logo<?= tip('Shown next to the name; also the browser tab and phone icon. Best: square PNG, transparent background, at least 192 px.') ?></span>
             <span class="id-logo">
-              <label class="btn btn-ghost btn-sm">Upload…<input type="file" name="id_logo" accept="image/png,image/jpeg,image/webp,image/gif" hidden data-id="logo" /></label>
+              <label class="btn btn-ghost btn-sm">Upload…<input type="file" name="id_logo" accept="image/png,image/jpeg,image/webp,image/gif,image/svg+xml" hidden data-id="logo" /></label>
+              <input type="file" name="id_icon_png" accept="image/png" hidden data-id-icon-png /><?php /* an SVG logo's icons, drawn by admin.js on save */ ?>
               <?php if ($id['logo'] !== ''): ?><label class="check small"><input type="checkbox" name="id_nologo" value="1" data-id="nologo" /> Remove Logo</label><?php endif ?>
             </span>
           </div>
@@ -621,34 +644,22 @@ admin_start('Settings', 'settings');
       <h2 class="small-h">Social Links<?= tip('Footer buttons, in this order. The Patreon, Discord and X links are also used across the site.') ?></h2>
       <form method="post" class="social-form" data-social-form>
         <?= form_keys('social') ?>
+        <?php
+        // one link row: the saved ones, and the empty one "+ Add Link" copies
+        $socialRow = fn(string $type, string $url): string => '<div class="social-row" data-social-row>'
+            . '<span class="social-prev" data-social-icon>' . social_icon($type) . '</span>'
+            . '<select class="input" name="social_type[]" aria-label="Network" data-social-type>'
+            . implode('', array_map(fn($k, $t) => '<option value="' . e($k) . '"' . ($k === $type ? ' selected' : '') . '>' . e($t[0]) . '</option>', array_keys(SOCIAL_TYPES), SOCIAL_TYPES)) . '</select>'
+            . '<input class="input" type="text" name="social_url[]" maxlength="500" value="' . e($url) . '" placeholder="https://…" aria-label="Address" spellcheck="false" />'
+            . '<span class="row-btns">'
+            . '<button type="button" class="drag-handle drag-sm" data-social-drag title="Drag to reorder (or focus and use the arrow keys)" aria-label="Drag to reorder">⠿</button>'
+            . '<button type="button" class="icon-btn del" data-social-del title="Remove" aria-label="Remove">✕</button>'
+            . '</span></div>';
+        ?>
         <div class="social-rows" data-social-rows>
-          <?php foreach ($social as $l): ?>
-            <div class="social-row" data-social-row>
-              <span class="social-prev" data-social-icon><?= social_icon($l['type']) ?></span>
-              <select class="input" name="social_type[]" aria-label="Network" data-social-type>
-                <?php foreach (SOCIAL_TYPES as $k => $t): ?><option value="<?= e($k) ?>" <?= $k === $l['type'] ? 'selected' : '' ?>><?= e($t[0]) ?></option><?php endforeach ?>
-              </select>
-              <input class="input" type="text" name="social_url[]" maxlength="500" value="<?= e($l['url']) ?>" placeholder="https://…" aria-label="Address" spellcheck="false" />
-              <span class="row-btns">
-                <button type="button" class="drag-handle drag-sm" data-social-drag title="Drag to reorder (or focus and use the arrow keys)" aria-label="Drag to reorder">⠿</button>
-                <button type="button" class="icon-btn del" data-social-del title="Remove" aria-label="Remove">✕</button>
-              </span>
-            </div>
-          <?php endforeach ?>
+          <?php foreach ($social as $l) echo $socialRow((string) $l['type'], (string) $l['url']) ?>
         </div>
-        <template data-social-template>
-          <div class="social-row" data-social-row>
-            <span class="social-prev" data-social-icon><?= social_icon('website') ?></span>
-            <select class="input" name="social_type[]" aria-label="Network" data-social-type>
-              <?php foreach (SOCIAL_TYPES as $k => $t): ?><option value="<?= e($k) ?>" <?= $k === 'website' ? 'selected' : '' ?>><?= e($t[0]) ?></option><?php endforeach ?>
-            </select>
-            <input class="input" type="text" name="social_url[]" maxlength="500" value="" placeholder="https://…" aria-label="Address" spellcheck="false" />
-            <span class="row-btns">
-              <button type="button" class="drag-handle drag-sm" data-social-drag title="Drag to reorder (or focus and use the arrow keys)" aria-label="Drag to reorder">⠿</button>
-              <button type="button" class="icon-btn del" data-social-del title="Remove" aria-label="Remove">✕</button>
-            </span>
-          </div>
-        </template>
+        <template data-social-template><?= $socialRow('website', '') ?></template>
         <script type="application/json" data-social-icons><?= json_encode(array_map(fn($k) => social_icon($k), array_combine(array_keys(SOCIAL_TYPES), array_keys(SOCIAL_TYPES))), JSON_UNESCAPED_SLASHES | JSON_HEX_TAG) ?></script>
         <div class="form-actions">
           <button type="button" class="btn btn-ghost btn-sm act-left" data-social-add>+ Add Link</button>
@@ -830,6 +841,17 @@ admin_start('Settings', 'settings');
       </form>
     </section>
 
+    <?php $avOn = m3d_avatars_on(); ?>
+    <section style="margin-top:20px" class="sec" id="avatars">
+      <h2 class="small-h">Profile Pictures <span class="badge tone-<?= $avOn ? 'green' : 'grey' ?>"><?= $avOn ? 'On' : 'Off' ?></span><?= tip('Each person’s Patreon profile picture, next to their comments and bug reports, in the header’s account menu and in your lists. Copied once at login and kept small on this site: pages never load anything from Patreon. People without a picture keep their initial, and anyone can turn theirs off on My Account.') ?></h2>
+      <form method="post" class="set-list"<?= $avOn ? ' onsubmit="return this.avatars_on.checked || confirm(' . e(json_encode('Turn profile pictures off? Every stored picture is deleted; they are copied again at each person’s next login if you turn them back on.')) . ')"' : '' ?>>
+        <?= form_keys('avatars') ?>
+        <label class="toggle"><input type="checkbox" class="switch" name="avatars_on" value="1" <?= $avOn ? 'checked' : '' ?> /><span>Show Patreon Profile Pictures</span></label>
+        <?php if ($avOn): ?><p class="muted small"><?= ($n = m3d_avatars_count()) ? m3d_plural($n, 'picture') . ' stored. ' : 'No pictures yet: they come with each person’s next login. ' ?>A picture changed on Patreon is copied again at the next login.</p><?php endif ?>
+        <div class="form-actions"><button class="btn btn-primary btn-sm">Save</button></div>
+      </form>
+    </section>
+
     <?php /* rarely changed: folded at the bottom, open while a key is missing or just saved */ ?>
     <details style="margin-top:20px" class="sec fold" id="patreon"<?= $ptMiss ? ' open' : $open('patreon') ?>>
       <summary><h2 class="small-h">Patreon Keys <span class="badge tone-<?= $ptMiss ? 'red' : 'green' ?>"><?= $ptMiss ? $ptMiss . ' Missing' : 'Saved' ?></span><?= tip('The keys of your Patreon client (patreon.com/portal/registration/register-clients). Change them only when you move the site or make a new client.') ?></h2></summary>
@@ -866,8 +888,21 @@ admin_start('Settings', 'settings');
     <?php endif ?>
 
     <?php if ($tab === 'features'): ?>
+    <?php // a recap of every feature box below, on or off, each a link to its box
+    $feat = ['blog' => ['Blog', m3d_blog_settings()['on']], 'bugs' => ['Bug Reports', m3d_bugs_on()], 'comments' => ['Comments', m3d_comment_settings()['on']],
+        'ideas' => ['Ideas', m3d_idea_settings()['on']], 'showcase' => ['Patron Renders', m3d_showcase_settings()['on']], 'discord' => ['Discord Announcements', m3d_discord_on()],
+        'welcome' => ['Welcome Page', m3d_welcome()['on']], 's4' => ['MEGA S4 Downloads', m3d_s4_on()]];
+    $featOn = count(array_filter($feat, fn($f) => $f[1])); ?>
+    <section class="sec" id="features-recap">
+      <h2 class="small-h">At a Glance <span class="muted small"><?= $featOn ?> of <?= count($feat) ?> on</span></h2>
+      <div class="feat-recap">
+        <?php foreach ($feat as $k => [$name, $on]): ?>
+          <a class="feat-tile<?= $on ? ' is-on' : '' ?>" href="#<?= $k ?>"><span class="feat-dot"></span><span><?= e($name) ?></span><b><?= $on ? 'On' : 'Off' ?></b></a>
+        <?php endforeach ?>
+      </div>
+    </section>
     <?php $bl = m3d_blog_settings(); $blRaw = m3d_settings()['blog'] ?? []; ?>
-    <section class="sec" id="blog">
+    <section style="margin-top:20px" class="sec" id="blog">
       <h2 class="small-h">Blog <span class="badge tone-<?= $bl['on'] ? 'green' : 'grey' ?>"><?= $bl['on'] ? 'On' : 'Off' ?></span></h2>
       <form method="post" class="set-list">
         <?= form_keys('blog') ?>
@@ -888,53 +923,39 @@ admin_start('Settings', 'settings');
       <h2 class="small-h">Bug Reports <span class="badge tone-<?= $bs['on'] ? 'green' : 'grey' ?>"><?= $bs['on'] ? 'On' : 'Off' ?></span></h2>
       <form method="post" autocomplete="off" class="set-list">
         <?= form_keys('bugs') ?>
-        <label class="toggle"><input type="checkbox" class="switch" name="bugs_on" value="1" <?= $bs['on'] ? 'checked' : '' ?> /><span>Enable Bug Reports<?= tip('Adds “Bug Reports” to the footer and a “Found a bug?” box on model and accessory pages. Off: /bugs/ returns “not found” (admins still see it).') ?></span></label>
+        <label class="toggle"><input type="checkbox" class="switch" name="bugs_on" value="1" <?= $bs['on'] ? 'checked' : '' ?> /><span>Enable Bug Reports</span></label>
         <div class="set-grps">
-          <div class="set-grp"><h3>Posting</h3>
-            <div class="field"><span class="lbl">Who Can Post</span>
-              <div class="vis-seg bugs-who">
-                <label class="vis-opt"><input type="radio" name="bugs_who" value="any" <?= $bs['who'] === 'any' ? 'checked' : '' ?> />Any Account</label>
-                <label class="vis-opt"><input type="radio" name="bugs_who" value="paying" <?= $bs['who'] === 'paying' ? 'checked' : '' ?> />Paying Patrons</label>
-              </div></div>
-            <label class="field bugs-num"><span class="lbl">Reports per Day</span>
-              <input class="input" type="number" name="bugs_per_day" min="1" max="50" value="<?= (int) $bs['per_day'] ?>" /></label>
-            <label class="toggle"><input type="checkbox" class="switch" name="bugs_moderate" value="1" <?= $bs['moderate'] ? 'checked' : '' ?> /><span>Review Before Publishing<?= tip('New reports stay hidden (visible only to their author) until you press Publish on the report’s page.') ?></span></label>
-          </div>
+          <?= posting_group('bugs', 'Reports per Day', 50, $bs) ?>
           <div class="set-grp"><h3>Screenshots</h3>
-            <label class="toggle"><input type="checkbox" class="switch" name="bugs_uploads" value="1" <?= $bs['uploads'] ? 'checked' : '' ?> /><span>Allow Image Uploads<?= tip('Up to ' . BUG_PICS . ' pictures per report, max ' . (BUG_PIC_BYTES >> 20) . ' MB each, stored on your host in media/bugs (resized, WebP). Off: links only.') ?></span></label>
-            <label class="field"><span class="lbl">Screenshot Host<?= tip('Suggested on the report form for screenshot links. Pictures stay on that site; reports show them only as links. Empty = no suggestion.') ?></span>
+            <label class="toggle"><input type="checkbox" class="switch" name="bugs_uploads" value="1" <?= $bs['uploads'] ? 'checked' : '' ?> /><span>Allow Image Uploads</span></label>
+            <label class="field"><span class="lbl">Screenshot Host</span>
               <input class="input" type="url" name="bugs_host" maxlength="300" value="<?= e($bs['host']) ?>" placeholder="https://catbox.moe" spellcheck="false" /></label>
           </div>
+          <?= emoji_group('bugs', $bs) ?>
           <?= notify_group('bugs', 'bugc') ?>
         </div>
-        <div class="form-actions"><a class="btn btn-ghost btn-sm" href="/bugs/">Open Bug Reports</a><button class="btn btn-primary btn-sm">Save</button></div>
+        <div class="form-actions">
+          <a class="btn btn-ghost btn-sm act-left" href="/bugs/">Open Bug Reports</a>
+          <button class="btn btn-primary btn-sm">Save</button>
+        </div>
       </form>
       <?php if ($n = count($bs['blocked'])): ?><p class="muted small set-banned"><?= e(m3d_plural($n, 'person', 'people')) ?> can’t post bug reports. <a href="/admin/users.php?tab=exceptions&amp;f=banned">Manage bans in Access →</a></p><?php endif ?>
     </section>
 
     <?php $cs = m3d_comment_settings(); $cmCount = m3d_comments_count(); $cmWait = m3d_comments_pending(); ?>
     <section style="margin-top:20px" class="sec" id="comments">
-      <h2 class="small-h">Comments <span class="badge tone-<?= $cs['on'] ? 'green' : 'grey' ?>"><?= $cs['on'] ? 'On' : 'Off' ?></span><?= tip('Each page can turn them off with “Allow Comments” in its editor.') ?></h2>
+      <h2 class="small-h">Comments <span class="badge tone-<?= $cs['on'] ? 'green' : 'grey' ?>"><?= $cs['on'] ? 'On' : 'Off' ?></span></h2>
       <form method="post" autocomplete="off" class="set-list">
         <?= form_keys('comments') ?>
-        <label class="toggle"><input type="checkbox" class="switch" name="cm_on" value="1" <?= $cs['on'] ? 'checked' : '' ?> /><span>Enable Comments<?= tip('Off: no comments are shown anywhere and nobody can write one. They are kept, and come back when you turn this on again.') ?></span></label>
+        <label class="toggle"><input type="checkbox" class="switch" name="cm_on" value="1" <?= $cs['on'] ? 'checked' : '' ?> /><span>Enable Comments</span></label>
         <div class="set-grps">
+          <?= posting_group('cm', 'Comments per Day', 100, $cs) ?>
           <div class="set-grp"><h3>Where</h3>
-            <?php foreach (COMMENT_KINDS as $k => $label): ?>
+            <?php foreach (COMMENT_KINDS as $k => $label): if ($k === 'scenes' && !m3d_scenes_on(true)) continue; ?>
               <label class="toggle"><input type="checkbox" class="switch" name="cm_<?= $k ?>" value="1" <?= $cs[$k] ? 'checked' : '' ?> /><span><?= e($label) ?></span></label>
             <?php endforeach ?>
           </div>
-          <div class="set-grp"><h3>Posting</h3>
-            <div class="field"><span class="lbl">Who Can Comment</span>
-              <div class="vis-seg bugs-who">
-                <label class="vis-opt"><input type="radio" name="cm_who" value="any" <?= $cs['who'] === 'any' ? 'checked' : '' ?> />Any Account</label>
-                <label class="vis-opt"><input type="radio" name="cm_who" value="paying" <?= $cs['who'] === 'paying' ? 'checked' : '' ?> />Paying Patrons</label>
-              </div></div>
-            <label class="field bugs-num"><span class="lbl">Comments per Day</span>
-              <input class="input" type="number" name="cm_per_day" min="1" max="100" value="<?= (int) $cs['per_day'] ?>" /></label>
-            <label class="toggle"><input type="checkbox" class="switch" name="cm_moderate" value="1" <?= $cs['moderate'] ? 'checked' : '' ?> /><span>Check Before Showing<?= tip('New comments are visible only to their author (and you) until you publish them, here or with ⋯ → Publish on the page.') ?></span></label>
-            <label class="toggle"><input type="checkbox" class="switch" name="cm_paid_skip" value="1" <?= $cs['paid_skip'] ? 'checked' : '' ?> /><span>Skip for Paying Patrons<?= tip('With Check Before Showing on: comments from patrons on a paid tier show at once, comments from other accounts (free members) still wait for you. Banned people still can’t comment.') ?></span></label>
-          </div>
+          <?= emoji_group('cm', $cs) ?>
           <?= notify_group('comments') ?>
         </div>
         <div class="form-actions">
@@ -958,6 +979,42 @@ admin_start('Settings', 'settings');
       <?php if ($n = count($cs['blocked'])): ?><p class="muted small set-banned"><?= e(m3d_plural($n, 'person', 'people')) ?> can’t comment. <a href="/admin/users.php?tab=exceptions&amp;f=banned">Manage bans in Access →</a></p><?php endif ?>
     </section>
 
+    <?php $is = m3d_idea_settings(); $idCount = count(m3d_ideas_flat()); $idWait = count(m3d_ideas_pending()); ?>
+    <section style="margin-top:20px" class="sec" id="ideas">
+      <h2 class="small-h">Ideas <span class="badge tone-<?= $is['on'] ? 'green' : 'grey' ?>"><?= $is['on'] ? 'On' : 'Off' ?></span></h2>
+      <form method="post" autocomplete="off" class="set-list">
+        <?= form_keys('ideas') ?>
+        <label class="toggle"><input type="checkbox" class="switch" name="idea_on" value="1" <?= $is['on'] ? 'checked' : '' ?> /><span>Enable Ideas</span></label>
+        <div class="set-grps">
+          <div class="set-grp"><h3>Where</h3>
+            <?php foreach (IDEA_KINDS as $k => $label): if ($k === 'scenes' && !m3d_scenes_on(true)) continue; ?>
+              <label class="toggle"><input type="checkbox" class="switch" name="idea_<?= $k ?>" value="1" <?= $is[$k] ? 'checked' : '' ?> /><span><?= e($label) ?></span></label>
+            <?php endforeach ?>
+          </div>
+          <div class="set-grp"><h3>Posting</h3>
+            <div class="field"><span class="lbl">Who Can Suggest and Vote</span>
+              <div class="vis-seg bugs-who">
+                <label class="vis-opt"><input type="radio" name="idea_who" value="any" <?= $is['who'] === 'any' ? 'checked' : '' ?> />Any Account</label>
+                <label class="vis-opt"><input type="radio" name="idea_who" value="paying" <?= $is['who'] === 'paying' ? 'checked' : '' ?> />Paying Patrons</label>
+              </div></div>
+            <label class="field bugs-num"><span class="lbl">Ideas per Day</span>
+              <input class="input" type="number" name="idea_per_day" min="1" max="50" value="<?= (int) $is['per_day'] ?>" /></label>
+            <label class="toggle"><input type="checkbox" class="switch" name="idea_moderate" value="1" <?= $is['moderate'] ? 'checked' : '' ?> /><span>Check Before Showing</span></label>
+          </div>
+          <?= notify_group('ideas') ?>
+        </div>
+        <div class="form-actions">
+          <button class="btn btn-ghost btn-sm act-left btn-danger" form="ideas-clear"<?= $idCount ? '' : ' disabled' ?>>Delete All Ideas<?= $idCount ? ' (' . $idCount . ')' : '' ?></button>
+          <button class="btn btn-primary btn-sm">Save</button>
+        </div>
+      </form>
+      <form method="post" id="ideas-clear" hidden onsubmit="return confirm(<?= e(json_encode('Delete all ' . m3d_plural($idCount, 'idea') . ' on every model and accessory, with their votes? This can’t be undone (only a backup brings them back).', JSON_UNESCAPED_UNICODE)) ?>)">
+        <?= form_keys('ideas-clear') ?>
+      </form>
+      <?php if ($idWait): ?><p class="muted small set-banned"><?= e(m3d_plural($idWait, 'idea')) ?> waiting for approval: they are in your bell, and on their pages with ⋯ → Publish.</p><?php endif ?>
+      <?php if ($n = count($is['blocked'])): ?><p class="muted small set-banned"><?= e(m3d_plural($n, 'person', 'people')) ?> can’t suggest ideas. <a href="/admin/users.php?tab=exceptions&amp;f=banned">Manage bans in Access →</a></p><?php endif ?>
+    </section>
+
     <?php $sc = m3d_showcase_settings(); ?>
     <section style="margin-top:20px" class="sec" id="showcase">
       <h2 class="small-h">Patron Renders <span class="badge tone-<?= $sc['on'] ? 'green' : 'grey' ?>"><?= $sc['on'] ? 'On' : 'Off' ?></span><?= tip('Paying patrons share renders they made with a model or accessory from its page (the “Made a Render?” box). You approve each one in Media → From Patrons; approved ones show in the page’s gallery, after your pictures.') ?></h2>
@@ -972,14 +1029,14 @@ admin_start('Settings', 'settings');
 
     <?php $dc = m3d_discord(); $dcOn = m3d_discord_on(); ?>
     <section style="margin-top:20px" class="sec" id="discord">
-      <h2 class="small-h">Discord Announcements <span class="badge tone-<?= $dcOn ? 'green' : 'grey' ?>"><?= $dcOn ? 'On' : 'Off' ?></span><?= tip('Posts new versions of public models and accessories (and newly published ones) to a Discord channel: name, version, highlight, changes and picture. Drafts and password items are never posted; blurred ones are posted without the picture.') ?></h2>
+      <h2 class="small-h">Discord Announcements <span class="badge tone-<?= $dcOn ? 'green' : 'grey' ?>"><?= $dcOn ? 'On' : 'Off' ?></span></h2>
       <form method="post" autocomplete="off" class="dc-form" data-discord-form>
         <?= form_keys() ?>
         <button class="dc-enter" name="do" value="discord" tabindex="-1" aria-hidden="true"></button><?php /* Enter in a field = Save, not the test message */ ?>
         <div class="dc-grid">
           <div class="dc-fields">
-            <label class="toggle"><input type="checkbox" class="switch" name="discord_on" value="1" <?= $dc['on'] ? 'checked' : '' ?> /><span>Announce New Versions<?= tip('Only versions added from now on are posted, not the existing ones.') ?></span></label>
-            <label class="toggle"><input type="checkbox" class="switch" name="discord_stills" value="1" <?= $dc['stills'] ? 'checked' : '' ?> /><span>Announce New Gallery Pictures<?= tip('Pictures added or made visible in Admin → Gallery are posted together as “New render”, ' . intdiv(DISCORD_STILLS_DELAY, 60) . ' minutes after your last change there (time for captions and characters). Drafts are never posted; teaser and patron-only pictures are posted without the image. Existing pictures are not posted.') ?></span></label>
+            <label class="toggle"><input type="checkbox" class="switch" name="discord_on" value="1" <?= $dc['on'] ? 'checked' : '' ?> /><span>Announce New Versions</span></label>
+            <label class="toggle"><input type="checkbox" class="switch" name="discord_stills" value="1" <?= $dc['stills'] ? 'checked' : '' ?> /><span>Announce New Gallery Pictures</span></label>
             <label class="field"><span class="lbl">Webhook URL<?= tip('Channel settings (gear icon) → Integrations → Webhooks → New Webhook → “Copy Webhook URL”. Anyone with this URL can post in the channel: keep it private (never shown again once saved).') ?></span>
               <?php /* never printed back (private/webhooks.php): an empty field keeps the saved one */ ?>
               <?= key_field('Webhook URL', $dc['webhook'] !== '', null, 'class="dc-hook" type="url" name="discord_webhook" placeholder="https://discord.com/api/webhooks/…" spellcheck="false" autocomplete="off" data-dc-hook') ?>
@@ -1071,16 +1128,6 @@ admin_start('Settings', 'settings');
       <?php endif ?>
     </section>
 
-    <?php foreach (FEATURE_SWITCHES as $k => [$title, $help, $label, [$href, $linkText, $newTab]]): $on = !empty(m3d_settings()[$k]['on']); ?>
-    <section style="margin-top:20px" class="sec" id="<?= $k ?>">
-      <h2 class="small-h"><?= e($title) ?> <span class="badge tone-<?= $on ? 'green' : 'grey' ?>"><?= $on ? 'On' : 'Off' ?></span><?= tip($help) ?></h2>
-      <form method="post">
-        <?= form_keys($k) ?>
-        <label class="toggle"><input type="checkbox" class="switch" name="<?= $k ?>_on" value="1" <?= $on ? 'checked' : '' ?> /><span><?= e($label) ?></span></label>
-        <div class="form-actions"><?php if ($on): ?><a class="btn btn-ghost btn-sm" href="<?= $href ?>"<?= $newTab ? ' target="_blank"' : '' ?>><?= e($linkText) ?></a><?php endif ?><button class="btn btn-primary btn-sm">Save</button></div>
-      </form>
-    </section>
-    <?php endforeach ?>
 
     <?php endif ?>
 
@@ -1154,6 +1201,10 @@ admin_start('Settings', 'settings');
           <a class="btn btn-ghost btn-sm" href="/admin/backups.php">Open Backups</a>
         </div>
         <div class="tool">
+          <div><b>Profile Pictures</b><p class="muted small"><span data-stat="avatars">Counting…</span></p></div>
+          <?= $action('avatars', 'Delete All Pictures', 'Delete every stored Patreon profile picture?' . (m3d_avatars_on() ? ' While Profile Pictures is on in Settings → Patreon, each person’s picture comes back at their next login.' : ''), 'avatars') ?>
+        </div>
+        <div class="tool">
           <div><b>Unused Media</b><p class="muted small"><span data-stat="unused">Counting…</span> <a href="/admin/images.php?unused=1">Review them in Media</a>.</p></div>
           <?= $action('unused', 'Delete Unused Media', 'Delete all images, 3D files and videos that are not used anywhere? This can\'t be undone.', 'unused') ?>
         </div>
@@ -1194,9 +1245,9 @@ admin_start('Settings', 'settings');
       <h2 class="small-h">Personal Data<?= tip('Everything the site stores about one Patreon user (downloads, likes, bug reports, special access…), as a file to send them when they ask for their data (GDPR). Names are found among people who downloaded or wrote a bug report; anyone else by their Patreon user ID, shown on their My account page.') ?></h2>
       <form method="get" action="/admin/settings.php#personal-data" class="pd-find">
         <input type="hidden" name="tab" value="privacy" />
-        <label class="field"><span class="lbl">Patreon User ID or Name</span><input class="input" name="who" value="<?= e($pdQ) ?>" maxlength="80" required list="pd-known" autocomplete="off" placeholder="e.g. 12345678 or Anna" /></label>
+        <label class="field"><span class="lbl">Patreon User ID or Name</span><input class="input" name="who" value="<?= e($pdQ) ?>" maxlength="80" required data-person-pick autocomplete="off" placeholder="e.g. 12345678 or Anna" /></label>
         <button class="btn btn-primary btn-sm">Find</button>
-        <datalist id="pd-known"><?= m3d_patron_options() ?></datalist>
+        <?= person_pick_js() ?>
       </form>
       <?php if ($pdQ !== '' && !$pdHits): ?>
         <p class="muted pd-none">Nobody found with that name. Try their Patreon user ID (on their My account page).</p>
@@ -1230,6 +1281,7 @@ admin_start('Settings', 'settings');
                   <li>Their downloads leave the log, so their unlocks start from zero: they can unlock again as if new, and you lose the record of what they downloaded.</li>
                   <li>Their bug reports go with every comment on them, other people’s too; their comments elsewhere, Me Too and follows go as well.</li>
                   <li>Their comments under models, accessories and blog posts go.</li>
+                  <li>Their ideas on model and accessory pages go, and their votes on other ideas.</li>
                   <li>Their likes, ignored updates, welcome page mark and access exception go. The like counts drop.</li>
                 </ul>
                 <p class="muted small">What stays: the all-time download totals (numbers only), their bans (their ID, what is banned and the reason, so the ban keeps working), and the copies inside backups until those backups are deleted. If they log in again, new data starts from zero. Download their data first if you need to send it.</p>

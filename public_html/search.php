@@ -1,5 +1,6 @@
 <?php
-// /search/?q=…  (rewritten here by .htaccess): one search over models, accessories, blog posts, docs pages and FAQ questions.
+// /search/?q=…  (rewritten here by .htaccess): one search over models, accessories, scenes, Gallery pictures (per character and scene),
+//                blog posts, docs pages and FAQ questions.
 //   ?index=1  the list the header search box (site.js, [data-hsearch]) searches as you type: the same for every visitor
 //             (cacheable), so only what any visitor may see: listed items (no drafts, no unlisted password items), docs pages
 //             that aren't drafts, FAQ questions, blog posts that are out (Patrons Only ones too: their title and summary are public);
@@ -25,14 +26,13 @@ $hits = $q !== '' ? search_run($index, $q) : [];
 $fix = $q !== '' && !$hits ? search_fix($index, $q) : '';   // nothing found: the search with its typos corrected ("tiffa" → Tifa), when that finds something
 if ($fix !== '') $hits = search_run($index, $fix);
 $byRef = [];
-foreach (['models', 'outfits'] as $kind) foreach (m3d_listed_items($kind) as $it) $byRef[$kind . ':' . $it['slug']] = $it;
-$groups = ['models' => [], 'outfits' => [], 'blog' => [], 'help' => []];
+foreach (M3D_ITEM_KINDS as $kind) foreach (m3d_listed_items($kind) as $it) $byRef[$kind . ':' . $it['slug']] = $it;
+$groups = ['models' => [], 'outfits' => [], 'scenes' => [], 'gallery' => [], 'blog' => [], 'help' => []];
 foreach ($hits as $h) $groups[$h['g']][] = $h;
 
 layout_start($q !== '' ? 'Search: ' . $q : 'Search', 'Search the models, accessories, posts and help pages of ' . site_name() . '.', 'page-search');
 ?>
   <div class="wrap search-page">
-    <p class="eyebrow">Search</p>
     <form class="search-form" action="/search/" method="get" role="search">
       <input class="input" type="search" name="q" value="<?= e($q) ?>" placeholder="Search models, accessories, help…" aria-label="Search" <?= $q === '' ? 'autofocus' : '' ?> />
       <button class="btn btn-primary">Search</button>
@@ -51,6 +51,18 @@ layout_start($q !== '' ? 'Search: ' . $q : 'Search', 'Search the models, accesso
       <section class="search-sec">
         <h2 class="block-title">Accessories <span class="count"><?= count($groups['outfits']) ?></span></h2>
         <div class="ogrid ogrid-lg"><?php foreach ($groups['outfits'] as $h) if (isset($byRef[$h['ref']])) echo outfit_card($byRef[$h['ref']]) ?></div>
+      </section>
+    <?php endif ?>
+    <?php if ($groups['scenes']): ?>
+      <section class="search-sec">
+        <h2 class="block-title">Scenes <span class="count"><?= count($groups['scenes']) ?></span></h2>
+        <div class="ogrid sgrid"><?php foreach ($groups['scenes'] as $h) if (isset($byRef[$h['ref']])) echo scene_card($byRef[$h['ref']]) ?></div>
+      </section>
+    <?php endif ?>
+    <?php if ($groups['gallery']): ?>
+      <section class="search-sec">
+        <h2 class="block-title">Gallery <span class="count"><?= count($groups['gallery']) ?></span></h2>
+        <div class="recent-grid search-gal"><?php foreach ($groups['gallery'] as $h) echo search_gallery_card($h) ?></div>
       </section>
     <?php endif ?>
     <?php if ($groups['blog']): ?>

@@ -13,6 +13,7 @@ unset($_SESSION['oauth_state'], $_SESSION['return_to']);
 $back = match (true) {
     (bool) preg_match('#^/get/still/#', $return)                      => '/gallery/',
     (bool) preg_match('#^/get/outfit/([a-z0-9-]+)/#', $return, $m)    => m3d_item_url('outfits', $m[1]),
+    (bool) preg_match('#^/get/scene/([a-z0-9-]+)/#', $return, $m)     => m3d_item_url('scenes', $m[1]),
     (bool) preg_match('#^/get/([a-z0-9-]+)/#', $return, $m)           => m3d_item_url('models', $m[1]),
     str_starts_with($return, '/admin')                                => '/',
     default                                                           => $return,
@@ -73,6 +74,7 @@ unset($_SESSION['ban_id']);
 unset($_SESSION['csrf']);   // a new form token with the new login (m3d_csrf() makes it)
 $_SESSION['patron'] = $result + ['checked_at' => time()];
 $_SESSION['started'] = time();   // the login lasts m3d_session_lifetime() from here (bootstrap.php)
+m3d_avatar_login($result);   // the Patreon profile picture, fetched again after the page (app/avatars.php; only while profile pictures are on)
 
 if (!empty($M3D['debug'])) {
     header('Content-Type: text/plain; charset=utf-8');

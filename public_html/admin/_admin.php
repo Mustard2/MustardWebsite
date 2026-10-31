@@ -2,6 +2,7 @@
 // Shared by every admin page: access control, JSON helpers, validation, admin layout.
 declare(strict_types=1);
 require dirname(__DIR__) . '/app/_init.php';
+require_once __DIR__ . '/_tools.php';   // Admin → Assets → Tools: the editors' checks
 
 header('X-Frame-Options: DENY');
 header("Content-Security-Policy: frame-ancestors 'none'");   // replaces bootstrap's 'self' (browsers read this one before X-Frame-Options)
@@ -29,10 +30,7 @@ function admin_require(array $cfg, bool $json = false): void
 
 function admin_json(array $data, int $code = 200): never
 {
-    http_response_code($code);
-    header('Content-Type: application/json');
-    echo json_encode($data, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
-    exit;
+    m3d_json_out($data, $code);
 }
 
 /** upload.php / upload-3d.php: the file sent as "file", or the JSON error. */
@@ -142,7 +140,7 @@ function clean_dl_url(mixed $v): string
 function check_slug(string $slug): void
 {
     if (!preg_match('/^[a-z0-9][a-z0-9-]{0,63}$/D', $slug)) throw new InvalidArgumentException('The address (slug) may only contain lowercase letters, numbers and dashes.');
-    if ($slug === 'outfit') throw new InvalidArgumentException('"outfit" is reserved, pick another address.');
+    if ($slug === 'outfit' || $slug === 'scene') throw new InvalidArgumentException('"' . $slug . '" is reserved, pick another address.');   // /get/outfit/…, /get/scene/…
 }
 
 /** The release badge of the admin lists: "⏱ Patrons 12 Oct" before the patrons date, "⏱ Free 20 Oct" until the public date. */
@@ -239,7 +237,7 @@ function clean_visibility(array $in, ?array $existing, array &$out): void
     if ($v === 'password' && !empty($in['unlisted'])) $out['unlisted'] = true;
 }
 
-/** Download links: [{label, url, access: patrons|public}] */
+/** Download links: [{label, url, access: patrons|public, off?, pw?}] (pw = the link's own password, the lock on its row: kept as typed, so the editor shows it again) */
 function clean_links(mixed $v): array
 {
     $out = [];
@@ -249,14 +247,18 @@ function clean_links(mixed $v): array
         $label = clean_text($l['label'] ?? '', 60);
         if ($url === '' && $label === '') continue;
         if ($url === '') throw new InvalidArgumentException('The download "' . $label . '" has no address.');
+        $pw = clean_line($l['pw'] ?? '', 64);
+        if ($pw !== '' && mb_strlen($pw) < 4) throw new InvalidArgumentException('The password of "' . ($label !== '' ? $label : 'Download') . '" needs at least 4 characters.');
         $out[] = ['label' => $label !== '' ? $label : 'Download', 'url' => $url, 'access' => ($l['access'] ?? '') === 'public' ? 'public' : 'patrons']
-            + (!empty($l['off']) ? ['off' => true] : []);   // switched off in the editor: kept, but not on the site and /get/ refuses it
+            + (!empty($l['off']) ? ['off' => true] : [])   // switched off in the editor: kept, but not on the site and /get/ refuses it
+            + ($pw !== '' ? ['pw' => $pw] : []);
         if (count($out) >= 20) break;
     }
     return $out;
 }
 
-/** Add-ons needed to use a model/outfit: [{label, url}] (a site page like /mustardui/ or a full https address). */
+/** Add-ons needed to use a model/outfit: [{label, url, min?}] (a site page like /mustardui/ or a full https address; min = the
+ *  oldest version of the add-on that works, as typed: "0.32", "2025.1"). */
 function clean_addons(mixed $v): array
 {
     $out = [];
@@ -267,9 +269,37 @@ function clean_addons(mixed $v): array
         if ($url === '' && $label === '') continue;
         if ($url === '') throw new InvalidArgumentException('The add-on "' . $label . '" has no download address.');
         if ($label === '') throw new InvalidArgumentException('Give the add-on at ' . $url . ' a name.');
-        $out[] = ['label' => $label, 'url' => $url];
+        $x = ['label' => $label, 'url' => $url];
+        if (($min = clean_text($a['min'] ?? '', 20)) !== '') $x['min'] = $min;
+        $out[] = $x;
         if (count($out) >= 10) break;
     }
+    return $out;
+}
+
+/** The add-ons already used by models and accessories, for the editor's Add-Ons Required (addonList() in admin.js):
+ *  one row per address [{label (the name most items give it), url, min (the highest minimum version set), n (items using it)}], most used first. */
+function admin_addon_choices(): array
+{
+    $by = [];
+    foreach ([...m3d_items('models'), ...m3d_items('outfits'), ...m3d_items('scenes')] as $it) {
+        foreach (m3d_addons($it) as $a) {
+            $url = (string) ($a['url'] ?? '');
+            if ($url === '' || ($a['label'] ?? '') === '') continue;
+            $e = &$by[$url];
+            $e['n'] = ($e['n'] ?? 0) + 1;
+            $e['l'][$a['label']] = ($e['l'][$a['label']] ?? 0) + 1;
+            $min = (string) ($a['min'] ?? '');
+            if ($min !== '' && strnatcasecmp($min, $e['min'] ?? '') > 0) $e['min'] = $min;
+            unset($e);
+        }
+    }
+    $out = [];
+    foreach ($by as $url => $e) {
+        arsort($e['l']);
+        $out[] = ['label' => (string) array_key_first($e['l']), 'url' => (string) $url, 'min' => $e['min'] ?? '', 'n' => $e['n']];
+    }
+    usort($out, fn($a, $b) => $b['n'] <=> $a['n'] ?: strnatcasecmp($a['label'], $b['label']));
     return $out;
 }
 
@@ -320,6 +350,29 @@ function clean_outfit(array $in, ?array $existing): array
     $valid = array_column(m3d_models(), 'slug');
     $o['models'] = array_values(array_unique(array_filter(array_map('strval', (array) ($in['models'] ?? [])), fn($s) => in_array($s, $valid, true))));
     if (!empty($in['allModels'])) $o['allModels'] = true;   // made for every model, future ones too (m3d_fits_all()); the ticks above are kept for when it is turned off
+    if (($in['fits'] ?? '') === 'blender') { $o['fits'] = 'blender'; $o['models'] = []; unset($o['allModels']); }   // made for Blender, no model (m3d_fits_blender()): it fits none
+    $bl = clean_text($in['blender'] ?? '', 60);   // Blender Supported, as a model's ("4.5 or above")
+    if ($bl !== '') $o['blender'] = $bl;
+    foreach (['thumb', 'cover'] as $k) { $u = clean_url($in[$k] ?? ''); if ($u !== '') $o[$k] = $u; }   // catalog / main image, like a model's (outfit_preview(), outfit_main())
+    $o['images'] = clean_gallery($in['images'] ?? []);
+    return $o;
+}
+
+/** A scene: an accessory's fields without a type or "All Models"; `models` = the models in it, `modelVers` = the version of each
+ *  it was made with (a label of that model's changelog as picked in the editor, or typed; none = not said). */
+function clean_scene(array $in, ?array $existing): array
+{
+    $o = clean_item_base($in, $existing);
+    $valid = array_column(m3d_models(), 'slug');
+    $o['models'] = array_values(array_unique(array_filter(array_map('strval', (array) ($in['models'] ?? [])), fn($s) => in_array($s, $valid, true))));
+    $vers = [];
+    foreach ((array) ($in['modelVers'] ?? []) as $s => $v) {
+        $v = clean_text($v, 30);
+        if ($v !== '' && in_array((string) $s, $o['models'], true)) $vers[(string) $s] = $v;
+    }
+    if ($vers) $o['modelVers'] = $vers;
+    $bl = clean_text($in['blender'] ?? '', 60);   // the Blender version the scene was made with, as typed ("4.5 or above")
+    if ($bl !== '') $o['blender'] = $bl;
     $o['images'] = clean_gallery($in['images'] ?? []);
     return $o;
 }
@@ -392,7 +445,7 @@ function clean_post(array $in, ?array $old, array $posts): array
     $items = [];
     foreach (clean_list($in['items'] ?? [], 120, 30) as $ref) {
         [$kind, $s] = explode(':', $ref, 2) + [1 => ''];
-        if (in_array($kind, ['models', 'outfits'], true) && m3d_item($kind, $s) && !in_array($ref, $items, true)) $items[] = $ref;
+        if (in_array($kind, M3D_ITEM_KINDS, true) && m3d_item($kind, $s) && !in_array($ref, $items, true)) $items[] = $ref;
     }
     if (count($items) > 12) throw new InvalidArgumentException('12 models and accessories at most.');
     if ($items) $post['items'] = $items;
@@ -419,7 +472,7 @@ function clean_poll(mixed $in): ?array
         if (!is_array($o)) continue;
         $item = clean_text($o['item'] ?? '', 120);
         [$kind, $slug] = explode(':', $item, 2) + [1 => ''];
-        $it = in_array($kind, ['models', 'outfits'], true) ? m3d_item($kind, $slug) : null;
+        $it = in_array($kind, M3D_ITEM_KINDS, true) ? m3d_item($kind, $slug) : null;
         $text = clean_text(preg_replace('/\s+/u', ' ', (string) ($o['text'] ?? '')), 80);
         if ($text === '' && $it) $text = $kind === 'models' ? m3d_model_name($it) : (string) $it['name'];
         if ($text === '') continue;   // an empty row
@@ -526,7 +579,7 @@ function clean_model(array $in, ?array $existing): array
     $m = clean_item_base($in, $existing);
     $m['franchise'] = clean_text($in['franchise'] ?? '', 80);
     if ($m['franchise'] === '') throw new InvalidArgumentException('Franchise is required.');
-    foreach (['game' => 120, 'note' => 120, 'blender' => 60] as $k => $max) {
+    foreach (['game' => 120, 'note' => 120, 'blender' => 60, 'expected' => 40] as $k => $max) {   // expected: the page's Expected Release (In Development)
         $t = clean_text($in[$k] ?? '', $max);
         if ($t !== '') $m[$k] = $t;
     }
@@ -678,7 +731,7 @@ function admin_menu_item_note(string $key): string
     return [
         'gallery' => 'Shown once the Gallery has pictures',
         'blog' => 'Shown while the blog is on and has posts',
-        'mustardui' => 'Shown while the MustardUI page is on',
+        'tools' => 'Shown once a tool page with “Show in the Header Menu” is published',
         'docs' => 'Shown once there are docs pages',
         'faq' => 'Shown once the FAQ has questions',
         'bugs' => 'Shown while bug reports are on',
@@ -735,7 +788,7 @@ function admin_site_pages_datalist(): string
 {
     $pages = '';
     foreach (m3d_doc_pages(true) as $pg) $pages .= '<option value="' . e($pg['slug'] === m3d_docs_home() ? '/docs/' : '/docs/' . $pg['slug'] . '/') . '">' . e('Docs: ' . ($pg['title'] ?? $pg['slug'])) . '</option>';
-    foreach (['/faq/' => 'FAQ', '/accessories/' => 'Accessories'] + (m3d_mustardui_on() ? ['/mustardui/' => 'MustardUI'] : []) + ['/contacts/' => 'Contacts', '/account/' => 'My Account'] as $u => $l) $pages .= '<option value="' . $u . '">' . $l . '</option>';
+    foreach (['/faq/' => 'FAQ', '/accessories/' => 'Accessories'] + array_column(array_map(fn($t) => [m3d_tool_url($t), $t['name']], m3d_tools_summary()['tools']), 1, 0) + ['/contacts/' => 'Contacts', '/account/' => 'My Account'] as $u => $l) $pages .= '<option value="' . $u . '">' . $l . '</option>';
     return '<datalist id="site-pages">' . $pages . '</datalist>';
 }
 
@@ -743,7 +796,7 @@ function admin_site_pages_datalist(): string
 function admin_start_box(string $kind, bool $open = false): string
 {
     $box = start_box($kind);
-    $what = $kind === 'outfits' ? 'accessory' : 'model';
+    $what = m3d_kind_word($kind);
     $row = fn(string $label = '', string $url = '') => admin_link_row('start', $label, $url);
     return '<details class="sec intro-sec" id="start"' . ($open ? ' open' : '') . '>'
         . '<summary><b>Getting Started</b> <span class="muted small">the box under the download button on ' . $what . ' pages</span></summary>'
@@ -798,7 +851,7 @@ function admin_discord_state(string $kind, ?array $item): ?array
     return [
         'stored' => $item && ($item['slug'] ?? '') !== '' ? m3d_version_label(m3d_current_version($item)) : '',
         'open'   => $item && ($item['slug'] ?? '') !== '' && m3d_is_open($item),   // visible when stored: a new version is news; a hidden item published now posts its version
-        'dev'    => $kind === 'models' && $item && m3d_status($item) === 'in-development',   // leaving development posts the version out (m3d_discord_after_save())
+        'dev'    => $kind === 'models' && $item && m3d_status($item) === 'in-development',   // stored In Development: its codes end in "~dev" (m3d_discord_code()); leaving development posts the version again
         'now'    => m3d_site_time(time(), 'Y-m-d\TH:i'),   // site time, to compare with the release date fields
         'sent'   => $mine($d['sent']),
         'retry'  => $mine($d['retry']),
@@ -843,24 +896,38 @@ function discord_plain_mention_warning(string $text): string
     return "“@{$name}” won’t ping anyone: Discord needs the role’s code. Send \\@{$name} in any Discord channel and paste here what Discord shows (<@&…>).";
 }
 
-/** What a post looks like in Discord (Settings → Discord announcements): the message line (admin.js keeps it in step with the field) and the embed of the newest version. */
+/** What a post looks like in Discord (Settings → Discord announcements): the message line (admin.js keeps it in step with the field) and the card
+ *  of the newest version, drawn from the same keys as m3d_discord_card() (title, the line under it, icon, facts, What's New, picture, buttons). */
 function discord_preview_html(string $message): string
 {
     $em = discord_sample_embed();
     $color = isset($em['color']) ? sprintf('#%06x', $em['color']) : '#1e1f22';
     $name = site_name();
     $now = m3d_site_time(time(), 'H:i');
-    $foot = (string) ($em['footer']['text'] ?? '');
-    if (isset($em['timestamp'])) $foot .= ($foot !== '' ? ' • ' : '') . m3d_site_time((string) $em['timestamp'], 'd/m/Y');
+    // Discord markdown of the card's own lines: "\x" escapes and <t:…:d> dates, then discord_md()
+    $md = fn(string $t) => preg_replace_callback('#&lt;t:(\d+):d&gt;#', fn($m) => '<span class="dc-date">' . e(m3d_site_time((int) $m[1], 'd/m/Y')) . '</span>',
+        discord_md(preg_replace_callback('/\\\\([^\w\s])/', fn($m) => "\u{E000}" . dechex(mb_ord($m[1])) . ';', $t)));
+    $md2 = fn(string $t) => preg_replace_callback('/\x{E000}([0-9a-f]+);/u', fn($m) => e(mb_chr(hexdec($m[1]))), $md($t));
+    $sub = (string) ($em['sub'] ?? e((string) ($em['footer']['text'] ?? '')));
+    $facts = '';
+    foreach ((array) ($em['facts'] ?? []) as [$k, $v]) $facts .= '<span class="dc-k">' . e($k) . '</span><span class="dc-v">' . $md2((string) $v) . '</span>';
+    $buttons = '';
+    foreach ((array) ($em['buttons'] ?? []) as [$label, $url]) $buttons .= '<a class="dc-btn" href="' . e((string) $url) . '" target="_blank" rel="noopener" tabindex="-1">' . e((string) $label) . '</a>';
+    $text = (string) ($em['description'] ?? '');
     return '<div class="dc-prev" aria-hidden="true"><div class="dc-msg">'
         . '<span class="dc-ava">' . e(mb_strtoupper(mb_substr($name, 0, 1))) . '</span>'
         . '<div class="dc-body"><div class="dc-head"><b class="dc-name">' . e($name) . '</b><span class="dc-app">APP</span><span class="dc-time">Today at ' . e($now) . '</span></div>'
         . '<div class="dc-content" data-dc-content' . (trim($message) === '' ? ' hidden' : '') . '>' . discord_md($message) . '</div>'
-        . '<div class="dc-embed" style="--dc-color: ' . e($color) . '">'
+        . '<div class="dc-card" style="--dc-color: ' . e($color) . '">'
+        . '<div class="dc-top"><div>' . ($sub !== '' ? '<div class="dc-sub">' . (isset($em['sub']) ? $md2($sub) : $sub) . '</div>' : '')
         . '<a class="dc-title" href="' . e((string) ($em['url'] ?? '')) . '" target="_blank" rel="noopener" tabindex="-1">' . e((string) ($em['title'] ?? '')) . '</a>'
-        . (isset($em['description']) ? '<div class="dc-desc">' . discord_md((string) $em['description']) . '</div>' : '')
+        . (($em['below'] ?? '') !== '' ? '<div class="dc-sub dc-below">' . $md2((string) $em['below']) . '</div>' : '') . '</div>'
+        . (!empty($em['thumb']) ? '<img class="dc-thumb" src="' . e((string) $em['thumb']) . '" alt="" loading="lazy" />' : '') . '</div>'
+        . ($facts !== '' ? '<div class="dc-facts">' . $facts . '</div>' : '')
+        . (($em['note'] ?? '') !== '' ? '<div class="dc-desc">' . $md2((string) $em['note']) . '</div>' : '')
+        . ($text !== '' ? '<div class="dc-desc">' . (($em['head'] ?? '') !== '' ? '<b class="dc-h3">' . e((string) $em['head']) . '</b>' : '') . $md2($text) . '</div>' : '')
         . (isset($em['image']['url']) ? '<img class="dc-img" src="' . e((string) $em['image']['url']) . '" alt="" loading="lazy" />' : '')
-        . ($foot !== '' ? '<div class="dc-foot">' . e($foot) . '</div>' : '')
+        . ($buttons !== '' ? '<div class="dc-btns">' . $buttons . '</div>' : '')
         . '</div></div></div></div>';
 }
 
@@ -869,20 +936,25 @@ function admin_links_summary(array $links, array $dead = []): string
 {
     // $dead = lc_dead_for() [url => …]: those names are red in the hover list ("Mega · dead link"), the text is red and opens Link Check
     // (the row turns red too, .has-dead-link). Dead add-ons get their own group, so an item whose only dead address is an add-on shows it
-    // links switched off are listed under "Hidden" and not counted
+    // links switched off are listed under "Hidden" and not counted; links with their own password get a lock (after the count, before the name)
     $names = ['patrons' => [], 'public' => [], 'off' => [], 'addons' => []];
+    $locked = ['patrons' => 0, 'public' => 0];
     $seen = [];
     foreach ($links as $l) {
         $url = trim((string) ($l['url'] ?? ''));
         $n = trim((string) ($l['label'] ?? '')) ?: 'Download';
-        $names[!empty($l['off']) ? 'off' : (($l['access'] ?? 'patrons') === 'public' ? 'public' : 'patrons')][] = isset($dead[$url]) ? ['n' => $n, 'dead' => true] : $n;
+        $k = !empty($l['off']) ? 'off' : (($l['access'] ?? 'patrons') === 'public' ? 'public' : 'patrons');
+        $pw = m3d_link_pw($l) !== '';
+        if ($pw && isset($locked[$k])) $locked[$k]++;
+        $names[$k][] = isset($dead[$url]) || $pw ? ['n' => $n] + (isset($dead[$url]) ? ['dead' => true] : []) + ($pw ? ['pw' => true] : []) : $n;
         $seen[$url] = true;
     }
     foreach ($dead as $url => $d) if (!isset($seen[$url])) $names['addons'][] = ['n' => $d['label'], 'dead' => true];
     [$p, $f] = [count($names['patrons']), count($names['public'])];
     if (!$p && !$f && !$dead && !$names['off']) return '<span class="warn-dot" title="No download links">—</span>';
-    $txt = ($p ? '<span class="ok-dot">' . $p . ' patron</span>' : '') . ($p && $f ? '<br>' : '') . ($f ? '<span class="muted">' . $f . ' public</span>' : '') . ($p || $f ? '' : '—');
-    $label = fn(array $list) => implode(', ', array_map(fn($x) => is_array($x) ? $x['n'] . ' (dead link)' : $x, $list));
+    $lock = fn(string $k) => $locked[$k] ? '<svg class="ls-lock" viewBox="0 0 24 24" aria-hidden="true">' . KEY_LOCK_ICON . '</svg>' : '';
+    $txt = ($p ? '<span class="ok-dot">' . $p . ' patron' . $lock('patrons') . '</span>' : '') . ($p && $f ? '<br>' : '') . ($f ? '<span class="muted">' . $f . ' public' . $lock('public') . '</span>' : '') . ($p || $f ? '' : '—');
+    $label = fn(array $list) => implode(', ', array_map(fn($x) => is_array($x) ? $x['n'] . (!empty($x['pw']) ? ' (password)' : '') . (!empty($x['dead']) ? ' (dead link)' : '') : $x, $list));
     $aria = implode('; ', array_filter([$p ? 'Patrons: ' . $label($names['patrons']) : '', $f ? 'Public: ' . $label($names['public']) : '', $names['off'] ? 'Hidden: ' . $label($names['off']) : '', $names['addons'] ? 'Add-ons: ' . $label($names['addons']) : '']));
     $attrs = ' data-tip-links="' . e(json_encode($names, JSON_UNESCAPED_UNICODE)) . '" aria-label="' . e($aria) . '"';
     return $dead ? '<a class="links-sum is-dead" href="/admin/links.php"' . $attrs . '>' . $txt . '</a>' : '<span class="links-sum" tabindex="0"' . $attrs . '>' . $txt . '</span>';
@@ -896,7 +968,8 @@ function admin_visibility_badge(array $item): string
         'draft'    => ' <span class="badge tone-grey" title="Only admins can see it">Draft</span>',
         'password' => ' <span class="badge tone-violet" title="Visitors need the password' . (!empty($item['unlisted']) ? '; not listed in the catalog' : '') . '">🔑 Password' . (!empty($item['unlisted']) ? ' · Unlisted' : '') . '</span>',
         'blurred'  => ' <span class="badge tone-sky" title="Pictures are blurred for everyone">Blurred</span>',
-        'blurred-patrons' => ' <span class="badge tone-sky" title="Pictures are blurred except for paying patrons">Blurred · Clear for Patrons</span>',
+        'blurred-patrons' => ' <span class="badge tone-sky" title="Pictures are blurred except for paying patrons">Blurred · Patrons</span>',
+        'blurred-eligible' => ' <span class="badge tone-sky" title="Pictures are blurred except for paying patrons who meet its requirements">Blurred · Eligible</span>',
         default    => '',
     };
 }
@@ -911,7 +984,7 @@ function admin_batch_bar(string $kind): string
         . '<button type="button" class="chip" data-pick="draft" aria-pressed="false">Drafts <span data-pick-n="draft"></span></button>'
         . '<button type="button" class="chip" data-pick="none" aria-pressed="false">None</button>'
         . '<label class="batch-search"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>'
-        . '<input class="input" type="search" data-batch-search placeholder="Search ' . ($kind === 'models' ? 'models' : 'accessories') . '…" aria-label="Search ' . ($kind === 'models' ? 'models' : 'accessories') . '" autocomplete="off" spellcheck="false" /></label></div>'
+        . '<input class="input" type="search" data-batch-search placeholder="Search ' . m3d_kind_word($kind, true) . '…" aria-label="Search ' . m3d_kind_word($kind, true) . '" autocomplete="off" spellcheck="false" /></label></div>'
         . '<p class="muted small batch-empty" data-batch-empty hidden></p>'
         . '<div class="batch-bar" data-batch-bar hidden><b data-batch-count></b>'
         . ($kind === 'models' ? '<select class="input" data-batch-op="status" aria-label="Set status"><option value="">Set Status…</option>' . $opt(M3D_STATUSES) . '</select>' : '')
@@ -983,6 +1056,7 @@ function admin_forget_items(string $kind, array $gone, array $vis = []): void
     }
     m3d_blog_forget_items($kind, $slugs);   // posts showing them leave them out
     m3d_comments_forget($kind, $slugs);
+    m3d_ideas_forget($kind, $slugs);
     m3d_showcase_forget($kind, $slugs);   // patrons' renders of them (and their stills in the Gallery)
     m3d_shares_forget($kind, $slugs);     // their temporary links end (a new item at that address doesn't take them over)
     $dc = m3d_settings(true)['discord'] ?? null;
@@ -1006,22 +1080,19 @@ function admin_forget_items(string $kind, array $gone, array $vis = []): void
     });
     m3d_ignored_forget($kind, $slugs);
     if (!is_file(m3d_log_file())) return;
-    $pre = $kind === 'outfits' ? 'outfit:' : '';
+    $pre = m3d_log_item($kind, '');   // "outfit:", "scene:", '' for models
     $date = m3d_today();
     $clean = fn($n) => trim((string) preg_replace('/\s+/u', ' ', (string) $n));
     $same = array_count_values(array_map($clean, $gone));
     // items already in the log: a model of the same name deleted earlier today (major versions share a name) keeps its own history
     $taken = [];
-    if ($fh = @fopen(m3d_log_file(), 'rb')) {
-        while (($line = fgets($fh)) !== false) if (str_contains($line, '(removed ')) $taken[m3d_log_cols($line)[3] ?? ''] = true;
-        fclose($fh);
-    }
+    foreach (m3d_log_rows('(removed ') as $r) $taken[$r[3] ?? ''] = true;
     $map = [];   // log item => new log item
     foreach ($gone as $slug => $name) {
         $name = $clean($name) ?: (string) $slug;
         $new = $pre . (($same[$name] ?? 0) > 1 ? "$name · $slug" : $name) . " (removed $date)";
         if (isset($taken[$new])) $new = $pre . "$name · $slug (removed $date)";
-        if ($pre === '' && str_starts_with($new, 'outfit:')) $new = 'Model ' . $new;   // would read as an accessory
+        if ($pre === '' && preg_match('/^(outfit|scene):/', $new)) $new = 'Model ' . $new;   // would read as an accessory / a scene
         $map[m3d_log_item($kind, (string) $slug)] = $new;
     }
     m3d_log_rename_items($map);
@@ -1112,6 +1183,7 @@ function media_video_delete(string $url): ?int
 function admin_item_label(string $kind, array $it): string
 {
     if ($kind === 'outfits') return $it['name'] . ' (' . mb_strtolower(m3d_accessory_type($it)) . ')';
+    if ($kind === 'scenes') return $it['name'] . ' (scene)';
     return $it['name'] . (($it['generation'] ?? '') !== '' ? ' (Gen ' . $it['generation'] . ')' : '');
 }
 
@@ -1157,7 +1229,18 @@ function usage_map(array $models, ?array $outfits = null): array
             foreach (media_in($v) as $u) $use[$u]['outfits:' . $o['slug']] = admin_item_label('outfits', $o);
         });
     }
+    foreach (m3d_items('scenes') as $o) {
+        array_walk_recursive($o, function ($v) use (&$use, $o) {
+            foreach (media_in($v) as $u) $use[$u]['scenes:' . $o['slug']] = admin_item_label('scenes', $o);
+        });
+    }
+    if (is_file(M3D_PRIVATE . '/data/tools.json')) foreach (m3d_tools()['tools'] as $t) {   // tool pages and their tutorials (app/tools.php)
+        array_walk_recursive($t, function ($v) use (&$use, $t) {
+            foreach (media_in($v) as $u) $use[$u]['other:tool-' . $t['id']] = 'Tool: ' . $t['name'];
+        });
+    }
     foreach (media_in(outfits_intro()) as $u) $use[$u]['other:outfits-page'] = 'Accessories Page Text';
+    foreach (media_in(scenes_intro()) as $u) $use[$u]['other:scenes-page'] = 'Scenes Page Text';
     foreach (media_in(m3d_welcome()['text']) as $u) $use[$u]['other:welcome'] = 'Welcome Page Text';
     foreach (m3d_gallery()['stills'] as $st) {
         $who = m3d_still_name($st, '');
@@ -1183,7 +1266,7 @@ function replace_everywhere(array $models, array $map): array
 function media_replace(array $map): bool
 {
     $ok = true;
-    foreach (['models', 'outfits'] as $kind) {
+    foreach (M3D_ITEM_KINDS as $kind) {
         $items = m3d_items($kind, true);   // fresh: optimize / outside images ran for a while, edits saved meanwhile stay
         $new = replace_everywhere($items, $map);
         if ($new !== $items) $ok = m3d_save_items($kind, $new) && $ok;
@@ -1191,9 +1274,13 @@ function media_replace(array $map): bool
     $ok = m3d_texts_replace($map) && $ok;
     $intro = (string) (m3d_settings(true)['outfits_intro'] ?? '');   // Admin → Accessories → Page text
     if (($new = replace_everywhere([$intro], $map)[0]) !== $intro) $ok = m3d_save_settings(['outfits_intro' => $new]) && $ok;
+    $intro = (string) (m3d_settings(true)['scenes_intro'] ?? '');   // Admin → Scenes → Page text
+    if (($new = replace_everywhere([$intro], $map)[0]) !== $intro) $ok = m3d_save_settings(['scenes_intro' => $new]) && $ok;
     $welcome = (array) (m3d_settings(true)['welcome'] ?? []);   // Settings → Features → Welcome Page
     $wt = (string) ($welcome['text'] ?? '');
     if (($new = replace_everywhere([$wt], $map)[0]) !== $wt) $ok = m3d_save_settings(['welcome' => ['text' => $new] + $welcome]) && $ok;
+    $tools = m3d_tools(true)['tools'];   // tool pages and their tutorials
+    if (is_file(M3D_PRIVATE . '/data/tools.json') && ($new = replace_everywhere($tools, $map)) !== $tools) $ok = m3d_save_tools($new) && $ok;
     return m3d_gallery_replace($map) && $ok;
 }
 
@@ -1202,7 +1289,7 @@ function use_href(string $key): string
 {
     [$k, $sl] = explode(':', $key, 2) + [1 => ''];
     return match ($k) {
-        'faq' => '/admin/faq.php', 'other' => '/admin/outfits.php', 'gallery' => '/admin/gallery.php?still=' . rawurlencode($sl),
+        'faq' => '/admin/faq.php', 'other' => str_starts_with($sl, 'tool-') ? '/admin/tool.php?id=' . rawurlencode(substr($sl, 5)) : ($sl === 'scenes-page' ? '/admin/scenes.php' : '/admin/outfits.php'), 'gallery' => '/admin/gallery.php?still=' . rawurlencode($sl),
         'docs' => '/admin/docs.php?page=' . rawurlencode($sl), 'blog' => '/admin/blog.php?post=' . rawurlencode($sl), default => '/admin/edit.php?kind=' . rawurlencode($k) . '&slug=' . rawurlencode($sl),
     };
 }
@@ -1213,7 +1300,7 @@ function use_fields(array $models, array $outfits): array
     $labels = ['thumb' => 'Catalog Image', 'cover' => 'Main Image', 'gallery' => 'Gallery', 'images' => 'Pictures', 'notes' => 'Notes',
                'changelog' => 'Changelog', 'description' => 'Description', 'extra' => 'Sidebar'];
     $out = [];
-    foreach (['models' => $models, 'outfits' => $outfits] as $kind => $items) foreach ($items as $it) {
+    foreach (['models' => $models, 'outfits' => $outfits, 'scenes' => m3d_items('scenes')] as $kind => $items) foreach ($items as $it) {
         foreach ($it as $field => $v) {
             $v = [$v];
             array_walk_recursive($v, function ($x) use (&$out, $kind, $it, $field, $labels) {
@@ -1237,7 +1324,7 @@ function media_mentioned(): array
 {
     static $any = null;
     if ($any !== null) return $any;
-    $all = json_encode([m3d_models(), m3d_outfits(), m3d_faq(), m3d_docs(), m3d_blog(), m3d_gallery(), outfits_intro(), m3d_welcome()['text']], JSON_UNESCAPED_SLASHES);
+    $all = json_encode([m3d_models(), m3d_outfits(), m3d_items('scenes'), m3d_faq(), m3d_docs(), m3d_blog(), m3d_gallery(), outfits_intro(), scenes_intro(), m3d_welcome()['text'], m3d_tools()], JSON_UNESCAPED_SLASHES);
     preg_match_all('#/media/[A-Za-z0-9/_.-]+#', (string) $all, $mm);
     $any = [];
     foreach ($mm[0] as $u) { $any[$u] = $any[img_large($u)] = true; foreach (img_versions($u) as $v) $any[$v] = true; }   // a text using only "-sm" keeps the large file too
@@ -1303,6 +1390,10 @@ function admin_folder_picks(array $models): array
         $names['outfit-' . $o['slug']] = admin_item_label('outfits', $o);
         $pick['outfit-' . $o['slug']] = ['kind' => 'outfit', 'name' => $o['name'], 'sub' => m3d_accessory_type($o), 'thumb' => $picUrl(outfit_preview($o)), 'icon' => accessory_icon_paths(m3d_accessory_type($o))];
     }
+    foreach (m3d_items('scenes') as $o) {   // scenes: media/scene-<slug>
+        $names['scene-' . $o['slug']] = admin_item_label('scenes', $o);
+        $pick['scene-' . $o['slug']] = ['kind' => 'scene', 'name' => $o['name'], 'sub' => 'Scene', 'thumb' => $picUrl(outfit_preview($o)), 'icon' => SCENE_ICON];
+    }
     $names += ['gallery' => 'Gallery', 'docs' => 'Docs', 'faq' => 'FAQ', 'blog' => 'Blog', 'misc' => 'Other (misc)'];
     foreach (m3d_texts() as $t) {   // docs pages, FAQ questions and blog posts, listed under their docs section / FAQ topic / "Blog"
         $names[$t['key']] = $t['name'];
@@ -1344,6 +1435,8 @@ function clean_still(array $in, array $old): array
     if ($v !== 'public') $s['visibility'] = $v;
     $link = clean_still_link($in['link'] ?? null);
     if ($link) $s['link'] = $link;
+    $scene = clean_text($in['scene'] ?? '', 64);   // the scene it was made in: the viewer's "Download Scene" (still_slide())
+    if ($scene !== '' && ($scene === ($old['scene'] ?? '') || m3d_item('scenes', $scene))) $s['scene'] = $scene;
     if (!empty($old['from'])) $s['from'] = (string) $old['from'];   // a patron's render (app/showcase.php): never set from the editor
     return $s;
 }
@@ -1380,16 +1473,13 @@ function admin_gallery_payload(): array
     }
     $models = array_map(fn($m) => ['slug' => $m['slug'], 'name' => $m['name'], 'gen' => (string) ($m['generation'] ?? ''), 'franchise' => (string) ($m['franchise'] ?? ''),
         'thumb' => img_thumb(item_pic('models', $m)), 'vis' => m3d_visibility($m)], m3d_models());
-    return ['stills' => $stills, 'chars' => $chars, 'models' => $models, 'visibility' => GALLERY_VISIBILITY, 'today' => m3d_today()];
+    // the scenes a picture can link to; count = its pictures (the filter picker lists the ones that have some)
+    $perScene = array_count_values(array_map(fn($s) => (string) ($s['scene'] ?? ''), $g['stills']));
+    $scenes = array_map(fn($x) => ['slug' => (string) $x['slug'], 'name' => (string) $x['name'], 'thumb' => img_thumb(outfit_preview($x)), 'count' => $perScene[(string) $x['slug']] ?? 0,
+        'models' => array_values(array_filter(array_map('strval', (array) ($x['models'] ?? [])), fn($slug) => m3d_item('models', $slug) !== null))], m3d_items('scenes'));
+    return ['stills' => $stills, 'chars' => $chars, 'models' => $models, 'scenes' => $scenes, 'visibility' => GALLERY_VISIBILITY, 'today' => m3d_today(),
+        's4' => m3d_s4()['bucket'] !== '' && m3d_s4_on()];   // full size links may be "s4:<file>" (the S4… picker)
 }
-
-// Features that are only switched on or off (settings.json → <key>.on): title, its help, switch label, link shown while on, messages (on, off)
-const FEATURE_SWITCHES = [
-    'mustardui' => ['MustardUI', 'Ready-made page about MustardUI, the free Blender add-on: features, download, guides and bug reports. Turn on if your models use it.',
-        'Enable MustardUI Page',
-        ['/mustardui/', 'View the Page ↗', true],
-        'The MustardUI page is on: it is in the menu and the footer.', 'The MustardUI page is off: no menu item, and /mustardui/ shows “not found”.'],
-];
 
 /**
  * Settings tabs (settings.php?tab=…): key => [label, its sections' ids], in the order shown. Update (update.php) is the last tab.
@@ -1397,8 +1487,8 @@ const FEATURE_SWITCHES = [
  */
 const SETTINGS_TABS = [
     'site' => ['Site', ['identity', 'social', 'menu', 'homepage', 'notice', 'timezone']],
-    'features' => ['Features', ['blog', 'bugs', 'comments', 'showcase', 'discord', 'welcome', 's4', 'mustardui']],
-    'patreon' => ['Patreon', ['campaign', 'logins', 'patreon']],
+    'features' => ['Features', ['features-recap', 'blog', 'bugs', 'comments', 'ideas', 'showcase', 'discord', 'welcome', 's4']],
+    'patreon' => ['Patreon', ['campaign', 'logins', 'avatars', 'patreon']],
     'notify' => ['Notifications', ['notify']],
     'maintenance' => ['Maintenance', ['maintenance', 'problems', 'tools', 'system']],
     'privacy' => ['Privacy', ['legal', 'personal-data']],   // last, after Update: rarely used
@@ -1411,14 +1501,41 @@ function settings_tab(): string
     return isset(SETTINGS_TABS[$t]) ? $t : 'site';
 }
 
-/** A group in a feature's Settings box (Bug Reports, Comments): where its notifications go, set in Settings → Notifications. */
+/** The Posting group of the Bug Reports and Comments boxes, the same in both ($p = the fields' prefix, $s = the feature's settings):
+ *  who can post, how many a day, Check Before Showing and Skip for Paying Patrons (greyed while the check is off, CSS). */
+function posting_group(string $p, string $perDay, int $max, array $s): string
+{
+    $sw = fn(string $name, bool $on, string $label, string $cls = 'toggle') => '<label class="' . $cls . '"><input type="checkbox" class="switch" name="' . $p . '_' . $name . '" value="1"' . ($on ? ' checked' : '') . ' /><span>' . $label . '</span></label>';
+    $who = '';
+    foreach (['any' => 'Any Account', 'paying' => 'Paying Patrons'] as $v => $label)
+        $who .= '<label class="vis-opt"><input type="radio" name="' . $p . '_who" value="' . $v . '"' . ($s['who'] === $v ? ' checked' : '') . ' />' . $label . '</label>';
+    return '<div class="set-grp"><h3>Posting</h3><div class="field"><span class="lbl">Who Can Post</span><div class="vis-seg bugs-who">' . $who . '</div></div>'
+        . '<label class="field bugs-num"><span class="lbl">' . e($perDay) . '</span><input class="input" type="number" name="' . $p . '_per_day" min="1" max="' . $max . '" value="' . (int) $s['per_day'] . '" /></label>'
+        . $sw('moderate', $s['moderate'], 'Check Before Showing') . $sw('paid_skip', $s['paid_skip'], 'Skip for Paying Patrons', 'toggle set-sub') . '</div>';
+}
+
+/** The Emoji group of the Bug Reports and Comments boxes ($p = the fields' prefix). */
+function emoji_group(string $p, array $s): string
+{
+    $h = '<div class="set-grp"><h3>Emoji</h3>';
+    foreach (['emoji' => 'Emoji Button', 'codes' => 'Emoji Codes (:heart:)', 'reactions' => 'Reactions'] as $k => $label)
+        $h .= '<label class="toggle"><input type="checkbox" class="switch" name="' . $p . '_' . $k . '" value="1"' . ($s[$k] ? ' checked' : '') . ' /><span>' . $label . '</span></label>';
+    return $h . '</div>';
+}
+
+/** The Notifications group of the Bug Reports and Comments boxes: where each event goes, and a link to change it. */
 function notify_group(string ...$events): string
 {
     $s = m3d_notify_settings();
+    $icons = ['bell' => ['Bell', '<svg viewBox="0 0 24 24" aria-hidden="true">' . NOTIFY_ICONS['bell'] . '</svg>'], 'discord' => ['Discord', social_icon('discord')]];
     $h = '<div class="set-grp nt-grp"><h3>Notifications</h3><ul class="nt-grp-list">';
     foreach ($events as $ev) {
-        $to = array_filter(['Bell' => $s['bell'][$ev], 'Discord' => $s['discord'][$ev]]);
-        $h .= '<li><span>' . e(NOTIFY_EVENTS[$ev]) . '</span><span class="muted">' . ($to ? implode(' · ', array_keys($to)) : 'Off') . '</span></li>';
+        $h .= '<li><span>' . e(NOTIFY_EVENTS[$ev]) . '</span>';
+        foreach ($icons as $to => [$label, $svg]) {
+            $on = !empty($s[$to][$ev]);
+            $h .= '<span class="ntg-ico ntg-' . $to . ($on ? ' is-on' : '') . '" title="' . $label . ': ' . ($on ? 'On' : 'Off') . '">' . $svg . '<span class="sr-only">' . $label . ' ' . ($on ? 'on' : 'off') . '</span></span>';
+        }
+        $h .= '</li>';
     }
     return $h . '</ul><a class="btn btn-ghost btn-sm" href="' . e(settings_url('notify')) . '">Change in Notifications</a></div>';
 }
@@ -1430,10 +1547,12 @@ function settings_url(string $section): string
     return '/admin/settings.php';
 }
 
-/** Tabs of the Assets page (the "Assets" menu item): Models · Accessories, in the .lib-tabs look of Settings, each with its count. */
+/** Tabs of the Assets page (the "Assets" menu item): Models · Accessories (· Scenes), in the .lib-tabs look of Settings, each with its count. */
 function assets_menu(string $current): string
 {
     $tabs = ['models' => ['/admin/models.php', 'Models', count(m3d_items('models'))], 'outfits' => ['/admin/outfits.php', 'Accessories', count(m3d_items('outfits'))]];
+    $tabs['scenes'] = ['/admin/scenes.php', 'Scenes', count(m3d_items('scenes'))];
+    $tabs['tools'] = ['/admin/tools.php', 'Pages', count(m3d_tools()['tools'])];   // tool and simple pages (app/tools.php)
     $h = '<nav class="lib-tabs set-tabs" aria-label="Assets">';
     foreach ($tabs as $k => [$href, $label, $n]) $h .= '<a href="' . $href . '"' . ($current === $k ? ' aria-current="page"' : '') . '>' . $label . '<span>' . $n . '</span></a>';
     $dead = count(lc_dead());   // from the last check: Link check never runs by itself
@@ -1456,30 +1575,19 @@ function settings_menu(string $current = ''): string
 }
 
 /**
- * Weekly safety net: when the newest full backup (any kind; an uploaded one by the day it was made, bk_newest_full()) is older
- * than 7 days, opening an admin page makes one (code, content, counters and the download log; no images, to stay quick):
- * full-<date>-auto.zip. The newest 8 automatic ones are kept. One try a day at most, so a failure (full disk…) doesn't slow
- * every page. Returns the new file name.
+ * Weekly safety net (bk_auto_run()): opening an admin page makes the automatic backup when it is due and no public page has made it
+ * yet (they do after the page is sent, m3d_backup_tick()). Called once per request: Home and Backups call it before they read the
+ * backups, admin_start() again for its message. Returns the new file name.
  */
 function admin_auto_backup(): ?string
 {
+    static $done = false, $name = null;
+    if ($done) return $name;
+    $done = true;
+    $f = m3d_backup_next_file();
+    if (is_file($f) && (int) @file_get_contents($f) > time()) return null;
     require_once __DIR__ . '/_backup.php';
-    $dir = bk_dir();
-    if (bk_newest_full() > time() - 7 * 86400) return null;
-    $try = "$dir/.auto-backup-try";
-    if (is_file($try) && filemtime($try) > time() - 86400) return null;
-    @touch($try);
-    try {
-        $name = m3d_session_pause(fn() => backup_full('auto'));   // the other pages stay usable meanwhile
-    } catch (Throwable $ex) {
-        m3d_problem('Backups', 'Automatic backup failed: ' . $ex->getMessage());
-        return null;
-    }
-    // only real automatic ones (no note): a manual backup whose note ends in "auto" is full-<date>-manual-auto.zip
-    $autos = array_filter(glob("$dir/full-*-auto.zip") ?: [], fn($f) => preg_match('/^full-\d{8}-\d{6}-auto\.zip$/', basename($f)));
-    rsort($autos);   // names start with the date: newest first
-    foreach (array_slice($autos, 8) as $old) @unlink($old);
-    return $name;
+    return $name = bk_auto_run();
 }
 
 /** A one-time message after an action ("✓ Saved", "Not saved: …"), shown as a floating message with a ✕ by admin_end()
@@ -1499,11 +1607,17 @@ function admin_result($done, $error, string $label = 'Not saved:'): void
 
 function admin_start(string $title, string $active = ''): void
 {
-    $autoBackup = admin_auto_backup();
-    m3d_discord_stills_tick();   // new Gallery pictures waiting for their Discord post (also while only the admin is on the site)
-    m3d_blog_discord_tick();   // a blog post went out: its Discord post
-    lc_auto_tick();   // Link check's automatic check, when on
-    m3d_tiers_tick();   // the campaign's tiers read from Patreon once a day
+    // a moderator (only admin/moderation.php lets one through) gets the "Mustard3D Mod" header: the Moderation page, their name, View Site
+    $mod = !m3d_is_admin($GLOBALS['M3D']);
+    $autoBackup = !$mod && admin_auto_backup();
+    if (!$mod) {
+        m3d_discord_stills_tick();   // new Gallery pictures waiting for their Discord post (also while only the admin is on the site)
+        m3d_blog_discord_tick();   // a blog post went out: its Discord post
+        lc_auto_tick();   // Link check's automatic check, when on
+        m3d_tiers_tick();   // the campaign's tiers read from Patreon once a day
+    }
+    $waiting = $mod || m3d_mod_kinds() || $active === 'moderation' ? m3d_mod_waiting_count() : null;   // the Moderation menu item's number
+    $nav = fn(string $label, string $href, bool $on, ?int $n = null) => '        <a href="' . $href . '"' . ($on ? ' aria-current="page"' : '') . '>' . $label . ($n ? '<span class="nav-n">' . $n . '</span>' : '') . "</a>\n";
     m3d_session_release();   // the page only reads the login from here: a slow page (big lists, the Images library) holds up nothing else
     header('Content-Type: text/html; charset=utf-8');
     ?>
@@ -1514,22 +1628,32 @@ function admin_start(string $title, string $active = ''): void
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <meta name="robots" content="noindex, nofollow" />
   <meta name="csrf" content="<?= e(m3d_csrf()) ?>" />
-  <title><?= e($title) ?> · <?= e(site_name()) ?> Admin</title>
+  <title><?= e($title) ?> · <?= e(site_name()) ?> <?= $mod ? 'Mod' : 'Admin' ?></title>
 <?= head_identity() ?>  <link rel="stylesheet" href="<?= e(asset('site.css')) ?>" />
   <link rel="stylesheet" href="<?= e(asset('admin.css')) ?>" />
 <?= accent_style() ?></head>
 <body class="admin">
   <header class="site-header">
     <div class="wrap header-inner">
+<?php if ($mod): $me = m3d_patron($GLOBALS['M3D']) ?? []; ?>
+      <a class="brand" href="/admin/moderation.php"><?= brand() ?><span class="admin-tag is-mod">Mod</span></a>
+      <nav class="nav admin-nav" aria-label="Moderation">
+<?= $nav('Moderation', '/admin/moderation.php', true, $waiting) ?>      </nav>
+      <div class="account">
+        <span class="mod-me"><?= avatar_html((string) ($me['id'] ?? ''), (string) ($me['name'] ?? ''), false, 'ava-sm') ?><span><?= e((string) ($me['name'] ?? '')) ?></span></span>
+        <a class="btn btn-ghost btn-sm" href="/">View Site</a>
+      </div>
+    </div>
+<?php else: ?>
       <a class="brand" href="/admin/"><?= brand() ?><span class="admin-tag">Admin</span></a>
       <nav class="nav admin-nav" aria-label="Admin">
-        <a href="/admin/models.php" <?= in_array($active, ['models', 'outfits'], true) ? 'aria-current="page"' : '' ?>>Assets</a>
+        <a href="/admin/models.php" <?= in_array($active, [...M3D_ITEM_KINDS, 'tools'], true) ? 'aria-current="page"' : '' ?>>Assets</a>
         <a href="/admin/gallery.php" <?= $active === 'gallery' ? 'aria-current="page"' : '' ?>>Gallery</a>
 <?php if (m3d_blog_on() || $active === 'blog'): ?>        <a href="/admin/blog.php" <?= $active === 'blog' ? 'aria-current="page"' : '' ?>>Blog</a>
 <?php endif ?>        <a href="/admin/docs.php" <?= $active === 'docs' ? 'aria-current="page"' : '' ?>>Docs</a>
         <a href="/admin/faq.php" <?= $active === 'faq' ? 'aria-current="page"' : '' ?>>FAQ</a>
         <a href="/admin/users.php" <?= $active === 'users' ? 'aria-current="page"' : '' ?>>Access</a>
-        <a href="/admin/images.php" <?= $active === 'images' ? 'aria-current="page"' : '' ?>>Media</a>
+<?php if ($waiting !== null) echo $nav('Moderation', '/admin/moderation.php', $active === 'moderation', $waiting) ?>        <a href="/admin/images.php" <?= $active === 'images' ? 'aria-current="page"' : '' ?>>Media</a>
         <a href="/admin/stats.php" <?= $active === 'stats' ? 'aria-current="page"' : '' ?>>Stats</a>
         <a href="/admin/settings.php" <?= in_array($active, ['settings', 'update', 'backups'], true) ? 'aria-current="page"' : '' ?>>Settings</a>
       </nav>
@@ -1548,10 +1672,11 @@ function admin_start(string $title, string $active = ''): void
         <a class="btn btn-ghost btn-sm" href="/">View Site</a>
       </div>
     </div>
+<?php endif ?>
   </header>
   <main id="main" class="wrap admin-main">
-<?php if ($autoBackup) admin_flash('✓ Weekly automatic backup made (content, counts, download log and code; without images). <a href="/admin/backups.php">See Backups</a>') ?>
-<?php if (m3d_maintenance()): ?>
+<?php if ($autoBackup) admin_flash('✓ Weekly backup made. <a href="/admin/backups.php">See Backups</a>') ?>
+<?php if (m3d_maintenance() && !$mod): ?>
     <p class="notice maint-notice"><b>Maintenance mode is on:</b> visitors see the “Back Soon” page; only admins can use the site. <a href="<?= settings_url('maintenance') ?>">Turn it off in Settings</a></p>
 <?php endif ?>
 <?php
@@ -1575,7 +1700,7 @@ function admin_comments_cell(string $kind, array $it): string
     $c = $n[$kind . ':' . $it['slug']] ?? [];
     [$shown, $wait] = [(int) ($c[0] ?? 0), (int) ($c[1] ?? 0)];
     if (!m3d_comments_open($kind, $it)) {
-        return '<span class="muted" title="' . e(!m3d_comments_on($kind) ? 'Comments are off for all ' . ($kind === 'outfits' ? 'accessories' : 'models') . ' (Settings → Comments)' : 'Allow Comments is off in its editor') . '">Off</span>'
+        return '<span class="muted" title="' . e(!m3d_comments_on($kind) ? 'Comments are off for all ' . (m3d_kind_word($kind, true)) . ' (Settings → Comments)' : 'Allow Comments is off in its editor') . '">Off</span>'
             . ($shown + $wait ? '<div class="muted">' . ($shown + $wait) . ' kept</div>' : '');
     }
     $h = $shown ? '<a class="num cm-num" href="' . e(m3d_item_url($kind, (string) $it['slug'])) . '#comments" title="' . e(m3d_plural($shown, 'comment')) . '">' . bug_icon('comment') . $shown . '</a>' : '<span class="muted">0</span>';

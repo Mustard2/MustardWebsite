@@ -34,6 +34,10 @@ $keywords = function (array $p): string {
     return implode(' ', array_unique($m[0]));
 };
 
+// Discord's link preview: a card like the models' (preview_box()): "Docs · Section" under the title, the summary (no headings list, Pi)
+$GLOBALS['m3d_page_card'] = preview_box((string) $page['title'], abs_url($url($page)), discord_md_text('Docs' . (($page['section'] ?? '') !== '' ? ' · ' . $page['section'] : '')),
+    discord_md_text((string) ($page['summary'] ?? '')), '', 'Read the Docs');
+
 layout_start($isHome ? 'Documentation' : $page['title'] . ' · Docs', (string) ($page['summary'] ?? 'Documentation for the ' . site_name() . ' models.'), 'page-docs');
 ?>
   <div class="wrap docs">

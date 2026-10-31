@@ -85,13 +85,15 @@ function m3d_welcome_due(?array $p): bool
 /** What some rules allow, in plain words, per kind: ['models' => ["1 new model every 7 days"], 'outfits' => […]] (empty = no limit). */
 function m3d_welcome_rule_texts(array $rules): array
 {
-    $out = ['models' => [], 'outfits' => []];
+    $out = array_fill_keys(m3d_shown_kinds(), []);   // only the kinds the site shows
     foreach (array_keys($out) as $kind) {
         foreach ($rules as $r) {
             if (!in_array($kind, m3d_rule_kinds($r), true)) continue;
-            $max = max(1, (int) ($r['max'] ?? 1));
+            $max = max(0, (int) ($r['max'] ?? 1));
             $per = m3d_rule_period($r)[1];
-            $out[$kind][] = (($r['what'] ?? 'models') === 'all' ? m3d_plural($max, 'new download') . ' (models and accessories)'
+            if ($max === 0) { $out[$kind] = ['Not included']; break; }   // a rule of 0 (Pi): nothing else matters for that kind
+            $both = array_values(array_intersect(m3d_rule_kinds($r), array_keys($out)));   // a rule for several kinds the site shows: "2 new downloads (models and accessories)"
+            $out[$kind][] = (count($both) > 1 ? m3d_plural($max, 'new download') . ' (' . m3d_kinds_words($both) . ')'
                 : $max . ' new ' . DL_WHAT[$kind][$max === 1 ? 0 : 1]) . ' every ' . $per;
         }
     }
@@ -101,6 +103,7 @@ function m3d_welcome_rule_texts(array $rules): array
 /** The one row of a patron with their own unlock rules (Admin → Access: Unlock Limits "Custom"), like m3d_welcome_rule_rows()'s; [] = none. */
 function m3d_welcome_own_rows(array $rules): array
 {
+    $rules = m3d_rules_shown($rules);
     return $rules ? [['tier' => null, 'label' => 'Just for You', 'from' => 0, 'to' => null] + m3d_welcome_rule_texts($rules)] : [];
 }
 
@@ -112,7 +115,7 @@ function m3d_welcome_own_rows(array $rules): array
  */
 function m3d_welcome_rule_rows(): array
 {
-    $rules = array_values(array_filter(m3d_dl_settings()['rules'], fn($r) => !empty($r['on'])));
+    $rules = m3d_rules_shown(array_filter(m3d_dl_settings()['rules'], fn($r) => !empty($r['on'])));   // not those of a kind the site has nothing of
     if (!$rules) return [];
     $tiers = [null];
     foreach ($rules as $r) if ((int) ($r['tier'] ?? 0) > 0) $tiers[] = (int) $r['tier'];
@@ -140,7 +143,7 @@ function m3d_welcome_rule_rows(): array
             $row += m3d_welcome_rule_texts(m3d_rules_pick($rules, $from, $tier));
             // two stretches in a row that allow the same: one row ("Under 3 months" + "3+ months" of a tier = "Every Patron")
             $prev = $tierRows ? $tierRows[count($tierRows) - 1] : null;
-            if ($prev && $prev['models'] === $row['models'] && $prev['outfits'] === $row['outfits']) {
+            if ($prev && array_diff_key($prev, ['label' => 1, 'from' => 1, 'to' => 1]) == array_diff_key($row, ['label' => 1, 'from' => 1, 'to' => 1])) {
                 $row['from'] = $prev['from'];
                 $row['label'] = $label($prev['from'], $to, $tier);
                 array_pop($tierRows);
@@ -157,7 +160,7 @@ function m3d_welcome_rule_rows(): array
 /** Whether any unlock limit rule is on: the /unlocks/ page and its "How It Works" buttons exist only then. */
 function m3d_unlocks_on(): bool
 {
-    foreach (m3d_dl_settings()['rules'] as $r) if (!empty($r['on'])) return true;
+    foreach (m3d_dl_settings()['rules'] as $r) if (!empty($r['on']) && m3d_rules_shown([$r])) return true;   // a rule of a kind the site shows
     return false;
 }
 
@@ -170,7 +173,7 @@ function m3d_unlocks_on(): bool
  */
 function m3d_unlock_grid(): array
 {
-    $rules = array_values(array_filter(m3d_dl_settings()['rules'], fn($r) => !empty($r['on'])));
+    $rules = m3d_rules_shown(array_filter(m3d_dl_settings()['rules'], fn($r) => !empty($r['on'])));   // not those of a kind the site has nothing of
     if (!$rules) return [];
     $cols = [];
     foreach ($rules as $r) if ((int) ($r['tier'] ?? 0) > 0) $cols[(int) $r['tier']] = '';
@@ -184,16 +187,16 @@ function m3d_unlock_grid(): array
     foreach ($rules as $r) foreach (['from', 'to'] as $f) if (isset($r[$f]) && $r[$f] !== '' && (int) $r[$f] > 0) $cuts[] = (int) $r[$f];
     $cuts = array_values(array_unique($cuts));
     sort($cuts);
-    $order = ['models' => 0, 'outfits' => 1, 'all' => 2];
+    $order = fn(array $r) => [count($ks = m3d_rule_kinds($r)), array_search($ks[0], M3D_ITEM_KINDS, true)];   // one kind first (models, accessories, scenes), then mixes
     $rows = [];
     foreach ($cuts as $i => $from) {
         $to = $cuts[$i + 1] ?? null;
         $cells = [];
         foreach (array_keys($cols) as $c) {
             $cell = m3d_rules_pick($rules, $from, $c ?: null);
-            usort($cell, fn($a, $b) => ($order[$a['what'] ?? 'models'] ?? 0) <=> ($order[$b['what'] ?? 'models'] ?? 0));
-            $cells[$c] = array_map(fn($r) => ['max' => max(1, (int) ($r['max'] ?? 1)), 'per' => m3d_rule_period($r)[1],
-                'what' => isset(DL_WHAT[$r['what'] ?? '']) ? $r['what'] : 'models'], $cell);
+            usort($cell, fn($a, $b) => $order($a) <=> $order($b));
+            $cells[$c] = array_map(fn($r) => ['max' => max(0, (int) ($r['max'] ?? 1)), 'per' => m3d_rule_period($r)[1],
+                'what' => m3d_what_clean((string) ($r['what'] ?? '')) ?? 'models'], $cell);
         }
         $prev = $rows ? $rows[count($rows) - 1] : null;
         if ($prev && $prev['cells'] === $cells) {

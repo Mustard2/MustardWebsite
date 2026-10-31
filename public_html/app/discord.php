@@ -49,19 +49,25 @@ function m3d_discord_on(): bool
     return $d['on'] && preg_match(DISCORD_WEBHOOK_RE, $d['webhook']) === 1;
 }
 
-/** "models:tifa@V4" for the newest version out of an item (one dated in the future posts on its day), '' when it has none. */
+/** "models:tifa@V4" for the newest version out of an item (one dated in the future posts on its day), '' when it has none.
+ *  An In Development model's ends in "~dev" (posted with the note that it may not download yet), so leaving development posts the version again. */
 function m3d_discord_code(string $kind, array $item): string
 {
     $label = m3d_version_label(m3d_current_version($item));
-    return $label === '' ? '' : $kind . ':' . ($item['slug'] ?? '') . '@' . $label;
+    return $label === '' ? '' : $kind . ':' . ($item['slug'] ?? '') . '@' . $label . (m3d_discord_dev($kind, $item) ? '~dev' : '');
+}
+
+/** An In Development model: its posts carry the note that it might not be downloadable yet. */
+function m3d_discord_dev(string $kind, array $item): bool
+{
+    return $kind === 'models' && m3d_status($item) === 'in-development';
 }
 
 /** Codes of every version that could be posted now: turning the feature on marks them as sent. */
 function m3d_discord_current_codes(): array
 {
     $out = [];
-    foreach (['models', 'outfits'] as $kind) foreach (m3d_items($kind) as $it) {
-        if ($kind === 'models' && m3d_status($it) === 'in-development') continue;   // posted once it leaves development (m3d_discord_after_save())
+    foreach (M3D_ITEM_KINDS as $kind) foreach (m3d_items($kind) as $it) {
         if (m3d_is_open($it) && ($c = m3d_discord_code($kind, $it)) !== '') $out[] = $c;
     }
     return $out;
@@ -71,7 +77,7 @@ function m3d_discord_current_codes(): array
 function m3d_discord_sample(): ?array
 {
     $best = null;
-    foreach (['models', 'outfits'] as $k) foreach (m3d_listed_items($k) as $it) {
+    foreach (M3D_ITEM_KINDS as $k) foreach (m3d_listed_items($k) as $it) {
         if (!m3d_is_open($it) || m3d_current_version($it)['version'] === '') continue;
         $ts = m3d_changelog_ts(m3d_current_version($it)['date']) ?? 0;
         if (!$best || $ts > $best[0]) $best = [$ts, $k, $it];
@@ -92,7 +98,6 @@ function m3d_discord_after_save(string $kind, array $old, array $new): void
         $post = $mark = [];
         foreach ($new as $it) {
             if (!m3d_is_open($it) || ($code = m3d_discord_code($kind, $it)) === '' || isset($sent[$code])) continue;
-            if ($kind === 'models' && m3d_status($it) === 'in-development') continue;   // not downloadable yet: posted once it is (like release dates)
             $o = $before[$it['slug'] ?? ''] ?? null;
             // already visible: a release when the version that was current is now below the new one (also when the same save
             // removed an older entry); otherwise an edit (renamed version…), only marked as sent
@@ -145,7 +150,9 @@ function m3d_discord_free(string $kind, array $item): void
         $e['title'] = mb_substr($item['name'] . ' is now free', 0, 250);
         $e['description'] = ($r['patrons'] !== null ? 'Patrons have had it since ' . m3d_release_when($r['patrons'], false) . '. ' : '')
             . 'From today anyone can download it, no login needed.';
-        unset($e['timestamp']);
+        unset($e['timestamp'], $e['head']);
+        $e = m3d_discord_item_card($e, $kind, $item, null);
+        $e['buttons'] = array_slice($e['buttons'], 0, 1);   // View: no changelog news in this one
         $res = m3d_discord_post($d['webhook'], $d['message'], [$e]);
         if (!$res['ok']) m3d_problem('Discord', 'Post “' . $item['name'] . ' is now free” failed: ' . $res['error']);
         m3d_save_setting_keys('discord', ['last' => ['at' => gmdate('c'), 'ok' => $res['ok'], 'error' => $res['error'], 'what' => $item['name'] . ' (now free)']]);
@@ -165,7 +172,7 @@ function m3d_discord_embed(string $kind, array $item): array
     $text = m3d_bug_refs_discord((string) $abs(implode("\n", $lines)));   // "#6": a link to the report
     if (mb_strlen($text) > 1800) $text = mb_substr($text, 0, 1800) . '…';
     $color = ltrim((string) (m3d_identity()['color'] ?? ''), '#');
-    $what = $kind === 'outfits' ? m3d_accessory_type($item) : 'Model' . (($item['franchise'] ?? '') !== '' ? ' · ' . $item['franchise'] : '');
+    $what = m3d_item_type($kind, $item) . (($item['franchise'] ?? '') !== '' ? ' · ' . $item['franchise'] : '');
     $e = [
         'title'  => mb_substr(($kind === 'models' ? m3d_model_name($item) : $item['name']) . ' · ' . m3d_version_label(m3d_current_version($item)), 0, 250),
         'url'    => abs_url(m3d_version_url($kind, $item, m3d_version_label($en))),   // straight to that version in the changelog
@@ -173,11 +180,30 @@ function m3d_discord_embed(string $kind, array $item): array
     ];
     if ($text !== '') $e['description'] = $text;
     if (preg_match('/^[0-9a-f]{6}$/i', $color)) $e['color'] = hexdec($color);
-    if (($ts = m3d_changelog_ts((string) ($en['date'] ?? ''))) !== null) $e['timestamp'] = gmdate('c', $ts + 12 * 3600);   // noon of that day in site time: the same date for readers in the Americas
+    $ts = m3d_changelog_ts((string) ($en['date'] ?? ''));
+    if ($ts !== null) $e['timestamp'] = gmdate('c', $ts + 12 * 3600);   // noon of that day in site time: the same date for readers in the Americas
     if (m3d_visibility($item) === 'public') {
         $pic = trim((string) ($en['image'] ?? '')) ?: item_pic($kind, $item);
         if ($pic !== '') $e['image'] = ['url' => abs_url(img_small($pic))];
     }
+    if (m3d_discord_dev($kind, $item)) $e['note'] = "🛠️ **In development:** may not be downloadable yet.";   // short: one line in the card
+    return m3d_discord_item_card($e, $kind, $item, $ts !== null ? $ts + 12 * 3600 : null) + ['head' => "What's New"];
+}
+
+/** The card keys of a post about an item (m3d_discord_card()): the site over the name, franchise / type (· the version's date) under it, the site's icon,
+ *  the facts of its link preview but the version (preview_facts(): Generation, Blender, Status; Type, Optimized For), View + Full Changelog. */
+function m3d_discord_item_card(array $e, string $kind, array $item, ?int $ts): array
+{
+    $page = abs_url(m3d_item_url($kind, (string) $item['slug']));
+    $what = $kind === 'models' ? (string) ($item['franchise'] ?? '') : m3d_item_type($kind, $item);
+    $e['sub'] = discord_md_text(site_name());
+    $e['below'] = implode(' · ', array_filter([discord_md_text($what), $ts !== null ? '<t:' . $ts . ':d>' : '']));
+    if (($logo = preview_logo()) !== '') $e['thumb'] = abs_url($logo);
+    $e['facts'] = [];
+    foreach (preview_facts($kind, $item) as [$label, $text, , $tone]) {
+        if ($label !== 'Latest Version') $e['facts'][] = [$label, ($tone !== null ? (PREVIEW_DOTS[$tone] ?? '⚪') . ' ' : '') . '**' . discord_md_text($text) . '**'];
+    }
+    $e['buttons'] = [[$kind === 'models' ? 'View Model' : 'View Accessory', $page], ['Full Changelog', $page . '#changelog']];
     return $e;
 }
 
@@ -198,14 +224,97 @@ function m3d_discord_chunks(array $list): array
     return $out;
 }
 
-/** Sends one message to the webhook: ['ok' => bool, 'error' => string, 'status' => HTTP status (0: not reached)]. */
+/**
+ * Posts are cards (Discord's components, "Components V2"; Pi picked layout A, 2026-10-30). Each post is still built as an embed (the
+ * fallback, and what m3d_discord_chunks() counts) with a few keys of its own that m3d_discord_card() turns into one card: `sub` (the grey
+ * line over the title, Discord markdown), `thumb` (a picture right of the title: the site's icon), `facts` [[label, value (markdown)]…]
+ * shown as a grey label over its value, `head` (a heading over the text), `buttons` [[label, url]…]. m3d_discord_post() sends the cards
+ * when the message fits (DISCORD_CARD_PARTS components, DISCORD_CARD_TEXT characters), else, or when Discord refuses them, the embeds.
+ */
+const DISCORD_CARD_KEYS = ['sub', 'below', 'thumb', 'facts', 'note', 'head', 'buttons'];   // note: a line between the facts and the text (an embed puts it over its text)
+const DISCORD_CARD_PARTS = 40;    // components in one message, nested ones too (Discord's limit)
+const DISCORD_CARD_TEXT = 4000;   // characters of text in one message (Discord's limit)
+const DISCORD_V2 = 32768;         // the message flag IS_COMPONENTS_V2
+
+/** One post as a card: a container with the grey line and the title (a link) under it, the icon on their right, the facts, the text, the picture, the buttons. */
+function m3d_discord_card(array $e): array
+{
+    $title = discord_md_text((string) ($e['title'] ?? ''));
+    $foot = trim((string) ($e['footer']['text'] ?? ''));
+    $sub = (string) ($e['sub'] ?? '');
+    if ($sub === '' && $foot !== '') $sub = discord_md_text($foot) . (isset($e['timestamp']) ? ' · <t:' . strtotime((string) $e['timestamp']) . ':d>' : '');   // no line of its own: the embed's footer
+    $note = trim((string) ($e['author']['name'] ?? ''));   // the test message's "Test message: …"
+    $below = (string) ($e['below'] ?? '');
+    // the grey line on top, the title under it in a text part of its own (a heading after a line in the same text gets a wide gap, Pi), then `below`
+    $top = array_merge($sub !== '' ? [['type' => 10, 'content' => '-# ' . $sub]] : [],
+        [['type' => 10, 'content' => (($e['url'] ?? '') !== '' ? '## [' . $title . '](' . $e['url'] . ')' : '## ' . $title) . ($note !== '' ? "\n-# " . discord_md_text($note) : '')]],
+        $below !== '' ? [['type' => 10, 'content' => '-# ' . $below]] : []);
+    $parts = ($e['thumb'] ?? '') !== '' ? [['type' => 9, 'components' => $top, 'accessory' => ['type' => 11, 'media' => ['url' => (string) $e['thumb']]]]] : $top;
+    if (!empty($e['facts'])) {
+        $parts[] = ['type' => 14];
+        $parts[] = ['type' => 10, 'content' => implode("\n", array_map(fn($f) => '-# ' . discord_md_text((string) $f[0]) . "\n" . $f[1], $e['facts']))];
+    }
+    if (($e['note'] ?? '') !== '') $parts[] = ['type' => 10, 'content' => (string) $e['note']];
+    $text = trim((string) ($e['description'] ?? ''));
+    if ($text !== '') $parts[] = ['type' => 10, 'content' => (($e['head'] ?? '') !== '' ? '### ' . discord_md_text((string) $e['head']) . "\n" : '') . $text];
+    if (!empty($e['image']['url'])) $parts[] = ['type' => 12, 'items' => [['media' => ['url' => (string) $e['image']['url']]]]];
+    $buttons = [];
+    foreach (array_slice((array) ($e['buttons'] ?? []), 0, 5) as [$label, $url]) {
+        if (preg_match('#^https?://#i', (string) $url)) $buttons[] = ['type' => 2, 'style' => 5, 'label' => mb_substr((string) $label, 0, 80), 'url' => (string) $url];
+    }
+    if ($buttons) $parts[] = ['type' => 1, 'components' => $buttons];
+    $card = ['type' => 17, 'components' => $parts];
+    if (isset($e['color'])) $card['accent_color'] = (int) $e['color'];
+    return $card;
+}
+
+/** The message as cards: the intro line on top, one card per post; null when it is over Discord's limits (then the embeds go). */
+function m3d_discord_cards(string $message, array $embeds): ?array
+{
+    $out = trim($message) !== '' ? [['type' => 10, 'content' => mb_substr(trim($message), 0, 1900)]] : [];
+    // only the intro line may ping (as before, when the posts were embeds, which never ping): @everyone, @here and role codes in a card's
+    // texts (changelogs, visitors' comments in the notifications) get a zero-width space
+    $quiet = function (array $c) use (&$quiet): array {
+        if (isset($c['content'])) $c['content'] = preg_replace(['/@(everyone|here)/i', '/<@&/'], ["@\u{200B}$1", "<@\u{200B}&"], (string) $c['content']);
+        if (!empty($c['components'])) $c['components'] = array_map($quiet, $c['components']);
+        return $c;
+    };
+    foreach ($embeds as $e) $out[] = $quiet(m3d_discord_card($e));
+    $parts = $text = 0;
+    $walk = function (array $list) use (&$walk, &$parts, &$text) {
+        foreach ($list as $c) {
+            $parts++;
+            $text += mb_strlen((string) ($c['content'] ?? ''));
+            if (!empty($c['components'])) $walk($c['components']);
+            if (isset($c['accessory'])) $parts++;
+        }
+    };
+    $walk($out);
+    return $parts <= DISCORD_CARD_PARTS && $text <= DISCORD_CARD_TEXT ? $out : null;
+}
+
+/** Sends one message to the webhook: ['ok' => bool, 'error' => string, 'status' => HTTP status (0: not reached)]. As cards when they fit
+ *  (m3d_discord_cards()); a card Discord refuses (400) goes again as the plain embed, and Site problems says why. */
 function m3d_discord_post(string $webhook, string $message, array $embeds): array
 {
     if (!preg_match(DISCORD_WEBHOOK_RE, $webhook)) return ['ok' => false, 'error' => 'The webhook address is not a Discord webhook.'];
-    $body = ['username' => mb_substr(site_name(), 0, 80), 'embeds' => $embeds, 'allowed_mentions' => ['parse' => ['everyone', 'roles']]];
+    $base = ['username' => mb_substr(site_name(), 0, 80), 'allowed_mentions' => ['parse' => ['everyone', 'roles']]];
+    if ($cards = m3d_discord_cards($message, $embeds)) {
+        $r = m3d_discord_send($webhook . '?wait=true&with_components=true', $base + ['components' => $cards, 'flags' => DISCORD_V2]);
+        if ($r['ok'] || ($r['status'] ?? 0) !== 400) return $r;
+        m3d_problem('Discord', 'Discord refused the card (' . $r['error'] . '), so it was sent as a plain post.');
+    }
+    $body = $base + ['embeds' => array_map(fn($e) => array_replace(array_diff_key($e, array_flip(DISCORD_CARD_KEYS)),
+        ($e['note'] ?? '') !== '' ? ['description' => trim($e['note'] . "\n\n" . ($e['description'] ?? ''))] : []), $embeds)];   // the note over the text
     if (trim($message) !== '') $body['content'] = mb_substr(trim($message), 0, 1900);
+    return m3d_discord_send($webhook . '?wait=true', $body);
+}
+
+/** One POST to a webhook address (m3d_discord_post()): one short wait when Discord asks to slow down. */
+function m3d_discord_send(string $url, array $body): array
+{
     for ($try = 0; $try < 2; $try++) {
-        $ch = curl_init($webhook . '?wait=true');
+        $ch = curl_init($url);
         curl_setopt_array($ch, [
             CURLOPT_RETURNTRANSFER => true,
             CURLOPT_POST           => true,
@@ -334,11 +443,14 @@ function m3d_discord_still_embed(array $s): array
     if (m3d_still_public_view($s) === 'clear') $e['image'] = ['url' => abs_url(img_small((string) $s['src']))];
     else {
         $patrons = ($s['visibility'] ?? '') === 'blurred-patrons';
-        foreach ($chars as $c) if ($c['model'] && m3d_visibility($c['model']) === 'blurred-patrons') $patrons = true;
+        foreach ($chars as $c) if ($c['model'] && in_array(m3d_visibility($c['model']), ['blurred-patrons', 'blurred-eligible'], true)) $patrons = true;
         $lines[] = $patrons ? 'Patrons see it in full on the site.' : 'A teaser: shown blurred on the site for now.';
     }
     if ($lines) $e['description'] = mb_substr(implode("\n", $lines), 0, 1000);
     $color = ltrim((string) (m3d_identity()['color'] ?? ''), '#');
     if (preg_match('/^[0-9a-f]{6}$/i', $color)) $e['color'] = hexdec($color);
+    $e['sub'] = discord_md_text('Gallery · ' . site_name());   // the card (m3d_discord_card())
+    if (($logo = preview_logo()) !== '') $e['thumb'] = abs_url($logo);
+    $e['buttons'] = [['Open in the Gallery', $e['url']]];
     return $e;
 }

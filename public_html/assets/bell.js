@@ -2,7 +2,8 @@
 // /admin/notify.php each time it opens (?list=1 → {html, count}); Mark All as Read, Clear All, a row's ✓ / ✕ and Publish post there and
 // show the list again.
 // Also the bell of logged-in visitors (ubell_html() in app/bell.php, list from /auth/bell.php: Clear All and a row's ✕; a row's link marks
-// it read as it opens, do=read: the creator's rows do that through their ?go= address).
+// it read as it opens, do=read: the creator's rows do that through their ?go= address). A moderator's panel has two tabs on top, User and
+// Moderator ([data-nt-pane-btn]): the kind chips filter the User one; posts waiting for a check (.nt-keep) are never read by a click.
 // Loaded only where a bell is printed, so it stays out of site.js and admin.js.
 // Also Quick Add, the "+" printed next to the bell (quick_add() in app/view.php): the second part below.
 (() => {
@@ -13,6 +14,7 @@
   const count = root.querySelector('[data-bell-count]');
   const src = root.dataset.src;
   let tab = 'all';
+  let pane = '';   // a moderator's User / Moderator tab: the server's choice until one is clicked
   let busy = false;
 
   const setCount = (n) => {
@@ -23,8 +25,16 @@
   const showTab = () => {
     panel.querySelectorAll('[data-nt-tab]').forEach((b) => b.setAttribute('aria-pressed', b.dataset.ntTab === tab ? 'true' : 'false'));
     panel.querySelectorAll('[data-nt-g]').forEach((el) => {
+      if (el.closest('[data-nt-pane="mod"]')) return;   // the chips are the User tab's
       el.hidden = tab !== 'all' && !el.dataset.ntG.split(' ').includes(tab);
     });
+  };
+  const showPane = () => {
+    const btns = panel.querySelectorAll('[data-nt-pane-btn]');
+    if (!btns.length) return;
+    if (!pane) pane = [...btns].find((b) => b.getAttribute('aria-selected') === 'true')?.dataset.ntPaneBtn || 'user';
+    btns.forEach((b) => b.setAttribute('aria-selected', b.dataset.ntPaneBtn === pane ? 'true' : 'false'));
+    panel.querySelectorAll('[data-nt-pane]').forEach((el) => { el.hidden = el.dataset.ntPane !== pane; });
   };
   const fail = (msg) => {
     panel.innerHTML = '<p class="is-loading"></p>';
@@ -40,6 +50,7 @@
       setCount(d.count);
       if (!panel.querySelector('[data-nt-tab="' + tab + '"]')) tab = 'all';
       showTab();
+      showPane();
     } catch (e) {
       fail('Couldn’t load the notifications. Check the connection and open the bell again.');
     }
@@ -101,7 +112,7 @@
   // the visitors' bell: an unread row's link marks it read. A plain click waits for the answer (at most 1.5 s), so the page it opens
   // already counts it; a new tab (ctrl / middle click) doesn't wait (keepalive: the request outlives this page too)
   const readRow = (e) => {
-    const row = root.classList.contains('nt-user') && e.target.closest('.nt-hit') && e.target.closest('.nt-row.is-unread');
+    const row = root.classList.contains('nt-user') && e.target.closest('.nt-hit') && e.target.closest('.nt-row.is-unread:not(.nt-keep)');
     if (!row || (e.type === 'auxclick' && e.button !== 1)) return;
     row.classList.remove('is-unread');
     setCount(Math.max(0, (parseInt(count.textContent, 10) || 0) - 1));
@@ -119,6 +130,8 @@
   panel.addEventListener('auxclick', readRow);
   panel.addEventListener('click', (e) => {
     readRow(e);
+    const pb = e.target.closest('[data-nt-pane-btn]');
+    if (pb) { pane = pb.dataset.ntPaneBtn; showPane(); return; }
     const t = e.target.closest('[data-nt-tab]');
     if (t) { tab = t.dataset.ntTab; showTab(); return; }
     if (e.target.closest('[data-nt-readall]')) { post({ do: 'read-all' }); return; }

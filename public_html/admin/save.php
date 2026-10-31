@@ -1,7 +1,8 @@
 <?php
-// POST JSON { kind: "models" | "outfits", action: save | delete | reorder | batch, … }, { kind: "faq", faq }, { kind: "docs", docs },
+// POST JSON { kind: "models" | "outfits" | "scenes", action: save | delete | reorder | batch, … }, { kind: "faq", faq }, { kind: "docs", docs },
 // { kind: "gallery", action: add | save | delete | order | visibility | link | chars, … } (answers with the whole gallery: admin_gallery_payload()),
-// { kind: "blog", action: save | delete, id ('' = a new post), rev, post } (answers with every post: admin_blog_posts())
+// { kind: "blog", action: save | delete, id ('' = a new post), rev, post } (answers with every post: admin_blog_posts()),
+// { kind: "tool-tuts", id (the tool), rev, docs: {sections: [{title, text, pages: [tutorial]}]} } (a tool's tutorials, admin/tool-tutorials.php)
 require __DIR__ . '/_admin.php';
 admin_post_guard($M3D);
 
@@ -18,6 +19,17 @@ try {
         $ok = $k === 'docs' ? m3d_save_docs(clean_docs((array) ($in['docs'] ?? []))) : m3d_save_faq(clean_faq((array) ($in['faq'] ?? [])));
         if (!$ok) throw new RuntimeException(m3d_write_error('data'));
         admin_json(['ok' => true, 'rev' => admin_text_rev($k)]);
+    }
+    if (($in['kind'] ?? '') === 'tool-tuts') {
+        $list = m3d_tools(true)['tools'];
+        $at = array_search((string) ($in['id'] ?? ''), array_column($list, 'id'), true);
+        if ($at === false) throw new InvalidArgumentException('This tool no longer exists (deleted in another tab?). Reload the page.');
+        if (isset($in['rev']) && !hash_equals(admin_tuts_rev($list[$at]), (string) $in['rev'])) {
+            admin_json(['ok' => false, 'error' => 'These tutorials were changed in another tab or by an Images job: reload this page (your changes here are not saved).'], 409);
+        }
+        $list[$at]['groups'] = clean_tool_tuts((array) ($in['docs'] ?? []));
+        if (!m3d_save_tools($list)) throw new RuntimeException(m3d_write_error('data'));
+        admin_json(['ok' => true, 'rev' => admin_tuts_rev(m3d_tool_by_id((string) $in['id']) ?? [])]);
     }
     if (($in['kind'] ?? '') === 'blog') {
         $posts = m3d_blog(true)['posts'];
@@ -51,11 +63,20 @@ try {
         $ids = array_values(array_unique(array_map('strval', (array) ($in['ids'] ?? []))));
         $res = [];
         if ($action === 'add') {
-            // pictures from the Media library or just uploaded: newest first, tagged with the model whose folder they are in
+            // pictures from the Media library or just uploaded: newest first, tagged with the model whose folder they are in,
+            // or linked to the scene whose folder they are in (its "Download Scene") and tagged with its models
             $have = array_column($g['stills'], 'src');
             $taken = array_column($g['stills'], 'id');
             $slugs = array_flip(array_column(m3d_models(), 'slug'));
             $today = m3d_today();
+            $sceneUse = null;   // picture address => the first scene using it (read once, only when needed)
+            $usedBy = function (string $src) use (&$sceneUse): ?array {
+                if ($sceneUse === null) {
+                    $sceneUse = [];
+                    foreach (m3d_items('scenes') as $sc) array_walk_recursive($sc, function ($v) use (&$sceneUse, $sc) { foreach (media_in($v) as $u) $sceneUse[img_large($u)] ??= $sc; });
+                }
+                return $sceneUse[$src] ?? null;
+            };
             $new = [];
             foreach (array_slice((array) ($in['srcs'] ?? []), 0, 200) as $src) {
                 $src = img_large(clean_url($src));
@@ -66,7 +87,10 @@ try {
                 $taken[] = $id;
                 $have[] = $src;
                 $folder = basename(dirname($src));
-                $new[] = ['id' => $id, 'src' => $src, 'date' => $today, 'chars' => isset($slugs[$folder]) ? [$folder] : []];
+                $scene = str_starts_with($folder, 'scene-') ? m3d_item('scenes', substr($folder, 6)) : null;
+                if (!$scene && !isset($slugs[$folder])) $scene = $usedBy($src);   // stored in another item's folder: the scene showing it
+                $new[] = ['id' => $id, 'src' => $src, 'date' => $today, 'chars' => isset($slugs[$folder]) ? [$folder] : ($scene ? array_values(array_filter((array) ($scene['models'] ?? []), fn($m) => isset($slugs[$m]))) : [])]
+                    + ($scene ? ['scene' => $scene['slug']] : []);
             }
             $g['stills'] = array_merge($new, $g['stills']);
             $res = ['added' => array_column($new, 'id'), 'skipped' => count((array) ($in['srcs'] ?? [])) - count($new)];
@@ -120,7 +144,7 @@ try {
         admin_json(['ok' => true, 'gallery' => admin_gallery_payload()] + $res);
     }
 
-    $kind = ($in['kind'] ?? 'models') === 'outfits' ? 'outfits' : 'models';
+    $kind = in_array($in['kind'] ?? 'models', M3D_ITEM_KINDS, true) ? (string) $in['kind'] : 'models';
     $action = $in['action'] ?? 'save';
     $items = m3d_items($kind);
     $index = [];
@@ -188,8 +212,20 @@ try {
             }
             unset($o);
             if ($changed) m3d_save_items('outfits', $outfits);
+            // and in the scenes made with them (their versions too)
+            $scenes = m3d_items('scenes', true);
+            $changed = false;
+            foreach ($scenes as &$o) {
+                $before = $o['models'] ?? [];
+                $o['models'] = array_values(array_diff($before, $slugs));
+                if (isset($o['modelVers'])) { $o['modelVers'] = array_diff_key((array) $o['modelVers'], array_flip($slugs)); if (!$o['modelVers']) unset($o['modelVers']); }
+                $changed = $changed || $before !== $o['models'];
+            }
+            unset($o);
+            if ($changed) m3d_save_items('scenes', $scenes);
             m3d_gallery_forget_models($gone, $goneVis);   // their pictures in the gallery keep the name, and stay as hidden as the model made them
         }
+        if ($op === 'delete' && $kind === 'scenes') m3d_gallery_forget_scenes($slugs);   // the Gallery pictures linked to them lose their Download Scene button
         admin_json(['ok' => true, 'changed' => count($slugs) - count($skipped), 'skipped' => $skipped]);
     }
 
@@ -202,7 +238,7 @@ try {
         admin_json(['ok' => false, 'error' => 'This was changed in another tab or by an Images job: reload the editor (your changes here are not saved).'], 409);
     }
     $data = (array) ($in['item'] ?? []);
-    $item = $kind === 'outfits' ? clean_outfit($data, $existing) : clean_model($data, $existing);
+    $item = match ($kind) { 'outfits' => clean_outfit($data, $existing), 'scenes' => clean_scene($data, $existing), default => clean_model($data, $existing) };
     if (!$existing && isset($index[$item['slug']])) throw new InvalidArgumentException('The address "' . $item['slug'] . '" is already used. Pick another one.');
 
     if ($existing) $items[$index[$original]] = $item;

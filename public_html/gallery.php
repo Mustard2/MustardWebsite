@@ -38,19 +38,18 @@ layout_start($title, $desc, 'page-gallery');
 ?>
   <div class="wrap" data-gallery>
     <header class="g-head">
-      <p class="eyebrow">Gallery</p>
-      <h1>Renders &amp; Stills</h1>
+      <h1>Gallery</h1>
       <?= admin_edit_button('/admin/gallery.php', 'Edit Gallery') ?>
     </header>
     <?php if (!$all): ?>
       <p class="lead muted">No pictures yet. Add the first ones in <a href="/admin/gallery.php">Admin → Gallery</a>.</p>
     <?php else: ?>
       <div class="filters hfilters g-filters" role="search">
-        <input class="input search" type="search" placeholder="Search a character, franchise or scene…" aria-label="Search the pictures" autocomplete="off" data-cat-search />
-        <?= filter_toggle('gallery-filters', $pick !== '') ?>
+        <?= tag_search('Search a character, franchise or scene…', 'Search the pictures') ?>
+        <?= filter_toggle('gallery-filters') ?>
       </div>
-      <!-- like the catalogue: sort, franchise and character rows, closed by default (open when the address picks a character) -->
-      <div class="filter-panel" id="gallery-filters"<?= $pick !== '' ? '' : ' hidden' ?>>
+      <!-- like the catalogue: sort, franchise and character rows, always closed at first (what is picked shows as tags in the search field) -->
+      <div class="filter-panel" id="gallery-filters" hidden>
         <?= chip_row('Sort', 'sort', ['random' => 'Random', 'new' => 'Newest', 'old' => 'Oldest', 'liked' => 'Most Liked'], $sort) ?>
         <?= count($perFranchise) > 1 ? chip_row('Franchise', 'franchise', $franchiseChips) : '' ?>
         <?= count($chars) > 1 ? chip_row('Character', 'char', $charChips, $pick) : '' ?>

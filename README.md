@@ -170,6 +170,7 @@ question for you:
 | <http://localhost:8000/__local/login?as=owner> | the owner: the admin opens (on a fresh copy you become the owner and the setup's last step opens) |
 | <http://localhost:8000/__local/login?as=patron> | a paying patron (6 months, 30 in total support) |
 | <http://localhost:8000/__local/login?as=free> | logged in without a paid tier (downloads refused) |
+| <http://localhost:8000/__local/login?as=mod> | a paying patron with a Patreon-style ID (2000000002): add it in Admin → Moderation → Moderators to try the moderator role |
 | <http://localhost:8000/__local/login?as=logout> | a visitor again |
 
 As the owner you can try every other patron situation with **Preview** in the admin header (tiers, months, downloads,
@@ -230,4 +231,5 @@ If not, see <https://www.gnu.org/licenses/>.
 
 The fonts in `public_html/assets/fonts/` (Inter, Bricolage Grotesque) are under the SIL Open Font License; the social
 network icons come from Simple Icons (CC0). The 3D viewer is Google's `<model-viewer>` (Apache 2.0, with three.js and Lit
-inside; see `public_html/assets/vendor/LICENSE-model-viewer.txt`).
+inside; see `public_html/assets/vendor/LICENSE-model-viewer.txt`). The emoji list of the comment boxes comes from emojibase-data
+(MIT; see `public_html/assets/vendor/LICENSE-emojibase.txt`).

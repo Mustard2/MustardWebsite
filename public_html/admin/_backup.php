@@ -12,7 +12,7 @@ require_once dirname(__DIR__) . '/app/version.php';
 const ALLOWED_EXT = ['php', 'js', 'css', 'svg', 'png', 'jpg', 'jpeg', 'webp', 'gif', 'ico', 'txt', 'md', 'json', 'woff2'];
 const MEDIA_EXT = ['webp', 'png', 'jpg', 'jpeg', 'gif', 'glb', 'mp4', 'webm'];   // glb: 3D previews (app/model3d.php); mp4 / webm: videos (app/video.php)
 /** Data files restored only with their own tick box: the counters (stats, likes, who saw the welcome page) and the bug reports; every other one is the site's content. */
-const DATA_PARTS = ['stats' => 'counters', 'likes' => 'counters', '.likes-key' => 'counters', 'welcomed' => 'counters', 'ignored' => 'counters', 'logins' => 'counters', 'comments' => 'counters', 'notify' => 'counters', 'polls' => 'counters', 'showcase' => 'counters', 'shares' => 'counters', 'bugs' => 'bugs'];
+const DATA_PARTS = ['stats' => 'counters', 'likes' => 'counters', '.likes-key' => 'counters', 'welcomed' => 'counters', 'ignored' => 'counters', 'logins' => 'counters', 'comments' => 'counters', 'ideas' => 'counters', 'modlog' => 'counters', 'notify' => 'counters', 'polls' => 'counters', 'showcase' => 'counters', 'shares' => 'counters', 'avatars' => 'counters', 'bugs' => 'bugs'];
 
 /** A restore that failed after it had written something: what was put back before the failure stays (the "before restore" backup undoes it). */
 class RestorePartial extends RuntimeException {}
@@ -294,6 +294,44 @@ function bk_newest_full(): int
     return $newest;
 }
 
+/**
+ * The weekly automatic backup: 7 days after the last automatic one (manual, uploaded and before-restore backups don't move it:
+ * they kept putting it off), makes one (code, content, counters and the download log; no images, to stay quick):
+ * full-<date>-auto.zip, keeping the newest 8 automatic ones.
+ * Run after a public page (m3d_backup_tick()) or by an admin page (admin_auto_backup()), under a lock: one at a time. Writes when
+ * it is next due (m3d_backup_next_file()); a try that fails waits a day, so a full disk doesn't slow every page. Returns the new
+ * file name, null when none was made.
+ */
+function bk_auto_run(): ?string
+{
+    $dir = bk_dir();
+    $lock = @fopen("$dir/.auto-backup.lock", 'c');
+    if (!$lock) return null;
+    if (!flock($lock, LOCK_EX | LOCK_NB)) { fclose($lock); return null; }   // another request is making it
+    $next = fn(int $t) => @file_put_contents(m3d_backup_next_file(), (string) $t);
+    try {
+        // only real automatic ones (no note): a manual backup whose note ends in "auto" is full-<date>-manual-auto.zip
+        $autos = fn() => array_filter(glob("$dir/full-*-auto.zip") ?: [], fn($f) => preg_match('/^full-\d{8}-\d{6}-auto\.zip$/D', basename($f)));
+        $due = max(array_map('filemtime', $autos()) ?: [0]) + 7 * 86400;   // read under the lock: one made meanwhile counts
+        if ($due > time()) { $next($due); return null; }
+        $next(time() + 86400);   // written first: a failure that stops PHP (time limit) tries again tomorrow, not on every page
+        try {
+            $name = m3d_session_pause(fn() => backup_full('auto'));   // the other pages stay usable meanwhile
+        } catch (Throwable $ex) {
+            m3d_problem('Backups', 'Automatic backup failed: ' . $ex->getMessage());
+            return null;
+        }
+        $next(time() + 7 * 86400);
+        $list = $autos();
+        rsort($list);   // names start with the date: newest first
+        foreach (array_slice($list, 8) as $old) @unlink($old);
+        return $name;
+    } finally {
+        flock($lock, LOCK_UN);
+        fclose($lock);
+    }
+}
+
 function backup_manifest(string $path): ?array
 {
     $zip = new ZipArchive();
@@ -356,7 +394,7 @@ function restore_full(string $path, array $parts): array
                 // The admins always stay those of now: a backup never adds or removes one (an uploaded zip could otherwise
                 // make someone else admin, or lock the owner out; without them the site would also go back to /setup/)
                 $restored = m3d_settings(true);
-                $keep = ['release' => $prev['release'] ?? null, 'owners' => $prev['owners'] ?? null];
+                $keep = ['release' => $prev['release'] ?? null, 'owners' => $prev['owners'] ?? null, 'moderation' => $prev['moderation'] ?? null];   // moderators too
                 if (is_array($prev['discord'] ?? null)) {
                     $keep['discord'] = array_intersect_key($prev['discord'], array_flip(['sent', 'retry', 'last', 'stills_sent', 'stills_queue', 'stills_due', 'stills_tries'])) + (is_array($restored['discord'] ?? null) ? $restored['discord'] : []);
                 }
@@ -455,7 +493,7 @@ function restore_data_version(string $file): string
         // release dates and Discord announcements again, change the admins, or undo the bug reports' tags and blocked people
         $now = m3d_settings(true);
         $data = m3d_webhooks_strip($data);   // webhook addresses stay in private/webhooks.php
-        foreach (['release', 'owners', 'bugs'] as $k) { if (isset($now[$k])) $data[$k] = $now[$k]; else unset($data[$k]); }
+        foreach (['release', 'owners', 'moderation', 'bugs'] as $k) { if (isset($now[$k])) $data[$k] = $now[$k]; else unset($data[$k]); }
         if (is_array($now['discord'] ?? null)) {
             $data['discord'] = array_intersect_key($now['discord'], array_flip(['sent', 'retry', 'last', 'stills_sent', 'stills_queue', 'stills_due', 'stills_tries'])) + (is_array($data['discord'] ?? null) ? $data['discord'] : []);
         }
@@ -479,6 +517,7 @@ function data_summary(string $name, string $path): string
     return match ($name) {
         'models'   => m3d_plural(count($d['models'] ?? []), 'model'),
         'outfits'  => m3d_plural(count($d['outfits'] ?? []), 'accessory', 'accessories'),
+        'scenes'   => m3d_plural(count($d['scenes'] ?? []), 'scene'),
         'faq'      => m3d_plural(array_sum(array_map(fn($s) => count($s['items'] ?? []), $d['sections'] ?? [])), 'question'),
         'docs'     => m3d_plural(array_sum(array_map(fn($s) => count($s['pages'] ?? []), $d['sections'] ?? [])), 'page'),
         'settings' => m3d_plural(count($d['social'] ?? []), 'social link'),

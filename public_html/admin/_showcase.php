@@ -18,8 +18,8 @@ const SHOWCASE_DOS = ['add', 'edit', 'reset', 'approve', 'reject', 'remove', 'ba
 function showcase_post(): void
 {
     $get = ($_SERVER['REQUEST_METHOD'] ?? '') === 'GET';   // a form posted from this address (it keeps ?added= / ?edited=) doesn't say it again
-    if ($get && ($a = m3d_get_text('added')) !== '' && ($r = m3d_render($a))) admin_flash('✓ Added: it shows on the ' . ($r['kind'] === 'outfits' ? 'accessory' : 'model') . '’s page.');
-    if ($get && ($a = m3d_get_text('edited')) !== '' && ($r = m3d_render($a))) admin_flash(m3d_get_text('approved') !== '' ? '✓ Saved and approved: it shows on the ' . ($r['kind'] === 'outfits' ? 'accessory' : 'model') . '’s page.' : '✓ Saved.');
+    if ($get && ($a = m3d_get_text('added')) !== '' && ($r = m3d_render($a))) admin_flash('✓ Render added.');
+    if ($get && ($a = m3d_get_text('edited')) !== '' && ($r = m3d_render($a))) admin_flash(m3d_get_text('approved') !== '' ? '✓ Render approved.' : '✓ Render saved.');
     $do = $_POST['do'] ?? null;
     if (!in_array($do, SHOWCASE_DOS, true) || !admin_form_post()) return;   // Media's own forms (Delete All Unused…) post to the same address too
     if ($do === 'add') {
@@ -34,7 +34,7 @@ function showcase_post(): void
     $r = preg_match('/^[0-9a-f]{8}$/D', $id) ? m3d_render($id) : null;
     if ($do === 'reset') {   // an item's renders back to newest first
         [$kind, $slug] = array_pad(explode(':', is_string($_POST['item'] ?? null) ? $_POST['item'] : '', 2), 2, '');
-        if (in_array($kind, ['models', 'outfits'], true) && $slug !== '' && m3d_renders_order($kind, $slug, [])) $done = 'Order reset: newest first.';
+        if (in_array($kind, M3D_ITEM_KINDS, true) && $slug !== '' && m3d_renders_order($kind, $slug, [])) $done = 'Order reset.';
         else $error = m3d_write_error('data');
     } elseif (!$r) {
         $error = 'This render is no longer here (removed meanwhile?).';
@@ -56,13 +56,13 @@ function showcase_post(): void
             return [$rs, true];
         });
         if ($res === null) $error = m3d_write_error('data');
-        else $done = 'Approved: it shows on the ' . ($r['kind'] === 'outfits' ? 'accessory' : 'model') . '’s page.';
+        else $done = 'Render approved.';
     } elseif ($do === 'reject' || $do === 'remove') {
         $n = m3d_renders_delete(fn($x) => ($x['id'] ?? '') === $id);
-        if ($n === null) $error = m3d_write_error('data'); else $done = $do === 'reject' ? 'Rejected: the picture and the request were deleted.' : 'Removed: the picture was deleted.';
+        if ($n === null) $error = m3d_write_error('data'); else $done = $do === 'reject' ? 'Render rejected.' : 'Render removed.';
     } elseif ($do === 'ban' || $do === 'unban') {   // a ban in Admin → Access: they can't share renders any more (their renders stay until removed)
         if (in_array((string) ($r['by'] ?? ''), m3d_owner_ids($GLOBALS['M3D']), true)) $error = 'This render is an admin’s: admins can’t be banned.';
-        elseif (m3d_ban_set((string) ($r['by'] ?? ''), 'renders', $do === 'ban', (string) ($r['name'] ?? ''))) $done = $do === 'ban' ? 'Banned: they can’t share renders any more. Manage bans in Access.' : 'Unbanned: they can share renders again.';
+        elseif (m3d_ban_set((string) ($r['by'] ?? ''), 'renders', $do === 'ban', (string) ($r['name'] ?? ''))) $done = $do === 'ban' ? 'Banned.' : 'Unbanned.';
         else $error = m3d_write_error('data');
     } elseif ($do === 'unlink') {   // the profile link on their name goes, the render stays
         $res = m3d_renders_update(function (array $rs) use ($id) {
@@ -70,14 +70,14 @@ function showcase_post(): void
             unset($x);
             return [$rs, true];
         });
-        if ($res === null) $error = m3d_write_error('data'); else $done = 'Link removed: the name shows without it.';
+        if ($res === null) $error = m3d_write_error('data'); else $done = 'Link removed.';
     } elseif ($do === 'unfull') {   // the full-quality link goes, the render stays
         $res = m3d_renders_update(function (array $rs) use ($id) {
             foreach ($rs as &$x) if (($x['id'] ?? '') === $id) unset($x['full']);
             unset($x);
             return [$rs, true];
         });
-        if ($res === null) $error = m3d_write_error('data'); else $done = 'Link removed: no full-quality download any more.';
+        if ($res === null) $error = m3d_write_error('data'); else $done = 'Link removed.';
     } elseif (($do === 'hide' || $do === 'show') && !empty($r['ok'])) {   // kept, but off the item's page and the Gallery
         $res = m3d_renders_update(function (array $rs) use ($id, $do) {
             foreach ($rs as &$x) if (($x['id'] ?? '') === $id) { if ($do === 'hide') $x['hidden'] = true; else unset($x['hidden']); }
@@ -85,7 +85,7 @@ function showcase_post(): void
             return [$rs, true];
         });
         if ($res === null) $error = m3d_write_error('data');
-        else $done = $do === 'hide' ? 'Hidden: it no longer shows on the ' . ($r['kind'] === 'outfits' ? 'accessory' : 'model') . '’s page' . (isset(array_flip(m3d_render_stills())[$id]) ? ' or in the Gallery' : '') . '.' : 'Shown again.';
+        else $done = $do === 'hide' ? 'Render hidden.' : 'Render shown.';
     } elseif ($do === 'gallery' && !empty($r['ok'])) {
         $on = !empty($_POST['on']);
         if (m3d_render_gallery($r, $on)) $done = $on ? 'Added to the Gallery.' : 'Taken out of the Gallery.'; else $error = m3d_write_error('data');
@@ -108,7 +108,11 @@ function showcase_str(string $k, int $max = 200): string
 function showcase_item_posted(): ?array
 {
     $f = showcase_str('item');
-    [$kind, $slug] = str_starts_with($f, 'outfit-') && m3d_item('outfits', substr($f, 7)) ? ['outfits', substr($f, 7)] : ['models', $f];
+    [$kind, $slug] = match (true) {
+        str_starts_with($f, 'outfit-') && m3d_item('outfits', substr($f, 7)) !== null => ['outfits', substr($f, 7)],
+        str_starts_with($f, 'scene-') && m3d_item('scenes', substr($f, 6)) !== null => ['scenes', substr($f, 6)],
+        default => ['models', $f],
+    };
     return preg_match('/^[a-z0-9-]{1,100}$/D', $slug) && m3d_item($kind, $slug) ? [$kind, $slug] : null;
 }
 
@@ -134,8 +138,8 @@ function showcase_add(): array
     $named = $name !== '';
     $link = $named ? m3d_render_link_clean($str('link_t'), $str('link_h')) : [];
     if ($link === null) return ['', SHOWCASE_ERRORS['link']];
-    $full = m3d_render_full_clean($str('full', SHOWCASE_FULL_MAX + 1));
-    if ($full === null) return ['', SHOWCASE_ERRORS['full']];
+    $full = m3d_render_full_clean($str('full', SHOWCASE_FULL_MAX + 1), m3d_s4_on());
+    if ($full === null) return ['', showcase_full_error()];
     [$src, $err] = m3d_session_pause(fn() => m3d_showcase_save_pic($_FILES['pic'] ?? null));   // resizing a 4K render takes a moment
     if ($err !== '') return ['', strtr(SHOWCASE_ERRORS[$err] ?? SHOWCASE_ERRORS['save'], ['{mb}' => showcase_mb(m3d_showcase_max())])];
     $now = time();
@@ -175,8 +179,8 @@ function showcase_edit(array $r): array
     if ($named && $name === '') return [null, 'Type the name to show, or turn off Show Name.'];
     $link = $named ? m3d_render_link_clean($str('link_t'), $str('link_h')) : [];
     if ($link === null) return [null, SHOWCASE_ERRORS['link']];
-    $full = m3d_render_full_clean($str('full', SHOWCASE_FULL_MAX + 1));
-    if ($full === null) return [null, SHOWCASE_ERRORS['full']];
+    $full = m3d_render_full_clean($str('full', SHOWCASE_FULL_MAX + 1), m3d_s4_on());
+    if ($full === null) return [null, showcase_full_error()];
     $caption = m3d_render_caption($_POST['caption'] ?? '');
     $approve = empty($r['ok']) && !empty($_POST['approve']);
     $new = null;
@@ -216,17 +220,32 @@ function showcase_add_dialog(array $pick, array $names): string
         . showcase_item_select($pick, $names, $v('item'))
         . '<label class="field"><span class="lbl">Made By <span class="muted small">(optional)</span></span><input class="input" name="name" maxlength="80" autocomplete="off" placeholder="Name shown on the render, empty = “A patron”" value="' . e($v('name')) . '" data-sc-made></label>'
         . '<label class="field"><span class="lbl">Patreon Account <span class="muted small">(optional)</span>' . tip('Their Patreon user ID, or their name if they have downloaded here. The render then shows in their My Account, where they can remove it.') . '</span>'
-        . '<input class="input" name="who" maxlength="200" autocomplete="off" list="sc-add-who" placeholder="Patreon ID or name" value="' . e($v('who')) . '"><datalist id="sc-add-who">' . m3d_patron_options() . '</datalist></label>'
+        . '<input class="input" name="who" maxlength="200" autocomplete="off" data-person-pick placeholder="Patreon ID or name" value="' . e($v('who')) . '">' . person_pick_js() . '</label>'
         . '<div class="field sc-link" data-sc-link><span class="lbl">Link on Name <span class="muted small">(optional)</span></span><div class="sc-link-row">'
         . '<select class="input" name="link_t" aria-label="Network" data-sc-link-t><option value="">No Link</option>'
         . implode('', array_map(fn($k, $n) => '<option value="' . $k . '"' . ($v('link_t') === $k ? ' selected' : '') . '>' . e($n[0]) . '</option>', array_keys(RENDER_LINKS), RENDER_LINKS)) . '</select>'
         . '<input class="input" name="link_h" maxlength="200" autocomplete="off" placeholder="Username or profile address" aria-label="Username or profile address" value="' . e($v('link_h')) . '" data-sc-link-h></div></div>'
-        . '<label class="field"><span class="lbl">Full Quality Link <span class="muted small">(optional)</span></span><input class="input" type="url" name="full" maxlength="' . SHOWCASE_FULL_MAX . '" placeholder="https://…" autocomplete="off" inputmode="url" value="' . e($v('full')) . '"></label>'
+        . '<div class="field"><label class="lbl" for="sc-add-full">Full Quality Link <span class="muted small">(optional)</span></label>' . showcase_full_input('id="sc-add-full" value="' . e($v('full')) . '"') . '</div>'
         . '<label class="field"><span class="lbl">Caption <span class="muted small">(optional)</span></span><input class="input" name="caption" maxlength="' . SHOWCASE_CAPTION . '" autocomplete="off" value="' . e($v('caption')) . '"></label>'
         . '<label class="toggle"><input type="checkbox" class="switch" name="gallery" value="1"' . ($again && !empty($_POST['gallery']) ? ' checked' : '') . '><span>Also in Gallery</span></label>'
         . '<p class="sc-note">It shows on the page at once, among the Shown renders.</p>'
         . '<div class="sc-actions"><button class="btn btn-ghost" type="button" data-sc-close>Cancel</button><button class="btn btn-primary" type="submit">Add Render</button></div>'
         . '</form></dialog>';
+}
+
+/** The creator's Full Quality Link field (+ Add Render, a render's window): an https address, or with MEGA S4 on and a Bucket Address set, a file in the
+ *  bucket too ("s4:<file>"), picked with S4… (pickS4() in admin.js, `[data-s4-pick]`). $attrs: the input's id and data- attributes. */
+function showcase_full_input(string $attrs): string
+{
+    $s4 = m3d_s4_on() && m3d_s4()['bucket'] !== '';
+    $in = '<input class="input" type="text" name="full" maxlength="' . SHOWCASE_FULL_MAX . '" placeholder="' . ($s4 ? 'https://… or s4:file' : 'https://…') . '" autocomplete="off" inputmode="url" spellcheck="false" ' . $attrs . '>';
+    return $s4 ? '<span class="iw-dl-url">' . $in . '<button type="button" class="btn btn-ghost btn-sm" title="Choose a file from your S4 bucket" data-s4-pick>S4…</button></span>' : $in;
+}
+
+/** A refused Full Quality Link in the creator's forms: what it may be. */
+function showcase_full_error(): string
+{
+    return m3d_s4_on() ? 'The full-quality link must be a web address starting with https://, or a file in your S4 bucket (s4:file).' : SHOWCASE_ERRORS['full'];
 }
 
 /** The windows' Model or Accessory field: every model and accessory in the folder picker (folderPicker() in admin.js). */
@@ -237,6 +256,7 @@ function showcase_item_select(array $pick, array $names, string $sel = ''): stri
         . '<option value="">Choose…</option>'
         . '<optgroup label="Models">' . implode('', array_map(fn($m) => $opt($m['slug']), m3d_items('models'))) . '</optgroup>'
         . (m3d_outfits() ? '<optgroup label="Accessories">' . implode('', array_map(fn($o) => $opt('outfit-' . $o['slug']), m3d_outfits())) . '</optgroup>' : '')
+        . (m3d_items('scenes') ? '<optgroup label="Scenes">' . implode('', array_map(fn($o) => $opt('scene-' . $o['slug']), m3d_items('scenes'))) . '</optgroup>' : '')
         . '</select></div>';
 }
 
@@ -266,11 +286,11 @@ function showcase_edit_dialog(array $pick, array $names): string
         . '<div class="field sc-link"><span class="lbl">Link on Name</span><div class="sc-link-row">'
         . '<select class="input" name="link_t" aria-label="Network" data-e-link-t><option value="">No Link</option>' . $net . '</select>'
         . '<input class="input" name="link_h" maxlength="200" autocomplete="off" placeholder="Username or profile address" aria-label="Username or profile address" data-e-link-h></div></div>'
-        . '<label class="field"><span class="lbl">Full Quality Link</span><input class="input" type="url" name="full" maxlength="' . SHOWCASE_FULL_MAX . '" placeholder="https://…" autocomplete="off" inputmode="url" data-e-full-in>'
-        . '<span class="sc-e-dead small" data-e-dead hidden>Dead link (Link Check).</span></label>'
+        . '<div class="field"><label class="lbl" for="sc-e-full">Full Quality Link</label>' . showcase_full_input('id="sc-e-full" data-e-full-in')
+        . '<span class="sc-e-dead small" data-e-dead hidden>Dead link (Link Check).</span></div>'
         . '<label class="field"><span class="lbl">Caption</span><input class="input" name="caption" maxlength="' . SHOWCASE_CAPTION . '" autocomplete="off" data-e-caption></label>'
         . '<div class="field"><label class="lbl" for="sc-e-who">Patreon Account' . tip('Their Patreon user ID, or their name if they have downloaded here. The render shows in their My Account, where they can remove it. Empty = nobody’s.') . '</label>'
-        . '<input class="input" id="sc-e-who" name="who" maxlength="200" autocomplete="off" list="sc-add-who" placeholder="Patreon ID or name" data-e-who></div>'
+        . '<input class="input" id="sc-e-who" name="who" maxlength="200" autocomplete="off" data-person-pick placeholder="Patreon ID or name" data-e-who>' . person_pick_js() . '</div>'
         . '</div>'
         . '<footer class="iw-foot"><span class="sc-e-dels"><button class="btn btn-ghost btn-sm iw-del" name="do" value="remove" formnovalidate data-e-del>Remove</button>'
         . '<button class="sc-e-ban" name="do" value="ban" formnovalidate data-e-ban>Ban</button></span>'
@@ -287,7 +307,7 @@ function showcase_tab_html(array $pick, array $names): string
     $inGallery = array_flip(m3d_render_stills());
     // the menu's folders and the shown cards' order: the items in the site's own order (models, then accessories), like the other tabs' menu
     $order = array_flip(array_keys($pick));
-    $fold = fn(array $x) => ($x['kind'] === 'outfits' ? 'outfit-' : '') . $x['slug'];
+    $fold = fn(array $x) => (['outfits' => 'outfit-', 'scenes' => 'scene-'][$x['kind']] ?? '') . $x['slug'];
     $byItem = fn(string $a, string $b) => [$order[$a] ?? PHP_INT_MAX, $a] <=> [$order[$b] ?? PHP_INT_MAX, $b];
     $folders = array_values(array_unique(array_map($fold, $renders)));
     usort($folders, $byItem);
@@ -303,7 +323,7 @@ function showcase_tab_html(array $pick, array $names): string
     $card = function (array $x) use ($inGallery, $lcRes, $fold): string {
         $item = m3d_item($x['kind'], $x['slug']);
         $iname = $item ? ($x['kind'] === 'models' ? m3d_model_name($item) : $item['name']) : $x['slug'];
-        $what = $x['kind'] === 'outfits' ? 'accessory' : 'model';
+        $what = m3d_kind_word($x['kind']);
         $named = !empty($x['named']);
         $who = trim((string) ($x['name'] ?? '')) ?: (empty($x['by']) ? 'A patron' : 'Patron');
         $ok = !empty($x['ok']);
@@ -314,13 +334,14 @@ function showcase_tab_html(array $pick, array $names): string
         $form = fn(string $do, string $inner, string $confirm = '', string $extra = '') => '<form method="post"' . ($confirm !== '' ? ' onsubmit="return confirm(' . e(json_encode($confirm)) . ')"' : '') . '>'
             . form_keys($do) . '<input type="hidden" name="id" value="' . e($x['id']) . '" />' . $extra . $inner . '</form>';
         $dl = render_full_dl($x);
-        $dead = $dl && ($lcRes[md5($dl['href'])]['st'] ?? '') === 'dead';
+        $fullUrl = trim((string) ($x['full'] ?? ''));
+        $dead = $dl && ($lcRes[md5($fullUrl)]['st'] ?? '') === 'dead';
         $l = m3d_render_link($x);
         $gal = isset($inGallery[$x['id']]);
         $search = admin_search_text([$iname, $x['slug'], $who, $byId, (string) ($x['caption'] ?? ''), $l['label'] ?? '']);
         // the links after the name: the profile on their name and the full-quality picture, as small icons (removed in ⋯)
         $icons = ($l ? '<a class="sc-ico" href="' . e($l['url']) . '" target="_blank" rel="noopener nofollow" title="' . e('Link on the name: ' . $l['url']) . '">' . render_link_icon($l['net']) . '</a>' : '')
-            . ($dl ? '<a class="sc-ico' . ($dead ? ' is-dead' : '') . '" href="' . e($dl['href']) . '" target="_blank" rel="noopener nofollow" title="' . ($dead ? 'Dead link (Link Check): ' : 'Full quality link: ') . e($dl['href']) . '"><svg class="sc-net" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m0 0-5-5m5 5 5-5M5 20h14" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg></a>' : '');
+            . ($dl ? '<a class="sc-ico' . ($dead ? ' is-dead' : '') . '" href="' . e($dl['href']) . '" target="_blank" rel="noopener nofollow" title="' . ($dead ? 'Dead link (Link Check): ' : 'Full quality link: ') . e($fullUrl) . '"><svg class="sc-net" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m0 0-5-5m5 5 5-5M5 20h14" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg></a>' : '');
         $menu = bug_post_menu([
             '<a class="pm-item" href="' . e(m3d_item_url($x['kind'], $x['slug'])) . '#' . ($ok && !$hid ? 'r-' . e($x['id']) : 'patron-renders') . '" target="_blank">View on the ' . ucfirst($what) . ' Page</a>',
             $ok ? $form('gallery', '<button class="pm-item">' . ($gal ? 'Take Out of the Gallery' : 'Add to the Gallery') . '</button>', '', $gal ? '' : '<input type="hidden" name="on" value="1" />') : '',
@@ -346,7 +367,7 @@ function showcase_tab_html(array $pick, array $names): string
             . ($gal && !$hid ? '<span class="sc-gal" title="Also in the Gallery">Gallery</span>' : '') . '</a>'
             . ($ok && !$hid ? '<button type="button" class="drag-handle sc-drag" title="Drag to reorder (or focus and use the arrow keys)" aria-label="Drag to reorder">⠿</button>' : '')
             . '<figcaption>'
-            . '<span class="lib-name sc-who"><span title="' . e($who . ($named ? '' : ' (name hidden on the site)') . ($byId !== '' ? ' · ' . $byId : '')) . '">' . e($who) . '</span>'
+            . '<span class="lib-name sc-who">' . avatar_html($byId, $who, false, 'ava-sm') . '<span title="' . e($who . ($named ? '' : ' (name hidden on the site)') . ($byId !== '' ? ' · ' . $byId : '')) . '">' . e($who) . '</span>'
             . ($named ? '' : ' <span class="muted small">(hidden)</span>') . ($banned ? ' <a class="badge tone-red" href="/admin/users.php?tab=exceptions&amp;ex=' . e(rawurlencode($byId)) . '#ex-' . e($byId) . '" title="Banned from sharing renders: see Access">Banned</a>' : '') . $icons . '</span>'
             . '<span class="muted small lib-meta" title="' . e($iname) . '"><a href="' . e(m3d_item_url($x['kind'], $x['slug'])) . '#patron-renders">' . e($iname) . '</a> · ' . e(m3d_site_time((int) ($ok ? ($x['ok_at'] ?? $x['at']) : $x['at']), 'j M Y')) . (empty($x['added']) ? '' : ' · added by you') . '</span>'
             . (($c = trim((string) ($x['caption'] ?? ''))) !== '' ? '<span class="small lib-use" title="' . e($c) . '">“' . e($c) . '”</span>' : '<span class="small lib-use muted">No caption</span>')

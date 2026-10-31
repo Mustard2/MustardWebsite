@@ -34,7 +34,7 @@ $per = isset(STATS_PERIODS[$p = m3d_get_text('p')]) ? $p : '30';
 $of = m3d_get_text('of');
 $kind = $slug = '';
 $item = null;
-if (preg_match('/^(models|outfits)(?::([a-z0-9-]{1,64}))?$/', $of, $m)) {
+if (preg_match('/^(models|outfits|scenes)(?::([a-z0-9-]{1,64}))?$/', $of, $m)) {
     $kind = $m[1];
     if (($m[2] ?? '') !== '') {
         $item = m3d_item($kind, $m[2]);
@@ -51,13 +51,10 @@ $inScope = fn(string $k, string $s): bool => $scope === 'site' || ($k === $kind 
 
 // the first log line (the log is in time order): where "All Time" starts; one item: also its own first line
 $firstLog = $firstItem = 0;
-if (($fh = @fopen(m3d_log_file(), 'rb'))) {
-    while (($line = fgets($fh)) !== false) {
-        if (!isset(($r = m3d_log_cols($line))[3]) || !($t = strtotime((string) $r[0]))) continue;
-        $firstLog = $firstLog ?: $t;
-        if (!$item || $r[3] === $logKey) { $firstItem = $t; break; }
-    }
-    fclose($fh);
+foreach (m3d_log_rows() as $r) {
+    if (!isset($r[3]) || !($t = strtotime((string) $r[0]))) continue;
+    $firstLog = $firstLog ?: $t;
+    if (!$item || $r[3] === $logKey) { $firstItem = $t; break; }
 }
 if ($perDays) {
     $from = $today->modify('-' . ($perDays - 1) . ' days');   // N calendar days with today, like Home and Downloads
@@ -119,33 +116,29 @@ $perItem = [];              // log item => downloads in the period (every item: 
 $last = [];                 // log item => [patron => the version of their last download] (Have Latest, Patrons With It, uptake)
 $links = [];                // link label => downloads in the period (one item)
 $verDl = [];                // version key => downloads in the log (one item)
-if (($fh = @fopen(m3d_log_file(), 'rb'))) {
-    while (($line = fgets($fh)) !== false) {
-        $r = m3d_log_cols($line);
-        if (!isset($r[3]) || ($t = strtotime((string) $r[0])) === false) continue;
-        $id = (string) $r[1];
-        $ik = (string) $r[3];
-        [$k, $s] = m3d_log_item_parts($ik);
-        $ver = (string) ($r[5] ?? '');
-        $pair = "$id|$ik|" . mb_strtolower(trim((string) ($r[4] ?? '')));   // the log keeps the link's label: a renamed link starts again
-        $first = !isset($seen[$pair]);
-        $seen[$pair] = true;
-        $last[$ik][$id] = $ver;
-        $inPer = $t >= $fromTs;
-        if ($inPer) $perItem[$ik] = ($perItem[$ik] ?? 0) + 1;
-        if (!$inScope($k, $s)) continue;
-        if (!isset($firstIn[$id])) $firstIn[$id] = $t;
-        if ($item && $ver !== '') $verDl[m3d_ver_key($ver)] = ($verDl[m3d_ver_key($ver)] ?? 0) + 1;
-        if (!$inPer) { if ($prevFrom !== null && $t >= $prevFrom) $prev++; continue; }
-        $dl++;
-        $b = $bucketOf($localDay($t));
-        if (isset($bars[$b])) $bars[$b][$first ? 0 : 1]++;
-        $who[$id] = m3d_log_membership($r);
-        [$wd, $hr] = $localWh($t);
-        $heat[$wd][$hr]++;
-        if ($item) $links[(string) ($r[4] ?? '') ?: 'Download'] = ($links[(string) ($r[4] ?? '') ?: 'Download'] ?? 0) + 1;   // very old lines have no link label
-    }
-    fclose($fh);
+foreach (m3d_log_rows() as $r) {
+    if (!isset($r[3]) || ($t = strtotime((string) $r[0])) === false) continue;
+    $id = (string) $r[1];
+    $ik = (string) $r[3];
+    [$k, $s] = m3d_log_item_parts($ik);
+    $ver = (string) ($r[5] ?? '');
+    $pair = "$id|$ik|" . mb_strtolower(trim((string) ($r[4] ?? '')));   // the log keeps the link's label: a renamed link starts again
+    $first = !isset($seen[$pair]);
+    $seen[$pair] = true;
+    $last[$ik][$id] = $ver;
+    $inPer = $t >= $fromTs;
+    if ($inPer) $perItem[$ik] = ($perItem[$ik] ?? 0) + 1;
+    if (!$inScope($k, $s)) continue;
+    if (!isset($firstIn[$id])) $firstIn[$id] = $t;
+    if ($item && $ver !== '') $verDl[m3d_ver_key($ver)] = ($verDl[m3d_ver_key($ver)] ?? 0) + 1;
+    if (!$inPer) { if ($prevFrom !== null && $t >= $prevFrom) $prev++; continue; }
+    $dl++;
+    $b = $bucketOf($localDay($t));
+    if (isset($bars[$b])) $bars[$b][$first ? 0 : 1]++;
+    $who[$id] = m3d_log_membership($r);
+    [$wd, $hr] = $localWh($t);
+    $heat[$wd][$hr]++;
+    if ($item) $links[(string) ($r[4] ?? '') ?: 'Download'] = ($links[(string) ($r[4] ?? '') ?: 'Download'] ?? 0) + 1;   // very old lines have no link label
 }
 $newPatrons = count(array_filter($firstIn, fn($t) => $t >= $fromTs));
 
@@ -155,7 +148,7 @@ $bugsOn = m3d_bugs_on();
 $openBugs = [];   // "kind:slug" => open reports
 if ($bugsOn) foreach (m3d_bugs() as $bg) if (in_array($bg['status'] ?? 'new', BUG_OPEN, true)) $openBugs[(string) ($bg['about'] ?? '')] = ($openBugs[(string) ($bg['about'] ?? '')] ?? 0) + 1;
 $rows = [];   // every model and accessory: the numbers the table and the ranking need
-foreach (['models', 'outfits'] as $k) foreach (m3d_items($k) as $it) {
+foreach (M3D_ITEM_KINDS as $k) foreach (m3d_items($k) as $it) {
     $ik = m3d_log_item($k, (string) $it['slug']);
     $cur = m3d_released_label($it);
     $have = $cur === '' ? 0 : count(array_filter($last[$ik] ?? [], fn($v) => $v !== '' && m3d_ver_key($v) === m3d_ver_key($cur)));
@@ -167,13 +160,13 @@ usort($rows, fn($a, $b) => [$b['period'], $b['total'], $b['likes']] <=> [$a['per
 $kinds = array_count_values(array_column($rows, 'kind'));
 $name = fn(string $k, array $it): string => $k === 'models' ? m3d_model_name($it) : (string) $it['name'];
 $tag = function (string $k, array $it): string {   // "Gen 2" for a model, the type for an accessory
-    if ($k === 'outfits') return m3d_accessory_type($it);
+    if ($k !== 'models') return m3d_item_type($k, $it);
     return ($it['generation'] ?? '') !== '' ? 'Gen ' . $it['generation'] : '';
 };
 $thumb = function (string $k, array $it, string $cls = 'sp-pic'): string {
     $src = item_pic($k, $it);
     return '<span class="' . $cls . '" aria-hidden="true">' . ($src !== '' ? '<img src="' . e(img_thumb($src)) . '" alt="" loading="lazy" decoding="async" />'
-        : '<svg viewBox="0 0 24 24">' . ($k === 'outfits' ? accessory_icon_paths(m3d_accessory_type($it)) : STATS_ICONS['model']) . '</svg>') . '</span>';
+        : '<svg viewBox="0 0 24 24">' . ($k === 'outfits' ? accessory_icon_paths(m3d_accessory_type($it)) : ($k === 'scenes' ? SCENE_ICON : STATS_ICONS['model'])) . '</svg>') . '</span>';
 };
 
 $svg = fn(string $k): string => '<svg viewBox="0 0 24 24" aria-hidden="true">' . STATS_ICONS[$k] . '</svg>';
@@ -249,7 +242,7 @@ if ($item) {
     $likes = m3d_like_count($slug, $kind);
     $same = array_values(array_filter($rows, fn($r) => $r['kind'] === $kind));
     $rank = fn(string $by) => 1 + count(array_filter($same, fn($r) => $r[$by] > (['period' => $perItem[$ik] ?? 0, 'total' => $mine['total'], 'likes' => $likes][$by])));
-    $what = $kind === 'outfits' ? 'accessories' : 'models';
+    $what = m3d_kind_word($kind, true);
     $tiles[] = $tile('stat-new', 'new', $newPatrons, 'New Patrons', $small('first time downloading it'));
     $tiles[] = $tile('stat-pat', 'pat', count($last[$ik] ?? []), 'Patrons Have It', $small($cur !== '' ? number_format($haveCur) . ' have ' . (preg_match('/^\d/', $cur) ? "V$cur" : $cur) : 'no version out yet'), '', 'Patrons in the download log who downloaded it');
     $tiles[] = $tile('stat-free', 'all', $mine['total'], 'Downloads All Time', $small(number_format($mine['patrons']) . ' patrons · ' . number_format($mine['public']) . ' free links'));
@@ -264,7 +257,7 @@ if ($item) {
     }
 } else {
     $tiles[] = $tile('stat-pat', 'pat', count($who), 'Patrons', $small(count($who) ? 'who downloaded, ' . round($dl / count($who), 1) . ' each' : 'nobody downloaded'), '', 'Patrons who downloaded in this period');
-    $tiles[] = $tile('stat-new', 'new', $newPatrons, 'New Patrons', $small($scope === 'site' ? 'their first download' : ($kind === 'outfits' ? 'their first accessory' : 'their first model')));
+    $tiles[] = $tile('stat-new', 'new', $newPatrons, 'New Patrons', $small($scope === 'site' ? 'their first download' : 'their first ' . m3d_kind_word($kind)));
     $inKind = array_filter($rows, fn($r) => $scope === 'site' || $r['kind'] === $kind);
     if ($scope === 'site') {
         $ls = 0;   // the logins that could download
@@ -274,7 +267,7 @@ if ($item) {
         $tiles[] = $tile('stat-likes', 'like', $series[1][1], 'New Likes', $small(($n = $sinceNote($likeSince)) !== '' ? $n : number_format(array_sum(array_column($rows, 'likes'))) . ' likes in all'));
     } else {
         $tiles[] = $tile('stat-free', 'all', array_sum(array_column($inKind, 'total')), 'Downloads All Time', $small(number_format(array_sum(array_column($inKind, 'public'))) . ' of them free links'));
-        $tiles[] = $tile('stat-likes', 'like', array_sum(array_column($inKind, 'likes')), 'Likes', $small('on ' . m3d_plural(count($inKind), $kind === 'outfits' ? 'accessory' : 'model', $kind === 'outfits' ? 'accessories' : 'models')));
+        $tiles[] = $tile('stat-likes', 'like', array_sum(array_column($inKind, 'likes')), 'Likes', $small('on ' . m3d_plural(count($inKind), m3d_kind_word($kind), m3d_kind_word($kind, true))));
     }
     if ($bugsOn) {
         $opened = array_values(array_filter(m3d_bugs(), fn($bg) => (int) ($bg['at'] ?? 0) >= $fromTs && ($scope === 'site' || str_starts_with((string) ($bg['about'] ?? ''), "$kind:"))));
@@ -348,7 +341,7 @@ if ($scope === 'site' || ($item && $kind === 'models')) {
 
 $verLabel = fn(string $v): string => preg_match('/^\d/', $v) ? "V$v" : $v;
 $itemUrl = fn(string $k, array $it): string => $url(['of' => "$k:{$it['slug']}"]);
-$scopeName = $item ? $name($kind, $item) : ($scope === 'kind' ? ($kind === 'outfits' ? 'All Accessories' : 'All Models') : 'Whole Site');
+$scopeName = $item ? $name($kind, $item) : ($scope === 'kind' ? 'All ' . m3d_kind_word($kind, true, true) : 'Whole Site');
 
 admin_start($item ? $name($kind, $item) . ' · Stats' : 'Stats', 'stats');
 ?>
@@ -364,8 +357,8 @@ admin_start($item ? $name($kind, $item) . ' · Stats' : 'Stats', 'stats');
     <div class="sp-bar">
       <details class="sp-pick" data-sp-pick>
         <summary>
-          <?= $item ? $thumb($kind, $item, 'sp-ic') : '<span class="sp-ic">' . ($kind === 'outfits' ? '<svg viewBox="0 0 24 24" aria-hidden="true">' . ACCESSORY_ICON_GENERIC . '</svg>' : $svg($kind === 'models' ? 'model' : 'site')) . '</span>' ?>
-          <span class="sp-what"><b><?= e($scopeName) ?></b><small><?= e($item ? ($kind === 'outfits' ? m3d_accessory_type($item) . ' · Accessory' : trim('Model · ' . ($item['franchise'] ?? ''), ' ·')) : ($scope === 'kind' ? m3d_plural($kinds[$kind] ?? 0, $kind === 'outfits' ? 'accessory' : 'model', $kind === 'outfits' ? 'accessories' : 'models') : m3d_plural($kinds['models'] ?? 0, 'model') . (!empty($kinds['outfits']) ? ' · ' . m3d_plural($kinds['outfits'], 'accessory', 'accessories') : ''))) ?></small></span>
+          <?= $item ? $thumb($kind, $item, 'sp-ic') : '<span class="sp-ic">' . ($kind === 'outfits' || $kind === 'scenes' ? '<svg viewBox="0 0 24 24" aria-hidden="true">' . ($kind === 'scenes' ? SCENE_ICON : ACCESSORY_ICON_GENERIC) . '</svg>' : $svg($kind === 'models' ? 'model' : 'site')) . '</span>' ?>
+          <span class="sp-what"><b><?= e($scopeName) ?></b><small><?= e($item ? ($kind === 'outfits' ? m3d_accessory_type($item) . ' · Accessory' : ($kind === 'scenes' ? 'Scene' : trim('Model · ' . ($item['franchise'] ?? ''), ' ·'))) : ($scope === 'kind' ? m3d_plural($kinds[$kind] ?? 0, m3d_kind_word($kind), m3d_kind_word($kind, true)) : m3d_plural($kinds['models'] ?? 0, 'model') . (!empty($kinds['outfits']) ? ' · ' . m3d_plural($kinds['outfits'], 'accessory', 'accessories') : '') . (!empty($kinds['scenes']) ? ' · ' . m3d_plural($kinds['scenes'], 'scene') : ''))) ?></small></span>
           <svg class="sp-chev" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
         </summary>
         <div class="sp-panel">
@@ -374,10 +367,11 @@ admin_start($item ? $name($kind, $item) . ' · Stats' : 'Stats', 'stats');
             <a href="<?= e($url(['of' => ''])) ?>"<?= $scope === 'site' ? ' aria-current="true"' : '' ?> data-search="whole site"><span class="sp-ic"><?= $svg('site') ?></span><span>Whole Site</span></a>
             <?php if (!empty($kinds['models'])): ?><a href="<?= e($url(['of' => 'models'])) ?>"<?= $scope === 'kind' && $kind === 'models' ? ' aria-current="true"' : '' ?> data-search="all models"><span class="sp-ic"><?= $svg('model') ?></span><span>All Models</span><span class="n"><?= $kinds['models'] ?></span></a><?php endif ?>
             <?php if (!empty($kinds['outfits'])): ?><a href="<?= e($url(['of' => 'outfits'])) ?>"<?= $scope === 'kind' && $kind === 'outfits' ? ' aria-current="true"' : '' ?> data-search="all accessories"><span class="sp-ic"><svg viewBox="0 0 24 24" aria-hidden="true"><?= ACCESSORY_ICON_GENERIC ?></svg></span><span>All Accessories</span><span class="n"><?= $kinds['outfits'] ?></span></a><?php endif ?>
-            <?php foreach (['models' => 'Models', 'outfits' => 'Accessories'] as $k => $title): if (empty($kinds[$k])) continue; ?>
+            <?php if (!empty($kinds['scenes'])): ?><a href="<?= e($url(['of' => 'scenes'])) ?>"<?= $scope === 'kind' && $kind === 'scenes' ? ' aria-current="true"' : '' ?> data-search="all scenes"><span class="sp-ic"><svg viewBox="0 0 24 24" aria-hidden="true"><?= SCENE_ICON ?></svg></span><span>All Scenes</span><span class="n"><?= $kinds['scenes'] ?></span></a><?php endif ?>
+            <?php foreach (['models' => 'Models', 'outfits' => 'Accessories', 'scenes' => 'Scenes'] as $k => $title): if (empty($kinds[$k])) continue; ?>
             <p class="sp-grp"><?= $title ?> <span>by downloads, <?= e(mb_strtolower($perLabel)) ?></span></p>
             <?php foreach ($rows as $r): if ($r['kind'] !== $k) continue; $it = $r['it']; ?>
-            <a href="<?= e($itemUrl($k, $it)) ?>"<?= $item && $kind === $k && $slug === $it['slug'] ? ' aria-current="true"' : '' ?> data-search="<?= e(admin_search_text([$it['name'], $it['franchise'] ?? '', $tag($k, $it), $k === 'outfits' ? 'accessory' : 'model', $it['slug']])) ?>"><?= $thumb($k, $it, 'sp-ic') ?><span><?= e($name($k, $it)) ?><small><?= e(implode(' · ', array_filter([$k === 'outfits' ? '' : ($it['franchise'] ?? ''), $tag($k, $it)]))) ?></small></span><span class="n"><?= number_format($r['period']) ?></span></a>
+            <a href="<?= e($itemUrl($k, $it)) ?>"<?= $item && $kind === $k && $slug === $it['slug'] ? ' aria-current="true"' : '' ?> data-search="<?= e(admin_search_text([$it['name'], $it['franchise'] ?? '', $tag($k, $it), m3d_kind_word($k), $it['slug']])) ?>"><?= $thumb($k, $it, 'sp-ic') ?><span><?= e($name($k, $it)) ?><small><?= e(implode(' · ', array_filter([$k !== 'models' ? '' : ($it['franchise'] ?? ''), $tag($k, $it)]))) ?></small></span><span class="n"><?= number_format($r['period']) ?></span></a>
             <?php endforeach; endforeach ?>
             <p class="sp-none muted small" data-sp-none hidden>Nothing matches.</p>
           </div>
@@ -394,14 +388,14 @@ admin_start($item ? $name($kind, $item) . ' · Stats' : 'Stats', 'stats');
       <div class="sp-item-txt">
         <h2><?= e($name($kind, $item)) ?></h2>
         <div class="sp-sub">
-          <span><?= e(implode(' · ', array_filter([$kind === 'outfits' ? m3d_accessory_type($item) . ' · Accessory' : 'Model', $item['franchise'] ?? '', $kind === 'models' ? $tag($kind, $item) : '']))) ?></span>
+          <span><?= e(implode(' · ', array_filter([$kind === 'outfits' ? m3d_accessory_type($item) . ' · Accessory' : m3d_item_type($kind, $item), $item['franchise'] ?? '', $kind === 'models' ? $tag($kind, $item) : '']))) ?></span>
           <?php if ($kind === 'models'): $s = status_info(m3d_status($item)); ?><span class="badge tone-<?= e($s['tone']) ?>"><?= e($s['label']) ?></span><?php endif ?><?= admin_visibility_badge($item) ?>
           <?php if (($c = m3d_current_version($item))['version'] !== ''): ?><span><?= e($verLabel(m3d_version_label($c)) . (($t = m3d_changelog_ts($c['date'])) ? ' out ' . m3d_site_time($t, 'j M Y') : '')) ?></span><?php endif ?>
         </div>
       </div>
       <div class="row-btns">
         <a class="btn btn-ghost btn-sm" href="<?= e(m3d_item_url($kind, $slug)) ?>">View Page</a>
-        <a class="btn btn-ghost btn-sm" href="/admin/edit.php?<?= $kind === 'outfits' ? 'kind=outfits&amp;' : '' ?>slug=<?= e(rawurlencode($slug)) ?>">Edit</a>
+        <a class="btn btn-ghost btn-sm" href="/admin/edit.php?<?= $kind !== 'models' ? 'kind=' . $kind . '&amp;' : '' ?>slug=<?= e(rawurlencode($slug)) ?>">Edit</a>
       </div>
     </div>
     <?php endif ?>
@@ -477,7 +471,7 @@ admin_start($item ? $name($kind, $item) . ' · Stats' : 'Stats', 'stats');
         <?php endif ?>
         <p class="sp-h3">Ranking</p>
         <div class="sp-rank"><?php if ($perDays): /* All Time: the next one says it */ ?><span><b>#<?= $rank('period') ?></b>downloads, <?= e(mb_strtolower($perLabel)) ?></span><?php endif ?><span><b>#<?= $rank('total') ?></b>downloads, all time</span><span><b>#<?= $rank('likes') ?></b>likes</span></div>
-        <p class="sp-foot">Among the <?= m3d_plural(count($same), $kind === 'outfits' ? 'accessory' : 'model', $kind === 'outfits' ? 'accessories' : 'models') ?>.</p>
+        <p class="sp-foot">Among the <?= m3d_plural(count($same), m3d_kind_word($kind), m3d_kind_word($kind, true)) ?>.</p>
       </section>
 
       <?php if ($bugsOn): $list = $mineBugs; usort($list, fn($a, $b) => [in_array($b['status'] ?? 'new', BUG_OPEN, true), (int) ($b['at'] ?? 0)] <=> [in_array($a['status'] ?? 'new', BUG_OPEN, true), (int) ($a['at'] ?? 0)]); ?>
@@ -500,7 +494,7 @@ admin_start($item ? $name($kind, $item) . ' · Stats' : 'Stats', 'stats');
         <ul class="sp-list sp-cms">
           <?php foreach (array_slice($list, 0, STATS_LIST) as $c): $at = (int) ($c['at'] ?? 0); $cname = (string) ($c['name'] ?? '') ?: 'Someone';
               $text = mb_strimwidth(trim(html_entity_decode(strip_tags(md_inline(preg_replace('/\s+/u', ' ', (string) ($c['text'] ?? '')) ?? '')), ENT_QUOTES | ENT_HTML5, 'UTF-8')), 0, 160, '…'); ?>
-          <li><?= bug_avatar($cname, !empty($c['admin'])) ?><a href="<?= e(m3d_item_url($kind, $slug)) ?>#cm-<?= (int) ($c['id'] ?? 0) ?>"><b><?= e($cname) ?></b><?= !empty($c['pending']) ? ' <span class="badge tone-mustard sp-wait">Waiting</span>' : '' ?><span class="k"><?= e($text) ?></span></a><span class="t" title="<?= e(m3d_site_time($at, 'D j M Y, H:i T')) ?>"><?= e(m3d_site_time($at, m3d_site_time($at, 'Y-m-d') === m3d_today() ? 'H:i' : 'j M')) ?></span></li>
+          <li><?= bug_avatar($cname, !empty($c['admin']), (string) ($c['by'] ?? '')) ?><a href="<?= e(m3d_item_url($kind, $slug)) ?>#cm-<?= (int) ($c['id'] ?? 0) ?>"><b><?= e($cname) ?></b><?= !empty($c['pending']) ? ' <span class="badge tone-mustard sp-wait">Waiting</span>' : '' ?><span class="k"><?= e($text) ?></span></a><span class="t" title="<?= e(m3d_site_time($at, 'D j M Y, H:i T')) ?>"><?= e(m3d_site_time($at, m3d_site_time($at, 'Y-m-d') === m3d_today() ? 'H:i' : 'j M')) ?></span></li>
           <?php endforeach ?>
         </ul>
         <?php endif ?>
@@ -512,14 +506,15 @@ admin_start($item ? $name($kind, $item) . ' · Stats' : 'Stats', 'stats');
     $maxPer = max(1, ...array_column($tableRows, 'period') ?: [0]);
 ?>
       <section class="sec <?= $series ? 'sp-w8' : '' ?> sp-tot">
-        <h2><?= $scope === 'site' ? 'Models &amp; Accessories' : ($kind === 'outfits' ? 'Accessories' : 'Models') ?></h2>
+        <h2><?= $scope === 'site' ? 'Models &amp; Accessories' : (m3d_kind_word($kind, true, true)) ?></h2>
         <?php if (!$tableRows): ?><p class="muted">Nothing here yet.</p><?php else: ?>
         <div class="tot-bar">
           <?php if ($scope === 'site' && count($kinds) > 1): ?>
             <span class="tot-kinds" role="group" aria-label="Show">
               <button type="button" class="chip" data-tot-kind="" aria-pressed="true">All <span><?= count($tableRows) ?></span></button>
               <button type="button" class="chip" data-tot-kind="models" aria-pressed="false">Models <span><?= $kinds['models'] ?></span></button>
-              <button type="button" class="chip" data-tot-kind="outfits" aria-pressed="false">Accessories <span><?= $kinds['outfits'] ?></span></button>
+              <?php if (!empty($kinds['outfits'])): ?><button type="button" class="chip" data-tot-kind="outfits" aria-pressed="false">Accessories <span><?= $kinds['outfits'] ?></span></button><?php endif ?>
+              <?php if (!empty($kinds['scenes'])): ?><button type="button" class="chip" data-tot-kind="scenes" aria-pressed="false">Scenes <span><?= $kinds['scenes'] ?></span></button><?php endif ?>
             </span>
           <?php endif ?>
           <span class="muted small tot-count" data-tot-count hidden></span>
@@ -538,7 +533,7 @@ admin_start($item ? $name($kind, $item) . ' · Stats' : 'Stats', 'stats');
             </tr></thead>
             <tbody>
               <?php foreach ($tableRows as $r): $it = $r['it']; $k = $r['kind']; $tg = $tag($k, $it); ?>
-              <tr class="<?= $r['total'] || $r['period'] ? '' : 'tot-zero' ?>" data-kind="<?= e($k) ?>" data-name="<?= e(mb_strtolower($it['name'] . ' ' . $tg)) ?>" data-search="<?= e(implode(' ', [$it['name'], $tg, $it['franchise'] ?? '', $k === 'outfits' ? 'accessory' : 'model', $it['slug']])) ?>"
+              <tr class="<?= $r['total'] || $r['period'] ? '' : 'tot-zero' ?>" data-kind="<?= e($k) ?>" data-name="<?= e(mb_strtolower($it['name'] . ' ' . $tg)) ?>" data-search="<?= e(implode(' ', [$it['name'], $tg, $it['franchise'] ?? '', m3d_kind_word($k), $it['slug']])) ?>"
                 data-period="<?= $r['period'] ?>" data-total="<?= $r['total'] ?>" data-likes="<?= $r['likes'] ?>" data-latest="<?= $r['latest'] ?>" data-bugs="<?= $r['bugs'] ?>">
                 <td><a class="tot-item sp-go" href="<?= e($itemUrl($k, $it)) ?>"><?= $thumb($k, $it, 'tot-pic') ?><span class="tot-name"><b title="<?= e($name($k, $it)) ?>"><?= e($name($k, $it)) ?></b><?= $tg !== '' ? '<span class="tot-tag tot-tag-' . e($k) . '">' . e($tg) . '</span>' : '<span class="tot-tag is-none" aria-hidden="true">&nbsp;</span>' ?></span></a></td>
                 <td><span class="tot-dl"><span class="tot-meter" aria-hidden="true"><i style="width:<?= round($r['period'] / $maxPer * 100, 1) ?>%"></i></span><b class="num"><?= number_format($r['period']) ?></b></span></td>
@@ -572,7 +567,7 @@ admin_start($item ? $name($kind, $item) . ' · Stats' : 'Stats', 'stats');
 
       <section class="sec sp-w5">
         <h2>New Versions <span class="sp-legend">Have It<?= tip('Of the patrons in the log who downloaded the item, how many have the new version as their last download.') ?></span></h2>
-        <?php if (!$fresh): ?><p class="muted">No update of <?= $scope === 'site' ? 'a model or accessory' : ($kind === 'outfits' ? 'an accessory' : 'a model') ?> in this period.</p><?php else: ?>
+        <?php if (!$fresh): ?><p class="muted">No update of <?= $scope === 'site' ? 'a model or accessory' : (['outfits' => 'an accessory', 'scenes' => 'a scene'][$kind] ?? 'a model') ?> in this period.</p><?php else: ?>
         <ul class="sp-bars sp-fresh">
           <?php foreach (array_slice($fresh, 0, 10) as [$t, $k, $it, $label]): $ik = m3d_log_item($k, (string) $it['slug']); $all = count($last[$ik] ?? []); $n = count(array_filter($last[$ik] ?? [], fn($v) => $v !== '' && m3d_ver_key($v) === m3d_ver_key($label))); ?>
           <li><a href="<?= e($itemUrl($k, $it)) ?>"><?= e($name($k, $it) . ' ' . $verLabel($label)) ?> <small>· out <?= e(m3d_site_time($t, 'j M')) ?></small></a><b title="<?= e("$n of the $all patrons who downloaded it") ?>"><?= $pct($n, $all) ?>%</b><span class="bar"><i style="width:<?= $pct($n, $all) ?>%"></i></span></li>

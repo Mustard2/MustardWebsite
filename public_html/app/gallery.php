@@ -100,7 +100,7 @@ function m3d_still_public_view(array $s): string
         if (!$c['model']) continue;
         $v = m3d_visibility($c['model']);
         if ($v === 'draft' || $v === 'password' || m3d_release_hidden($c['model'])) return 'hidden';
-        if ($v === 'blurred' || $v === 'blurred-patrons') $blur = true;
+        if (in_array($v, M3D_VIS_BLURRED, true)) $blur = true;
     }
     return $blur ? 'blur' : 'clear';
 }
@@ -183,12 +183,23 @@ function m3d_gallery_forget_models(array $names, array $vis = []): void
         $before = (array) ($s['chars'] ?? []);
         foreach ($before as $c) {
             $v = $vis[$c] ?? 'public';
+            if ($v === 'blurred-eligible') $v = 'blurred-patrons';   // a picture has no requirements of its own: the nearest it has
             $v = isset($rank[$v]) ? $v : 'draft';   // password
             if ($rank[$v] > ($rank[$s['visibility'] ?? 'public'] ?? 0)) { $s['visibility'] = $v; $changed = true; }
         }
         $chars = array_map(fn($c) => $names[$c] ?? $c, $before);
         if ($chars !== $before) { $s['chars'] = $chars; $changed = true; }
     }
+    unset($s);
+    if ($changed) m3d_save_gallery($g);
+}
+
+/** Scenes deleted in the admin: the Gallery pictures linked to them lose the link, so a new scene at that address doesn't take them over. */
+function m3d_gallery_forget_scenes(array $slugs): void
+{
+    $g = m3d_gallery();
+    $changed = false;
+    foreach ($g['stills'] as &$s) if (isset($s['scene']) && in_array($s['scene'], $slugs, true)) { unset($s['scene']); $changed = true; }
     unset($s);
     if ($changed) m3d_save_gallery($g);
 }
@@ -223,7 +234,7 @@ function full_size_dl(string $href, array $link): array
 // The page's viewer gets "Download Full Size" through /get/still/<m|o>/<slug>/<code>/ (auth/get-still.php), code = m3d_pic_code().
 
 /** The item field holding its pictures with full size links. */
-const PIC_FIELDS = ['models' => 'gallery', 'outfits' => 'images'];
+const PIC_FIELDS = ['models' => 'gallery', 'outfits' => 'images', 'scenes' => 'images'];
 
 /** A picture's code in its download address: from the picture's address, so reordering the pictures doesn't change it. */
 function m3d_pic_code(string $src): string
@@ -248,7 +259,7 @@ function item_pics(string $kind, array $item): array
         $p = as_image($g);
         if ($p['src'] === '') continue;
         if (is_array($g['link'] ?? null) && !empty($g['link']['url'])) {
-            $p['dl'] = full_size_dl('/get/still/' . ($kind === 'outfits' ? 'o' : 'm') . '/' . $item['slug'] . '/' . m3d_pic_code($p['src']) . '/', $g['link']);
+            $p['dl'] = full_size_dl('/get/still/' . M3D_KIND_CODES[$kind] . '/' . $item['slug'] . '/' . m3d_pic_code($p['src']) . '/', $g['link']);
         }
         $out[] = $p;
     }
@@ -270,7 +281,16 @@ function still_slide(array $s): array
     $slide['chars'] = array_map(fn($c) => ['name' => $c['name'], 'url' => $c['model'] && m3d_can_view('models', $c['model']) ? m3d_item_url('models', $c['model']['slug']) : ''], m3d_still_chars($s));
     $link = $s['link'] ?? null;
     if (is_array($link) && !empty($link['url'])) $slide['dl'] = full_size_dl('/get/still/' . $s['id'] . '/', $link);
+    if ($sc = still_scene($s)) $slide['scene'] = ['href' => m3d_item_url('scenes', (string) $sc['slug']) . '#download', 'name' => (string) $sc['name']];
     return $slide;
+}
+
+/** The scene a Gallery picture was made in (`scene`, Admin → Gallery), when this visitor can open its page (listed, Scenes on); else null. */
+function still_scene(array $s): ?array
+{
+    $slug = (string) ($s['scene'] ?? '');
+    $sc = $slug !== '' ? m3d_item('scenes', $slug) : null;
+    return $sc && m3d_listed($sc) && m3d_can_view('scenes', $sc) ? $sc : null;
 }
 
 /** One picture of the wall. $n = its place in the viewer's list (null: blurred, not opened). */
@@ -300,7 +320,8 @@ function still_tile(array $s, ?int $n, bool $eager = false): string
             $capHtml = e(substr($cap, 0, -strlen($link['name']))) . '<a href="' . e($link['url']) . '" target="_blank" rel="nofollow ugc noopener" title="' . e($link['label']) . '">' . e($link['name']) . render_link_icon($link['net']) . '</a>';
         }
     }
-    $search = implode(' ', array_merge([$cap], array_column($chars, 'name'), array_column($chars, 'franchise')));
+    $scene = still_scene($s);   // its scene's name too: the search box says "…or scene", and the site search links a scene's pictures with ?q=
+    $search = implode(' ', array_merge([$cap], array_column($chars, 'name'), array_column($chars, 'franchise'), $scene ? [(string) $scene['name']] : []));
     $pills = '';
     if ($blur) {   // "Teaser" when nobody sees it clear yet, "Patrons" when patrons do
         $teaser = ($s['visibility'] ?? '') === 'blurred' || array_filter($chars, fn($c) => $c['model'] && m3d_visibility($c['model']) === 'blurred');

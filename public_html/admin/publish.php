@@ -4,7 +4,7 @@
 require __DIR__ . '/_admin.php';
 admin_require($M3D);
 
-$kind = ($_POST['kind'] ?? '') === 'outfits' ? 'outfits' : 'models';
+$kind = in_array($_POST['kind'] ?? '', M3D_ITEM_KINDS, true) ? (string) $_POST['kind'] : 'models';
 $slug = (string) ($_POST['slug'] ?? '');
 if (($_SERVER['REQUEST_METHOD'] ?? '') !== 'POST' || !m3d_check_csrf($_POST['csrf'] ?? null)) {
     http_response_code(400);

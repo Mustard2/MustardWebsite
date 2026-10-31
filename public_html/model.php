@@ -21,12 +21,15 @@ $coverSrc = ($d['cover'] ?? '') ?: (($d['thumb'] ?? '') ?: '');
 $slides = array_merge($coverSrc ? [['src' => $coverSrc, 'caption' => '']] : [], $gallery);   // the viewer's set (none when blurred)
 $log = $d['changelog'] ?? [];
 $outfits = m3d_outfits_for($d['slug']);
+$scenes = m3d_scenes_for($d['slug']);
 $hasAside = !empty($d['futureIdeas']) || !empty($d['knownIssues']) || !empty($d['extra']) || !empty($d['credits']);
 $hasDetails = !empty($d['features']) || $log || $notes || $outfits || $hasAside;
 $gen = ($d['generation'] ?? '') !== '' ? $d['generation'] : null;
 
 // link previews show the main picture, only for fully public models (never blurred, password or draft ones)
-if ($coverSrc !== '' && m3d_visibility($d) === 'public') page_image($coverSrc);
+$pic = $coverSrc !== '' && m3d_visibility($d) === 'public' ? $coverSrc : '';
+if ($pic !== '') page_image($pic);
+page_preview('models', $d, $pic);   // the facts instead of the description, and Discord's own card
 $major = !empty($d['majorVersion']) ? (int) $d['majorVersion'] : null;
 $title = $d['name'] . ($versions ? " v$major" : '');
 $renders = showcase_tiles('models', $d, count($slides));   // patron renders: approved ones after the creator's pictures, waiting ones first for their author and the creator
@@ -39,14 +42,15 @@ layout_start($gen !== null ? "$title (Gen $gen)" : $title, meta_text((string) ($
     <?php if ($newest): ?>
       <p class="newer-note"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19V5m0 0-6 6m6-6 6 6"/></svg><span>A newer version of this model <?= m3d_status($newest) === 'in-development' ? 'is in development' : 'is available' ?>: <a href="/models/<?= e($newest['slug']) ?>/"><?= e($newest['name']) ?> v<?= (int) $newest['majorVersion'] ?> →</a></span></p>
     <?php endif ?>
-    <div class="model">
+    <div class="model<?= item_is_wide('models', $coverSrc) ? ' is-wide' : '' ?>">
       <?= item_media('models', $d, $d, $coverSrc, array_merge($slides, $renders[1]), $blur) ?>
 
-      <div class="info">
+      <div class="info item-info">
+        <div class="item-main">
         <div class="title-row">
           <p class="eyebrow"><?= e($d['franchise'] ?? '') ?></p>
           <h1><?= e($d['name']) ?></h1>
-          <?= like_button($d['slug']) ?>
+          <?= bookmark_button('models', $d['slug']) ?><?= like_button($d['slug']) ?>
         </div>
         <?= admin_edit_button('/admin/edit.php?slug=' . rawurlencode($d['slug']), 'Edit Model') ?>
         <dl class="facts">
@@ -57,10 +61,13 @@ layout_start($gen !== null ? "$title (Gen $gen)" : $title, meta_text((string) ($
           <?= fact_latest($d) ?>
           <?php if (!empty($d['blender'])): ?><dt>Blender</dt><dd><?= e($d['blender']) ?></dd><?php endif ?>
           <dt>Status</dt><dd><?= status_badge(m3d_status($d)) ?></dd>
+          <?php if (m3d_status($d) === 'in-development'): ?><dt>Expected Release</dt><dd<?= ($d['expected'] ?? '') === '' ? ' class="muted"' : '' ?>><?= e(($d['expected'] ?? '') !== '' ? (string) $d['expected'] : 'To Be Announced') ?></dd><?php endif ?>
           <?= fact_downloads('models', $d['slug']) ?>
         </dl>
         <?php if (!empty($d['description'])): ?><div class="desc md"><?= md_html((string) $d['description'], ['noImages' => $blur]) ?></div><?php endif ?>
 
+        </div>
+        <div class="item-side">
         <?= downloads_box('models', $d, $comingSoon) ?>
 
         <?= start_box_html('models') ?>
@@ -68,6 +75,7 @@ layout_start($gen !== null ? "$title (Gen $gen)" : $title, meta_text((string) ($
         <?= bug_item_box('models', $d) ?>
 
         <?= showcase_box('models', $d) ?>
+        </div>
       </div>
     </div>
 
@@ -101,6 +109,13 @@ layout_start($gen !== null ? "$title (Gen $gen)" : $title, meta_text((string) ($
             </section>
           <?php endif ?>
 
+          <?php if ($scenes): ?>
+            <section class="block" id="scenes">
+              <h2 class="block-title">Scenes with This Model <span class="count"><?= count($scenes) ?></span></h2>
+              <?= like_strip(array_map('scene_card', $scenes), 'scenes', 'scene-strip') ?>
+            </section>
+          <?php endif ?>
+
           <?= changelog_block($log, $d['changelogNote'] ?? null, $blur, changelog_mine('models', $d)) ?>
         </div>
 
@@ -110,7 +125,7 @@ layout_start($gen !== null ? "$title (Gen $gen)" : $title, meta_text((string) ($
               <section class="card-block">
                 <h3>Future Ideas</h3>
                 <ul class="plain md"><?php foreach ($d['futureIdeas'] as $x): ?><li><?= md_inline((string) $x) ?></li><?php endforeach ?></ul>
-                <?php if (social_url('discord') !== ''): ?><p class="small muted">Got an idea? Share it on <a href="<?= e(social_url('discord')) ?>">Discord</a>.</p><?php endif ?>
+                <?php if (m3d_ideas_on('models')): ?><p class="small muted">Got an idea? <a href="#ideas">Suggest it below</a>.</p><?php elseif (social_url('discord') !== ''): ?><p class="small muted">Got an idea? Share it on <a href="<?= e(social_url('discord')) ?>">Discord</a>.</p><?php endif ?>
               </section>
             <?php endif ?>
             <?php if (!empty($d['knownIssues'])): ?>
@@ -152,6 +167,8 @@ layout_start($gen !== null ? "$title (Gen $gen)" : $title, meta_text((string) ($
         <?= like_strip(array_map('model_card', $related), 'models', 'rel-strip') ?>
       </section>
     <?php endif ?>
+
+    <?= ideas_block('models', $d) ?>
 
     <?= comments_block('models', $d['slug'], $d, 'model') ?>
   </div>

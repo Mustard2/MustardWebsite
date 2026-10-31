@@ -18,12 +18,6 @@ $channels = [
         'cta'   => 'Open Patreon',
     ],
     [
-        'title' => 'MustardUI Bugs',
-        'text'  => 'Found a bug in MustardUI or have a feature idea? Open an issue on GitHub so it can be tracked and fixed.',
-        'href'  => SITE['mustarduiIssues'],
-        'cta'   => 'Report on GitHub',
-    ],
-    [
         'title' => 'X',
         'text'  => 'News, previews and new releases.',
         'href'  => social_url('x'),
@@ -31,13 +25,16 @@ $channels = [
     ],
 ];
 
-$channels = array_values(array_filter($channels, fn($c) => $c['href'] !== '' && ($c['title'] !== 'MustardUI Bugs' || m3d_mustardui_on())));   // networks not set in Settings → Social links are left out; the MustardUI card follows Settings → MustardUI
+// a card per listed tool with "Card on the Contacts Page" and a place for its bugs (Admin → Tools → Options), after Patreon
+$toolCards = array_map(fn($t) => ['title' => $t['name'] . ' Bugs', 'text' => 'Found a bug in ' . $t['name'] . ' or have a feature idea? Report it there so it can be tracked and fixed.',
+    'href' => $t['issues'], 'cta' => 'Report It'], array_filter(m3d_tools_listed('contacts'), fn($t) => $t['issues'] !== ''));
+array_splice($channels, 2, 0, $toolCards);
+$channels = array_values(array_filter($channels, fn($c) => $c['href'] !== ''));   // networks not set in Settings → Social links are left out
 
 layout_start('Contacts', 'How to get in touch with ' . site_name() . '.', 'page-contacts');
 ?>
   <div class="wrap contacts">
     <header>
-      <p class="eyebrow">Contacts</p>
       <h1>Get in Touch</h1>
       <?php if (m3d_has_faq()): ?><p class="lead-sm muted">Before writing, have a look at the <a href="<?= e(SITE['faqs']) ?>">FAQ</a>: the most common questions are answered there.</p><?php endif ?>
     </header>

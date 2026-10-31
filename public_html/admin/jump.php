@@ -15,7 +15,7 @@ $add = function (string $t, string $k, string $u, string $x = '', string $s = ''
 };
 // the visibility, as the admin lists' badges say it ('' = public)
 $vis = fn(array $it) => match (m3d_visibility($it)) {
-    'draft' => 'Draft', 'password' => 'Password', 'blurred' => 'Blurred', 'blurred-patrons' => 'Blurred · Clear for Patrons', default => '',
+    'draft' => 'Draft', 'password' => 'Password', 'blurred' => 'Blurred', 'blurred-patrons' => 'Blurred · Patrons', 'blurred-eligible' => 'Blurred · Eligible', default => '',
 };
 
 // the models and accessories (with their latest version), first: Quick Add asks for these alone
@@ -33,12 +33,18 @@ foreach (m3d_models() as $m) {
 $models = array_column(m3d_models(), null, 'slug');
 foreach (m3d_outfits() as $o) {
     $fits = m3d_fits_all($o) ? [] : array_values(array_filter(array_map(fn($s) => $models[$s] ?? null, (array) ($o['models'] ?? []))));
-    $for = m3d_fits_all($o) ? ['All Models'] : array_map('m3d_model_name', $fits);
+    $for = m3d_fits_blender($o) ? ['Blender'] : (m3d_fits_all($o) ? ['All Models'] : array_map('m3d_model_name', $fits));
     // extra words: every model it fits and their franchises ("fantasy" finds Tifa's outfit), not only the three in the line under it
     $x = implode(' ', array_unique(array_merge(['accessory'], $for, array_map(fn($m) => (string) ($m['franchise'] ?? ''), $fits))));
     $add($o['name'], m3d_accessory_type($o), '/admin/edit.php?kind=outfits&slug=' . rawurlencode($o['slug']), $x,
         implode(' · ', array_filter([$for ? 'For ' . implode(', ', array_slice($for, 0, 3)) . (count($for) > 3 ? '…' : '') : '', $vis($o)])), item_pic('outfits', $o));
     $items[] = array_pop($out) + $ver($o) + ['l' => m3d_item_url('outfits', $o['slug'])];
+}
+foreach (m3d_items('scenes') as $o) {
+    $with = array_map('m3d_model_name', array_values(array_filter(array_map(fn($s) => $models[$s] ?? null, (array) ($o['models'] ?? [])))));
+    $add($o['name'], 'Scene', '/admin/edit.php?kind=scenes&slug=' . rawurlencode($o['slug']), implode(' ', array_merge(['scene'], $with)),
+        implode(' · ', array_filter([$with ? 'With ' . implode(', ', array_slice($with, 0, 3)) . (count($with) > 3 ? '…' : '') : '', $vis($o)])), item_pic('scenes', $o));
+    $items[] = array_pop($out) + $ver($o) + ['l' => m3d_item_url('scenes', $o['slug'])];
 }
 if (isset($_GET['items'])) admin_json(['ok' => true, 'items' => $items]);
 if (isset($_GET['cards'])) {
@@ -55,6 +61,9 @@ if (isset($_GET['cards'])) {
 $add('Home', 'Page', '/admin/', 'dashboard overview downloads today week needs a look');
 $add('Models', 'Page', '/admin/models.php', 'assets characters list add model');
 $add('Accessories', 'Page', '/admin/outfits.php', 'assets outfits hair list add accessory');
+$add('Scenes', 'Page', '/admin/scenes.php', 'assets blender scenes list add scene');
+$add('Pages', 'Page', '/admin/tools.php', 'assets pages page tool tools simple add-on addon tutorials mustardui');
+$add('+ Add Page', 'Page', '/admin/tool.php', 'new page simple page tool create');
 $add('Link Check', 'Page', '/admin/links.php', 'broken dead links mega transfer.it downloads check');
 $add('Gallery', 'Page', '/admin/gallery.php', 'renders stills pictures');
 if (m3d_showcase_on() || m3d_showcase_stored()) $add('From Patrons', 'Page', m3d_showcase_admin_url(), 'media patron renders made by patrons showcase approve reject shared fan art');
@@ -69,12 +78,15 @@ $add('Stats', 'Page', '/admin/stats.php', 'statistics totals downloads likes log
 $add('Access', 'Page', '/admin/users.php', 'downloads unlock limits rules download wait countdown daily cap grace period pledge removed repledge months');
 $add('Access Exceptions', 'Page', '/admin/users.php?tab=exceptions', 'users exceptions bans banned block patrons bypass custom access');
 $add('Temporary Links', 'Page', '/admin/users.php?tab=links', 'share temporary download links tester collaborator give file expire access');
+$add('Moderators', 'Page', '/admin/moderation.php?tab=mods', 'moderators moderation helpers approve hide ban comments bug reports ideas log');
+$add('Moderation', 'Page', '/admin/moderation.php', 'moderation waiting hidden posts approve hide ban log undo moderators');
 $add('Media', 'Page', '/admin/images.php', 'images library pictures videos upload crop unused 3d files');
 $add('Find Duplicates', 'Page', '/admin/duplicates.php', 'duplicate pictures images same copies twice media gallery clean up');
 $add('Backups', 'Page', '/admin/backups.php', 'restore history');
 $add('Update', 'Page', '/admin/update.php', 'install site update remote zip version github channel stable development key');
 $add('+ Add Model', 'Page', '/admin/edit.php', 'new model create');
 $add('+ Add Accessory', 'Page', '/admin/edit.php?kind=outfits', 'new accessory outfit create');
+$add('+ Add Scene', 'Page', '/admin/edit.php?kind=scenes', 'new scene create');
 
 // the Settings boxes, with words people may look for
 $boxes = [
@@ -88,15 +100,16 @@ $boxes = [
     'timezone'    => ['Time Zone', 'clock timezone utc cet cest berlin hours'],
     'blog'        => ['Blog (Settings)', 'posts news turn on off title'],
     'welcome'     => ['Welcome Page', 'first login tour new patrons onboarding landing intro'],
-    'bugs'        => ['Bug Reports (Settings)', 'bugs uploads moderation blender mustardui versions'],
+    'bugs'        => ['Bug Reports (Settings)', 'bugs uploads moderation blender add-on versions'],
     'comments'    => ['Comments (Settings)', 'comments comment moderation approve block delete all paying patrons skip check'],
+    'ideas'       => ['Ideas (Settings)', 'ideas suggestions suggest vote votes board wishes requests planned roadmap'],
     'discord'     => ['Discord Announcements', 'webhook post new versions renders gallery message'],
     'showcase'    => ['Patron Renders (Settings)', 'made by patrons showcase fan art renders share'],
     's4'          => ['MEGA S4 Downloads', 'object storage bucket signed temporary download links keys download domain worker proxy cdn'],
-    'mustardui'   => ['MustardUI Page', 'add-on addon'],
     'campaign'    => ['Campaign', 'currency paid tiers prices read tiers now patreon'],
     'patreon'     => ['Patreon Keys', 'client id secret campaign id redirect keys creator access refresh token pledge history months as a patron'],
     'logins'      => ['Logins', 'session days log out'],
+    'avatars'     => ['Profile Pictures', 'patreon avatar photo picture users'],
     'maintenance' => ['Maintenance Mode', 'back soon offline'],
     'problems'    => ['Site Problems', 'errors log failed broken'],
     'tools'       => ['Tools', 'php cache sessions clear log unused images temporary files'],
@@ -109,6 +122,11 @@ array_push($out, ...$items);
 foreach (m3d_doc_pages() as $p) {
     $add((string) ($p['title'] ?? $p['slug']), 'Docs Page', '/admin/docs.php?page=' . rawurlencode((string) $p['slug']), '',
         implode(' · ', array_filter([(string) ($p['section'] ?? ''), !empty($p['draft']) ? 'Draft' : ''])));
+}
+foreach (m3d_tools()['tools'] as $t) {   // tool and simple pages and their tutorials (app/tools.php)
+    $add((string) $t['name'], m3d_page_type($t) === 'page' ? 'Simple Page' : 'Tool', '/admin/tool.php?id=' . rawurlencode((string) $t['id']), 'tool add-on tutorials', !empty($t['draft']) ? 'Draft' : '', (string) ($t['logo'] ?? ''));
+    foreach (m3d_tool_tuts($t, true) as $tu) $add((string) $tu['title'], 'Tutorial', '/admin/tool-tutorials.php?id=' . rawurlencode((string) $t['id']) . '&tut=' . rawurlencode((string) $tu['id']), 'tutorial',
+        implode(' · ', array_filter([(string) $t['name'], !empty($tu['draft']) ? 'Draft' : ''])));
 }
 foreach (m3d_blog()['posts'] as $p) {
     $state = ['draft' => 'Draft', 'scheduled' => 'Scheduled'][m3d_post_state($p)] ?? '';

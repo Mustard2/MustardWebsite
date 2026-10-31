@@ -10,8 +10,9 @@
 //   pin, hidden, pending (waits for the admin when "check new reports" is on), locked (no new comments), seen (admin opened it),
 //   seen_at (it was opened, then got a visitor's comment: when; unset when opened again, see app/notify.php),
 //   fol {like code: time last opened} (who follows it, see "Following"),
-//   log [{t: 'c', by, name, at, text, admin} comment | {t: 's', at, status, fixed?, reason?, dup?} status | {t: 'tag', at, add []}]
-// settings.json → bugs: {on, who: any|paying, host (where to upload screenshots), uploads, moderate, per_day, blocked [Patreon ids],
+//   log [{t: 'c', by, name, at, text, admin} comment | {t: 's', at, status, fixed?, reason?, dup?} status | {t: 'tag', at, add []}],
+//   rx (reactions {emoji: [like codes]}, on the report and on each comment, while settings → bugs.reactions is on: reactions_html() in app/comments.php)
+// settings.json → bugs: {on, who: any|paying, host (where to upload screenshots), uploads, moderate, paid_skip (as comments'), per_day, blocked [Patreon ids], emoji, codes, reactions (as comments'),
 //   tags [{id, name, color}], notify (old: read by m3d_notify_settings() until Settings → Notifications is saved, with the webhook of
 //   private/webhooks.php → bugs)}
 declare(strict_types=1);
@@ -52,12 +53,24 @@ function m3d_bug_settings(): array
         'uploads'  => !empty($s['uploads']),
         // never saved: on while anyone may post (free members too), so a brand-new account isn't published at once
         'moderate' => array_key_exists('moderate', $s) ? !empty($s['moderate']) : $who === 'any',
+        'paid_skip' => !empty($s['paid_skip']),   // "Skip for Paying Patrons": their reports show at once, others still wait (as comments')
         'notify'   => !empty($s['notify']),
         'webhook'  => m3d_webhook('bugs'),   // private/webhooks.php
         'per_day'  => max(1, min(50, (int) ($s['per_day'] ?? 5))),
+        'emoji'    => !empty($s['emoji']),       // the ☺ picker button in the report and comment boxes, big emoji-only comments (as comments')
+        'codes'    => !empty($s['codes']),       // ":heart:" codes while typing
+        'reactions' => !empty($s['reactions']),  // COMMENT_REACTIONS under the report and each comment (`rx`)
         'blocked'  => m3d_ban_ids('bugs'),   // Admin → Access bans (the old list here moves there once)
         'tags'     => array_values(array_filter((array) ($s['tags'] ?? []), fn($t) => is_array($t) && ($t['id'] ?? '') !== '' && ($t['name'] ?? '') !== '')),
     ];
+}
+
+/** A new report by $p waits for the creator: "Check Before Showing" is on, unless "Skip for Paying Patrons" is too and $p can download
+ *  (as m3d_comment_needs_check()). The creator's and moderators' never wait. */
+function m3d_bug_needs_check(array $p, array $s): bool
+{
+    if (!$s['moderate'] || m3d_is_admin($GLOBALS['M3D']) || m3d_is_mod($GLOBALS['M3D'])) return false;
+    return !($s['paid_skip'] && !empty($p['access']));
 }
 
 /** Saves some keys of settings.json → bugs, keeping the others (tags, blocked people…). */
@@ -68,10 +81,10 @@ function m3d_bug_settings_save(array $changes): bool
 
 function m3d_bugs_on(): bool { return m3d_bug_settings()['on']; }
 
-/** A report about this (`about` value) must give the Blender version, and the MustardUI one while the MustardUI page is on: every model and accessory report. */
+/** A report about this (`about` value) must give the Blender version, and the version of the tool that asks for it (m3d_bug_tool()): every model and accessory report. */
 function m3d_bug_needs_versions(string $about): bool
 {
-    return str_starts_with($about, 'models:') || str_starts_with($about, 'outfits:');
+    return (bool) preg_match('/^(models|outfits|scenes):/', $about);
 }
 
 /** The server's form limit in bytes (post_max_size, e.g. "8M"), less a little for the text fields; 0 = no limit. */
@@ -166,10 +179,10 @@ function m3d_bug_change(int $n, callable $fn): ?array
 }
 
 // ── What a bug is about ──────────────────────────────────────────────────────
-/** [kind, slug] for 'models:x' / 'outfits:x', else [key, '']. */
+/** [kind, slug] for 'models:x' / 'outfits:x' / 'scenes:x', else [key, '']. */
 function m3d_bug_about_parts(string $about): array
 {
-    if (preg_match('/^(models|outfits):([a-z0-9-]{1,64})$/', $about, $m)) return [$m[1], $m[2]];
+    if (preg_match('/^(models|outfits|scenes):([a-z0-9-]{1,64})$/', $about, $m)) return [$m[1], $m[2]];
     return [in_array($about, ['mustardui', 'site'], true) ? $about : 'other', ''];
 }
 
@@ -185,6 +198,10 @@ function m3d_bug_abouts(): array
         if (!m3d_can_view('outfits', $o)) continue;
         $out['outfits:' . $o['slug']] = [$o['name'], 'Accessories', $o];
     }
+    foreach (m3d_items('scenes') as $o) {   // the ones this visitor can open (m3d_can_view() below)
+        if (!m3d_can_view('scenes', $o)) continue;
+        $out['scenes:' . $o['slug']] = [$o['name'], 'Scenes', $o];
+    }
     // MustardUI itself is not here: its bugs go to its GitHub issues (the form links there)
     $out['site'] = ['The Website', 'Other', null];
     $out['other'] = ['Something Else', 'Other', null];
@@ -195,7 +212,7 @@ function m3d_bug_abouts(): array
 function m3d_bug_abouts_all(): array
 {
     $out = [];
-    foreach (['models' => 'Models', 'outfits' => 'Accessories'] as $kind => $group) foreach (m3d_items($kind) as $it) {
+    foreach (['models' => 'Models', 'outfits' => 'Accessories', 'scenes' => 'Scenes'] as $kind => $group) foreach (m3d_items($kind) as $it) {
         $out["$kind:" . $it['slug']] = [m3d_model_name($it) . (m3d_visibility($it) === 'draft' ? ' (draft)' : ''), $group];
     }
     return $out + ['site' => ['The Website', 'Other'], 'other' => ['Something Else', 'Other']];
@@ -217,15 +234,16 @@ function m3d_bug_about(array $b): array
     if ($slug !== '') {
         $it = m3d_item($kind, $slug);
         $name = $it ? m3d_model_name($it) : (string) ($b['about_name'] ?? $slug);
-        return ['name' => $name, 'kind' => $kind === 'models' ? 'Model' : ($it ? m3d_accessory_type($it) : 'Accessory'),
+        return ['name' => $name, 'kind' => $kind === 'outfits' ? ($it ? m3d_accessory_type($it) : 'Accessory') : m3d_kind_word($kind, false, true),
             'url' => $it && m3d_can_view($kind, $it) ? m3d_item_url($kind, $slug) : '', 'item' => $it, 'kindKey' => $kind];
     }
-    if (in_array($b['gone'] ?? '', ['models', 'outfits'], true)) {   // about an item since deleted (admin_forget_items())
-        return ['name' => (string) (($b['about_name'] ?? '') ?: 'Removed item') . ' (removed)', 'kind' => $b['gone'] === 'models' ? 'Model' : 'Accessory',
+    if (in_array($b['gone'] ?? '', M3D_ITEM_KINDS, true)) {   // about an item since deleted (admin_forget_items())
+        return ['name' => (string) (($b['about_name'] ?? '') ?: 'Removed item') . ' (removed)', 'kind' => m3d_kind_word((string) $b['gone'], false, true),
             'url' => '', 'item' => null, 'kindKey' => 'other'];
     }
+    $tool = $kind === 'mustardui' ? m3d_tool('mustardui') : null;   // old reports about MustardUI (before tool pages): its page while it is listed
     return ['name' => ['mustardui' => 'MustardUI', 'site' => 'Website'][$kind] ?? 'Other', 'kind' => $kind === 'mustardui' ? 'Add-on' : 'Other',
-        'url' => $kind === 'mustardui' && m3d_mustardui_on() ? SITE['mustarduiPage'] : '', 'item' => null, 'kindKey' => $kind];
+        'url' => $tool && empty($tool['draft']) ? m3d_tool_url('mustardui') : '', 'item' => null, 'kindKey' => $kind];
 }
 
 /** Version labels of an item's changelog that are out, newest first ("V4", "Beta 2"): the report form's choices. */
@@ -278,15 +296,16 @@ function m3d_bug_comments_today(string $patronId, ?array $bugs = null): int
 }
 
 /** One more Me Too / Follow press of this visitor: false when they made BUG_TOGGLES_PER_HOUR in the last hour. Counted in their
- *  session (times only), so nothing new is stored about them; without a session (can't happen for a logged-in visitor) it says no. */
-function m3d_bug_toggle_ok(): bool
+ *  session (times only), so nothing new is stored about them; without a session (can't happen for a logged-in visitor) it says no.
+ *  $key / $max: another count of its own (comment reactions). */
+function m3d_bug_toggle_ok(string $key = 'bug_toggles', int $max = BUG_TOGGLES_PER_HOUR): bool
 {
     if (session_status() !== PHP_SESSION_ACTIVE) return false;
     $from = time() - 3600;
-    $list = array_values(array_filter((array) ($_SESSION['bug_toggles'] ?? []), fn($t) => (int) $t > $from));
-    $ok = count($list) < BUG_TOGGLES_PER_HOUR;
+    $list = array_values(array_filter((array) ($_SESSION[$key] ?? []), fn($t) => (int) $t > $from));
+    $ok = count($list) < $max;
     if ($ok) $list[] = time();
-    $_SESSION['bug_toggles'] = $list;
+    $_SESSION[$key] = $list;
     return $ok;
 }
 
@@ -298,33 +317,48 @@ function m3d_bugs_unseen(): int
 
 /**
  * What the header needs on every page, without reading every report (see m3d_data_summary()): unseen = the reports the creator hasn't
- * opened, unseen_c = those of them opened before and with new comments since (`seen_at`, the bell's "commented on"); news = the follower
+ * opened, unseen_c = those of them opened before and with new comments since (`seen_at`, the bell's "commented on"); wait = what each report
+ * waiting for a check is about (the account menu's Moderation number); news = the follower
  * codes with a followed report that has something new for them (then m3d_bug_news_count() looks closer).
  */
 function m3d_bug_summary(): array
 {
     $make = function () {
         $unseen = $unseenC = 0;
-        $news = [];
+        $wait = [];
+        $news = $rx = [];
         $codeOf = [];   // Patreon id => its like code, worked out once per commenter
         foreach (m3d_bugs(true) as $b) {
             if (empty($b['seen'])) { $unseen++; if (isset($b['seen_at'])) $unseenC++; }
             if (!empty($b['hidden'])) continue;
+            if (!empty($b['pending'])) $wait[] = (string) ($b['about'] ?? '');
+            // reactions others gave to the report or a comment (still there): their author's bell, [ref ("n" | "n-at"), time of the newest, about]
+            $n = (int) ($b['n'] ?? 0);
+            $about = (string) ($b['about'] ?? '');
+            if (empty($b['pending']) && !empty($b['rxat']) && ($by = (string) ($b['by'] ?? '')) !== '' && m3d_rx_others((array) ($b['rx'] ?? []), $codeOf[$by] ??= m3d_like_code($by))) {
+                $rx[$codeOf[$by]][] = ["$n", (int) $b['rxat'], $about];
+            }
+            foreach ((array) ($b['log'] ?? []) as $x) {
+                if (($x['t'] ?? '') !== 'c' || empty($x['rxat']) || !empty($x['hid']) || !empty($x['admin']) || ($by = (string) ($x['by'] ?? '')) === '') continue;
+                if (m3d_rx_others((array) ($x['rx'] ?? []), $codeOf[$by] ??= m3d_like_code($by))) $rx[$codeOf[$by]][] = ["$n-" . (int) ($x['at'] ?? 0), (int) $x['rxat'], $about];
+            }
             foreach (m3d_bug_followers($b) as $code => $seen) {
                 if (isset($news[$code])) continue;
                 foreach ((array) ($b['log'] ?? []) as $x) {
-                    if ((int) ($x['at'] ?? 0) <= $seen) continue;
+                    if ((int) ($x['at'] ?? 0) <= $seen || !empty($x['hid'])) continue;   // a hidden comment is no news
                     $t = $x['t'] ?? '';
                     $by = (string) ($x['by'] ?? '');
                     if (in_array($t, ['s', 'ref'], true) || ($t === 'c' && (!empty($x['admin']) || ($codeOf[$by] ??= m3d_like_code($by)) !== $code))) { $news[$code] = 1; break; }
                 }
             }
         }
-        return ['unseen' => $unseen, 'unseen_c' => $unseenC, 'news' => array_keys($news)];
+        foreach ($rx as &$list) { usort($list, fn($a, $b) => $a[1] <=> $b[1]); $list = array_slice($list, -20); }
+        unset($list);
+        return ['unseen' => $unseen, 'unseen_c' => $unseenC, 'wait' => $wait, 'news' => array_keys($news), 'rx' => $rx];
     };
     $s = m3d_data_summary('bugs', $make);
-    if (!array_key_exists('unseen_c', $s)) $s = m3d_data_summary('bugs', $make, true);   // saved before unseen_c existed
-    return $s + ['unseen' => 0, 'unseen_c' => 0, 'news' => []];
+    if (!array_key_exists('wait', $s)) $s = m3d_data_summary('bugs', $make, true);   // saved before unseen_c / wait existed
+    return $s + ['unseen' => 0, 'unseen_c' => 0, 'wait' => [], 'news' => [], 'rx' => []];
 }
 
 /** Pinned and open reports about one item that this visitor sees: ['pinned' => [bugs], 'open' => count]. */
@@ -440,7 +474,7 @@ function m3d_bug_refs_discord(string $text): string
     foreach (m3d_bugs() as $b) {
         if (!empty($b['hidden']) || !empty($b['pending'])) continue;
         [$kind, $slug] = m3d_bug_about_parts((string) ($b['about'] ?? ''));
-        if ($slug !== '' && (!($it = m3d_item($kind, $slug)) || !in_array(m3d_visibility($it), ['public', 'blurred', 'blurred-patrons'], true) || m3d_release_hidden($it))) continue;
+        if ($slug !== '' && (!($it = m3d_item($kind, $slug)) || !in_array(m3d_visibility($it), ['public', ...M3D_VIS_BLURRED], true) || m3d_release_hidden($it))) continue;
         $open[(int) $b['n']] = true;
     }
     $parts = preg_split('/(`[^`\n]*`|\[[^\]\n]*\]\([^)\s]*\))/', $text, -1, PREG_SPLIT_DELIM_CAPTURE);   // not inside code or a link
@@ -550,7 +584,8 @@ function m3d_bug_follow(array $b, array $p, int $now): array
 /** A report with this person's new comment at the end of its log (followed by them; a visitor's comment makes it "not seen" again). */
 function m3d_bug_add_comment(array $b, array $p, string $text, int $now, bool $admin): array
 {
-    $b['log'][] = ['t' => 'c', 'by' => (string) $p['id'], 'name' => (string) ($p['name'] ?? ''), 'at' => $now, 'text' => $text] + ($admin ? ['admin' => true] : []);
+    $b['log'][] = ['t' => 'c', 'by' => (string) $p['id'], 'name' => (string) ($p['name'] ?? ''), 'at' => $now, 'text' => $text] + ($admin ? ['admin' => true] : [])
+        + (!$admin && m3d_is_mod($GLOBALS['M3D']) ? ['mod' => true] : []);   // "Moderator" after the name
     $b['act'] = $now;
     if (!$admin) {   // a new comment: the report is "not seen" again, and the bell tells new comments from a new report
         if (!empty($b['seen'])) $b['seen_at'] = $now - 1;
@@ -562,7 +597,7 @@ function m3d_bug_add_comment(array $b, array $p, string $text, int $now, bool $a
 /** Log entries of a bug that are new for someone who last opened it at $seen: status changes ("Fixed in" lines while they show, bug_ref_event()) and other people's comments. */
 function m3d_bug_new_entries(array $b, int $seen, string $patronId): array
 {
-    return array_filter((array) ($b['log'] ?? []), fn($x) => (int) ($x['at'] ?? 0) > $seen
+    return array_filter((array) ($b['log'] ?? []), fn($x) => (int) ($x['at'] ?? 0) > $seen && empty($x['hid'])
         && (($x['t'] ?? '') === 's' || (($x['t'] ?? '') === 'ref' && ($x['item'] ?? '') === ($b['about'] ?? '')) ||
             (($x['t'] ?? '') === 'c' && (!empty($x['admin']) || (string) ($x['by'] ?? '') !== $patronId))));
 }
@@ -617,6 +652,12 @@ function bug_text(mixed $v, int $max): string
     $s = str_replace(["\r\n", "\r"], "\n", is_scalar($v) ? (string) $v : '');
     $s = preg_replace('/[\x00-\x08\x0B-\x1F\x7F]+/u', '', $s) ?? '';
     return mb_substr(trim($s), 0, $max);
+}
+
+/** A text too short to send: under $min characters, unless it holds an emoji (a lone "👍" is one character, and a fine comment). */
+function m3d_text_short(string $s, int $min = 2): bool
+{
+    return mb_strlen($s) < $min && !preg_match('/\p{Extended_Pictographic}|[\x{1F1E6}-\x{1F1FF}]/u', $s);
 }
 
 /** One value of the request as a string ('' for a crafted list, like ?about[]=). */
@@ -698,16 +739,24 @@ function bug_pic_small(string $u): string
 function m3d_bug_notify(array $b): void
 {
     $a = m3d_bug_about($b);
+    $about = trim($a['name'] . ' ' . (string) ($b['ver'] ?? ''));   // ver: free text for website / other reports
+    $facts = [['About', '**' . m3d_notify_plain($about, 160) . '**']];
+    $bt = m3d_bug_tool();
+    foreach (['Blender' => (string) ($b['blender'] ?? ''), ($bt['name'] ?? 'Add-on') => $bt ? (string) ($b['mui'] ?? '') : ''] as $k => $v) {
+        if (trim($v) !== '') $facts[] = [$k, '**' . m3d_notify_plain(trim($v), 40) . '**'];
+    }
+    $facts[] = ['Reported By', '**' . m3d_notify_plain((string) ($b['name'] ?? ''), 80) . '**'];
     m3d_notify_post('bugs', [['title' => mb_substr('#' . $b['n'] . ' ' . $b['title'], 0, 250), 'url' => abs_url('/bugs/' . $b['n'] . '/'),
-        'description' => mb_substr(trim(m3d_notify_plain($a['name'], 120) . ' ' . m3d_notify_plain((string) ($b['ver'] ?? ''), 40)) . "\n" . m3d_notify_plain((string) $b['body'], 300), 0, 700),   // ver: free text for website / other reports
-        'color' => hexdec('e8b931'), 'footer' => ['text' => 'New bug report · ' . mb_substr((string) ($b['name'] ?? ''), 0, 60) . (!empty($b['pending']) ? ' · waiting for you' : '')]]]);
+        'description' => mb_substr(m3d_notify_quote('', (string) $b['body'], 300), 0, 700),   // what it is about: the facts (the plain post shows the title)
+        'color' => hexdec('e8b931'), 'footer' => ['text' => 'New bug report · ' . mb_substr((string) ($b['name'] ?? ''), 0, 60) . (!empty($b['pending']) ? ' · waiting for you' : '')],
+        'sub' => '🐞 New Bug Report' . (!empty($b['pending']) ? ' · ⏳ Waiting for You' : ''), 'facts' => $facts]]);
 }
 
 /** Short Discord post about a visitor's comment on a report (Settings → Notifications → Comments on Bug Reports). */
 function m3d_bug_comment_notify(array $b, string $name, string $text): void
 {
     m3d_notify_post('bugc', [['title' => mb_substr('Comment on #' . $b['n'] . ' ' . $b['title'], 0, 250), 'url' => abs_url('/bugs/' . $b['n'] . '/#comments'),
-        'description' => mb_substr(m3d_notify_plain($name, 80) . ': ' . m3d_notify_plain($text, 400), 0, 700), 'color' => hexdec('7cb8ff'), 'footer' => ['text' => 'Bug report comment']]]);
+        'description' => mb_substr(m3d_notify_quote($name, $text, 400), 0, 800), 'color' => hexdec('7cb8ff'), 'footer' => ['text' => 'Bug report comment']]]);
 }
 
 // ── Pieces of pages ──────────────────────────────────────────────────────────
@@ -738,11 +787,11 @@ function bug_result_text(string $code, bool $err = false): string
         'saved'     => 'Saved.',
         'title'     => 'Title changed.',
         'edited'    => 'Report changed.',
-        'published' => 'Published: everyone can see this report now.',
+        'published' => 'Report published.',
         'cdeleted'  => 'Comment deleted.',
         'cchanged'  => 'Comment changed.',
-        'blocked'   => 'Blocked: they can still read the reports, but not post or comment.',
-        'unblocked' => 'Unblocked: they can post again.',
+        'blocked'   => 'Blocked.',
+        'unblocked' => 'Unblocked.',
         'added'     => "Report #$n added.",
         'deleted'   => "Report #$n deleted.",
         'tags'      => 'Tags saved.',
@@ -823,9 +872,9 @@ function bug_about_pic(array $a, string $class = 'bpic'): string
 function bug_about_option(string $key, string $label, bool $selected, string $count = ''): string
 {
     [$kind, $slug] = m3d_bug_about_parts($key);
-    $d = ['kind' => ['models' => 'model', 'outfits' => 'outfit'][$kind] ?? $kind, 'name' => $label];
+    $d = ['kind' => ['models' => 'model', 'outfits' => 'outfit', 'scenes' => 'scene'][$kind] ?? $kind, 'name' => $label];
     if ($slug !== '' && ($it = m3d_item($kind, $slug))) {
-        $d['sub'] = $kind === 'models' ? (string) ($it['franchise'] ?? '') : m3d_accessory_type($it);
+        $d['sub'] = $kind === 'models' ? (string) ($it['franchise'] ?? '') : m3d_item_type($kind, $it);
         if ($kind === 'models' && ($it['generation'] ?? '') !== '') $d['gen'] = (string) $it['generation'];
         if (m3d_can_view($kind, $it)) $d['thumb'] = card_pic($kind, $it)[0];
     }
@@ -838,6 +887,7 @@ function bug_about_option(string $key, string $label, bool $selected, string $co
 const BUG_ICONS = [
     'metoo'   => '<path d="M7 11v9H4v-9zM7 11l4-7c1.6 0 2.5 1 2.2 2.6L12.6 10H19a2 2 0 0 1 2 2.3l-1.2 6A2 2 0 0 1 17.8 20H7"/>',
     'comment' => '<path d="M21 12a8 8 0 0 1-11.6 7.1L4 20l1-4.6A8 8 0 1 1 21 12z"/>',
+    'react'   => '<path d="M20.5 11.5A8.5 8.5 0 1 1 12.5 3.5"/><path d="M8.5 14.5c.9 1.2 2.1 1.8 3.5 1.8s2.6-.6 3.5-1.8"/><path d="M9 10h.01M15 10h.01M19 2v6M16 5h6"/>',
     'bell'    => '<path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/>',
     'pin'     => '<path d="M9 4h6l-1 6 3 3H7l3-3zM12 13v7"/>',
     'bug'     => '<path d="M8 8a4 4 0 0 1 8 0M7 10h10v4a5 5 0 0 1-10 0zM12 10v9M3 13h4M17 13h4M4 7l3 2M20 7l-3 2M4 19l3-2M20 19l-3-2"/>',
@@ -903,7 +953,7 @@ function bug_env_html(array $b, array $a): string
         . bug_about_pic($a, 'bpic env-pic') . '<dl><dt>' . e($label) . '</dt><dd>' . e($value) . '</dd></dl></' . $tag . '>';
     $tiles = [
         ['Blender', (string) ($b['blender'] ?? ''), accessory_icon_paths('blender')],
-        ['MustardUI', m3d_mustardui_on() ? (string) ($b['mui'] ?? '') : '', BUG_ICONS['ui']],
+        [m3d_bug_tool()['name'] ?? '', m3d_bug_tool() ? (string) ($b['mui'] ?? '') : '', BUG_ICONS['ui']],
     ];
     foreach ($tiles as [$l, $v, $ico]) {
         if ($v === '') continue;
@@ -928,12 +978,10 @@ function bug_ago(int $t): string
     return 'on ' . m3d_site_time($t, m3d_site_time($t, 'Y') === m3d_site_time(time(), 'Y') ? 'j M' : 'j M Y');
 }
 
-/** Initial of a name for the round avatars, and a hue from the name. */
-function bug_avatar(string $name, bool $creator = false): string
+/** The round picture of a post's author: their Patreon picture, else the initial of the name on a hue from the name. */
+function bug_avatar(string $name, bool $creator = false, string $id = ''): string
 {
-    $h = 0;
-    foreach (str_split($name) as $c) $h = ($h * 31 + ord($c)) % 360;
-    return '<span class="ava' . ($creator ? ' creator' : '') . '" style="--h:' . $h . '" aria-hidden="true">' . e(mb_strtoupper(mb_substr($name !== '' ? $name : '?', 0, 1))) . '</span>';
+    return avatar_html($id, $name, $creator);   // the Patreon picture when there is one (app/avatars.php)
 }
 
 /**

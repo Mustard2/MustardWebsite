@@ -9,7 +9,6 @@ if (session_status() === PHP_SESSION_ACTIVE && ($post ? !m3d_check_csrf($_POST['
     layout_start('Log Out', 'Log out of ' . site_name() . '.', 'page-gate');
     ?>
   <section class="wrap gate">
-    <p class="eyebrow">My Account</p>
     <h1>Log Out?</h1>
     <p class="lead">Press the button to log out on this device.</p>
     <form class="cta" method="post" action="/auth/logout.php">

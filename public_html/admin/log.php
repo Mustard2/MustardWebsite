@@ -52,6 +52,11 @@ foreach (m3d_outfits() as $o) {
     $names[$key] = $o['name'] . ' · ' . m3d_accessory_type($o);
     $tags[$key] = [$o['name'], m3d_accessory_type($o), 'outfits', $o];
 }
+foreach (m3d_items('scenes') as $o) {
+    $key = m3d_log_item('scenes', $o['slug']);
+    $names[$key] = $o['name'] . ' · Scene';
+    $tags[$key] = [$o['name'], 'Scene', 'scenes', $o];
+}
 // A small picture next to each name (the "-xs" thumb, lazy): admins see every picture, so never blurred; the kind's icon without one.
 $pic = function (?array $it, string $kind, string $icon): string {
     static $done = [];
@@ -171,8 +176,8 @@ admin_start('Patron Log', 'stats');
       <?php endif ?>
     </div>
     <section class="sec log-sec" id="log">
-    <?php if ($removed !== null && !empty($_GET['rows'])) admin_flash($removed ? '✓ ' . m3d_plural($removed, 'download') . ' removed from the log.' : 'Nothing removed: those downloads were already gone.', $removed ? 'ok' : 'info');
-    elseif ($removed !== null) { $all = !empty($_GET['all']); admin_flash($removed ? '✓ ' . m3d_plural($removed, 'download') . ' removed: ' . ($all ? 'every patron starts' : 'that patron starts') . ' again with nothing unlocked.' : 'Nothing to remove: ' . ($all ? 'the log was already empty.' : 'that patron had no downloads in the log.'), $removed ? 'ok' : 'info'); } ?>
+    <?php if ($removed !== null && !empty($_GET['rows'])) admin_flash($removed ? '✓ ' . m3d_plural($removed, 'download') . ' removed.' : 'Nothing to remove.', $removed ? 'ok' : 'info');
+    elseif ($removed !== null) admin_flash($removed ? '✓ ' . m3d_plural($removed, 'download') . ' removed.' : 'Nothing to remove.', $removed ? 'ok' : 'info'); ?>
     <?php if (!$rows): ?>
       <p class="muted">No downloads logged yet.</p>
     <?php else: ?>
@@ -211,12 +216,12 @@ admin_start('Patron Log', 'stats');
         foreach ($mine as $r) if (($m = m3d_log_membership($r)) && ($lastMem === null || strcmp($r[0], $lastMem[0]) >= 0)) $lastMem = [$r[0], $m]; ?>
         <!-- filtered by one patron: who they are, their totals, and the reset for them only -->
         <div class="log-patron">
-          <div>
+          <div class="log-patron-id"><?= avatar_html((string) $f['patron'], $who !== '' ? $who : (string) $f['patron'], false, 'ava-lg') ?><div>
             <p class="muted small">Patron</p>
             <b class="log-patron-name"><?= e($who !== '' ? $who : $f['patron']) ?></b>
             <span class="muted small">Patreon ID <?= e($f['patron']) ?> · <?= m3d_plural(count($mine), 'download') ?> · <?php $ni = count(array_unique(array_column($mine, 3))); ?><?= $ni ?> <?= $ni === 1 ? 'model/accessory' : 'models/accessories' ?><?= $dates ? ' · first ' . e($berlin(min($dates), 'j M Y')) . ', last ' . e($berlin(max($dates), 'j M Y')) : '' ?></span>
             <?php if ($lastMem): ?><span class="muted small log-patron-mem">Membership on <?= e($berlin($lastMem[0], 'j M Y')) ?>: <?= e($memText($lastMem[1])) ?></span><?php endif ?>
-          </div>
+          </div></div>
           <div class="log-patron-btns">
             <?php if (preg_match('/^\d{1,20}$/', $f['patron'])): $hasEx = m3d_exception($f['patron']) !== null; ?>
             <form method="post" action="/admin/patron-preview.php">
@@ -280,7 +285,7 @@ admin_start('Patron Log', 'stats');
                     <td class="c-check"><input type="checkbox" name="rows[]" value="<?= e(m3d_log_row_key($r)) ?>" aria-label="<?= e('Select ' . $name . ', ' . $iname . ', ' . $berlin($d)) ?>" /></td>
                     <td class="log-when" title="<?= e($berlin($d, 'Y-m-d H:i:s T')) ?>"><?= e($berlin($d, 'Y-m-d')) ?> <span class="muted"><?= e($berlin($d, 'H:i')) ?></span></td>
                     <td><a class="log-who" href="<?= e($url(['patron' => $id])) ?>" title="Only this patron"><?= e($name !== '' ? $name : $id) ?></a><span class="log-id muted"><?= e($id) ?><?php if (($mem = m3d_log_membership($r)) && $mem['months'] !== null): ?> · <span class="tip log-mem" tabindex="0" data-tip="<?= e('At this download: ' . $memText($mem)) ?>"><?= $mem['months'] ?> mo</span><?php endif ?></span></td>
-                    <td><span class="tot-item"><?= $pic($iitem, $ikind, $ikind === 'outfits' ? accessory_icon_paths($itag) : LOG_ICONS['patron']) ?><span class="tot-name"><a class="log-who" href="<?= e($url(['item' => $item])) ?>" title="Only this model or accessory"><?= e($iname) ?></a><?php if ($itag !== ''): ?><span class="tot-tag tot-tag-<?= e($ikind) ?>"><svg viewBox="0 0 24 24" aria-hidden="true"><?= $ikind === 'outfits' ? accessory_icon_paths($itag) : LOG_ICONS['patron'] ?></svg><?= e($itag) ?></span><?php endif ?></span></span></td>
+                    <td><span class="tot-item"><?= $pic($iitem, $ikind, ($ikind === 'outfits' ? accessory_icon_paths($itag) : ($ikind === 'scenes' ? SCENE_ICON : LOG_ICONS['patron']))) ?><span class="tot-name"><a class="log-who" href="<?= e($url(['item' => $item])) ?>" title="Only this model or accessory"><?= e($iname) ?></a><?php if ($itag !== ''): ?><span class="tot-tag tot-tag-<?= e($ikind) ?>"><svg viewBox="0 0 24 24" aria-hidden="true"><?= ($ikind === 'outfits' ? accessory_icon_paths($itag) : ($ikind === 'scenes' ? SCENE_ICON : LOG_ICONS['patron'])) ?></svg><?= e($itag) ?></span><?php endif ?></span></span></td>
                     <td class="log-ver"><?= $ver !== '' ? e($ver) : '<span class="muted">—</span>' ?></td>
                     <td class="muted"><?= e($link) ?></td>
                   </tr>

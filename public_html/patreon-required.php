@@ -1,6 +1,6 @@
 <?php
 // /patreon-required/?reason=…  (the download gate sends people here when they can't download)
-//   reason=requirements&type=model|outfit&item=<slug>: a paying patron who doesn't meet the item's extra requirements
+//   reason=requirements&type=model|outfit|scene&item=<slug>: a paying patron who doesn't meet the item's extra requirements
 require __DIR__ . '/app/_init.php';
 
 $texts = [
@@ -14,7 +14,7 @@ $reason = m3d_get_text('reason');
 $return = m3d_safe_return($_GET['return'] ?? null, '/#catalog');
 
 // the model/outfit the refusal is about (requirements, limit)
-$kind = ($_GET['type'] ?? '') === 'outfit' ? 'outfits' : 'models';
+$kind = ['outfit' => 'outfits', 'scene' => 'scenes'][m3d_get_text('type')] ?? 'models';
 $slug = m3d_get_text('item');
 $item = in_array($reason, ['requirements', 'limit'], true) ? m3d_item($kind, $slug) : null;
 if ($item && !m3d_can_view($kind, $item)) $item = null;   // drafts, locked password items
@@ -44,6 +44,7 @@ if ($reason === 'limit') {
         $o = m3d_blocking_row($limits['rows']);   // it says when the next unlock comes
         $title = 'You’ve Used All Your ' . ucfirst($o ? m3d_rule_noun($o['rule']) : 'model ') . 'Unlocks';
         $text = $o && $o['next'] ? 'You can download ' . $item['name'] . ' from ' . $when((int) $o['next']) . '.' : 'Try again later.';
+        if ($o && $o['max'] === 0) [$title, $text] = ['Not Included', m3d_rule_none_text($o['rule'])];   // a rule of 0 (Admin → Access)
         if ($limits['ok']) {   // opened again later: an unlock freed up, or the rules changed
             $title = 'You Can Download This Now';
             $text = $item['name'] . ' can be downloaded again.';
@@ -69,7 +70,6 @@ if ($reason === 'cap') {
 layout_start($title, 'Downloads are available to Patreon members on any tier.', 'page-gate');   // the tab says what the page says (limits, the cap…)
 ?>
   <section class="wrap gate">
-    <p class="eyebrow">Downloads</p>
     <h1><?= e($title) ?></h1>
     <p class="lead"><?= when_text($text) ?></p>
     <?php if ($cap): ?>

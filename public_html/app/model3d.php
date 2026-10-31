@@ -19,7 +19,7 @@ const M3D_GLB_REFUSED = [
 const M3D_GLB_DAMAGED = 'The file is damaged (its glTF description is not valid).';
 
 // The viewer's light: `model3dLight` = percent of M3D_EXPOSURE (editor: 3D Preview → Brightness; absent = 100), the same in admin.js and site.js
-const M3D_EXPOSURE = 1.1;
+const M3D_EXPOSURE = 0.9;
 const M3D_LIGHT_RANGE = [20, 200];
 
 /** '/media/<folder>/<name>.glb' → the file's path when it exists, else null. */
@@ -39,7 +39,7 @@ function m3d_glb_forget(array $urls): void
     $urls = array_filter(array_map('strval', $urls), fn($u) => $u !== '');
     if (!$urls) return;
     $used = [];
-    foreach (['models', 'outfits'] as $k) foreach (m3d_items($k, true) as $it) $used[(string) ($it['model3d'] ?? '')] = true;
+    foreach (M3D_ITEM_KINDS as $k) foreach (m3d_items($k, true) as $it) $used[(string) ($it['model3d'] ?? '')] = true;
     foreach (array_unique($urls) as $u) if (!isset($used[$u]) && ($f = m3d_glb_path($u))) @unlink($f);
 }
 

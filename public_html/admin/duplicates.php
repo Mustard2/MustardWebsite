@@ -43,13 +43,11 @@ if ($json) {
         if ($kind === 'gallery') {
             $n = dupes_merge_stills($keys, $keep);
             if ($n === null) admin_json(['ok' => false, 'error' => m3d_write_error('data')], 500);
-            admin_json(['ok' => true, 'msg' => '✓ ' . m3d_plural($n, 'Gallery picture') . ' removed. The one kept has their characters and likes.']);
+            admin_json(['ok' => true, 'msg' => '✓ Duplicates merged.']);
         }
         $r = dupes_merge($keep, array_values(array_diff($keys, [$keep])));
         if (!$r[0]) admin_json(['ok' => false, 'error' => $r[1]], 500);
-        [, $places, $deleted, $stills] = $r;
-        admin_json(['ok' => true, 'msg' => '✓ ' . ($places ? m3d_plural($places, 'place') . ' now ' . ($places === 1 ? 'shows' : 'show') . ' the kept picture, ' : '')
-            . m3d_plural($deleted, 'file') . ' deleted' . ($stills ? ', ' . m3d_plural($stills, 'Gallery picture') . ' merged into it' : '') . '.']);
+        admin_json(['ok' => true, 'msg' => '✓ Duplicates merged.']);
     }
     admin_json(['ok' => false, 'error' => 'Unknown action.'], 400);
 }

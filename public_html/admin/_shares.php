@@ -8,7 +8,7 @@ defined('M3D_PRIVATE') || exit;
 /** What the window needs to offer an item: kind, slug, name, line under it, picture, its files' names. */
 function share_item_row(string $kind, array $it): array
 {
-    $sub = $kind === 'outfits' ? m3d_accessory_type($it) : trim((string) ($it['franchise'] ?? ''));
+    $sub = $kind === 'models' ? trim((string) ($it['franchise'] ?? '')) : m3d_item_type($kind, $it);
     return ['k' => $kind, 's' => (string) $it['slug'], 't' => $kind === 'models' ? m3d_model_name($it) : (string) ($it['name'] ?? ''), 'u' => $sub,
             'p' => ($p = item_pic($kind, $it)) !== '' ? img_thumb($p) : '', 'f' => array_column(m3d_share_links($it), 'label')];
 }
@@ -16,11 +16,11 @@ function share_item_row(string $kind, array $it): array
 /** The section's forms (do = share-cancel | share-delete | share-delete-ended, already CSRF-checked): [done, error]. */
 function share_post(string $do): array
 {
-    if ($do === 'share-delete-ended') return m3d_shares_delete([], true) ? ['Ended temporary links deleted.', null] : [null, m3d_write_error('temporary links')];
+    if ($do === 'share-delete-ended') return m3d_shares_delete([], true) ? ['Ended links deleted.', null] : [null, m3d_write_error('temporary links')];
     $s = m3d_share((string) ($_POST['code'] ?? ''));
     if (!$s) return [null, 'This temporary link isn’t in the list any more.'];
-    if ($do === 'share-cancel') return m3d_share_cancel($s['code']) ? ['Temporary link cancelled: it no longer works.', null] : [null, m3d_write_error('temporary links')];
-    if ($do === 'share-delete') return m3d_shares_delete([$s['code']]) ? ['Temporary link deleted.', null] : [null, m3d_write_error('temporary links')];
+    if ($do === 'share-cancel') return m3d_share_cancel($s['code']) ? ['Link cancelled.', null] : [null, m3d_write_error('temporary links')];
+    if ($do === 'share-delete') return m3d_shares_delete([$s['code']]) ? ['Link deleted.', null] : [null, m3d_write_error('temporary links')];
     return [null, null];
 }
 
@@ -35,7 +35,7 @@ function share_section(): void
     }
     $active = count(array_filter($rows, fn($r) => $r[2] === 'active'));
     $items = [];
-    foreach (['models', 'outfits'] as $k) foreach (m3d_items($k) as $it) if (m3d_share_links($it)) $items[] = share_item_row($k, $it);
+    foreach (M3D_ITEM_KINDS as $k) foreach (m3d_items($k) as $it) if (m3d_share_links($it)) $items[] = share_item_row($k, $it);
 
     $badge = ['active' => ['tone-green', 'Active'], 'expired' => ['tone-grey', 'Expired'], 'used' => ['tone-grey', 'Used Up'], 'cancelled' => ['tone-grey', 'Cancelled'], 'gone' => ['tone-grey', 'No Files']];
     $when = fn(int $t) => m3d_site_time($t, 'j M, H:i');
@@ -70,7 +70,7 @@ function share_section(): void
           <tr data-st="<?= $st ?>"<?= $st !== 'active' ? ' class="sh-ended"' : '' ?><?= $active && $st !== 'active' ? ' hidden' : '' ?>>
             <td class="c-thumb"><?= $pic !== '' ? '<img src="' . e(img_thumb($pic)) . '" alt="" loading="lazy" />' : '<span class="no-img"></span>' ?></td>
             <td class="sh-it"><?= $item ? '<a class="m-name" href="/admin/edit.php?kind=' . $kind . '&amp;slug=' . e(rawurlencode((string) $s['slug'])) . '">' . e((string) $s['name']) . '</a>' : '<b>' . e((string) $s['name']) . '</b>' ?>
-              <div class="muted small"><?= $item ? e(($kind === 'outfits' ? 'Accessory' : 'Model') . ' · ' . m3d_plural($files, 'file')) : 'Removed' ?></div></td>
+              <div class="muted small"><?= $item ? e((m3d_kind_word($kind, false, true)) . ' · ' . m3d_plural($files, 'file')) : 'Removed' ?></div></td>
             <td class="sh-note"><?= ($s['note'] ?? '') !== '' ? e((string) $s['note']) : '<span class="muted">—</span>' ?></td>
             <td class="small sh-made"><?= e($when((int) $s['made'])) ?></td>
             <td class="small sh-exp"><?= $st === 'active' ? 'in ' . e(m3d_share_left_text($until - $now)) . '<div class="muted">' . e($when($until)) . '</div>' : (!empty($s['cancelled']) ? e($when((int) $s['cancelled'])) . '<div class="muted">Cancelled</div>' : e($when($until))) ?></td>

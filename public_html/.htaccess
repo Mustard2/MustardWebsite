@@ -22,7 +22,17 @@ RewriteRule ^banned/?$ banned.php [L,QSA]
 RewriteRule ^privacy/?$ privacy.php [L,QSA]
 RewriteRule ^contacts/?$ contacts.php [L,QSA]
 RewriteRule ^account/?$ account.php [L,QSA]
+RewriteRule ^account/settings/?$ account-settings.php [L,QSA]
 RewriteRule ^mustardui/?$ mustardui.php [L,QSA]
+RewriteRule ^tools/?$ tools.php [L,QSA]
+RewriteRule ^tools/([a-z0-9-]+)$ /tools/$1/ [R=301,L]
+RewriteRule ^tools/([a-z0-9-]+)/$ tools.php?tool=$1 [L,QSA]
+RewriteRule ^tools/([a-z0-9-]+)/([a-z0-9-]+)$ /tools/$1/$2/ [R=301,L]
+RewriteRule ^tools/([a-z0-9-]+)/([a-z0-9-]+)/$ tools.php?tool=$1&tut=$2 [L,QSA]
+RewriteRule ^pages/([a-z0-9-]+)$ /pages/$1/ [R=301,L]
+RewriteRule ^pages/([a-z0-9-]+)/$ tools.php?page=$1 [L,QSA]
+RewriteRule ^pages/([a-z0-9-]+)/([a-z0-9-]+)$ /pages/$1/$2/ [R=301,L]
+RewriteRule ^pages/([a-z0-9-]+)/([a-z0-9-]+)/$ tools.php?page=$1&tut=$2 [L,QSA]
 RewriteRule ^docs/?$ docs.php [L,QSA]
 RewriteRule ^docs/([a-z0-9-]+)$ /docs/$1/ [R=301,L]
 RewriteRule ^docs/([a-z0-9-]+)/$ docs.php?slug=$1 [L,QSA]
@@ -41,6 +51,9 @@ RewriteRule ^setup/?$ setup.php [L,QSA]
 RewriteRule ^accessories/?$ outfits.php [L,QSA]
 RewriteRule ^accessories/([a-z0-9-]+)$ /accessories/$1/ [R=301,L]
 RewriteRule ^accessories/([a-z0-9-]+)/$ outfit.php?slug=$1 [L,QSA]
+RewriteRule ^scenes/?$ scenes.php [L,QSA]
+RewriteRule ^scenes/([a-z0-9-]+)$ /scenes/$1/ [R=301,L]
+RewriteRule ^scenes/([a-z0-9-]+)/$ scene.php?slug=$1 [L,QSA]
 RewriteRule ^gallery/?$ gallery.php [L,QSA]
 RewriteRule ^blog/?$ blog.php [L,QSA]
 RewriteRule ^blog/([a-z0-9-]+)$ /blog/$1/ [R=301,L]
@@ -50,8 +63,10 @@ RewriteRule ^og/([A-Za-z0-9_-]+)\.jpg$ og-image.php?c=$1 [L]
 # Downloads (patron links are checked against Patreon first)
 RewriteRule ^share/([A-Za-z0-9]{12})/?$ share.php?code=$1 [L,QSA]
 RewriteRule ^get/still/([a-f0-9]{8})/?$ auth/get-still.php?id=$1 [L,QSA]
-RewriteRule ^get/still/([mo])/([a-z0-9-]+)/([a-f0-9]{8})/?$ auth/get-still.php?kind=$1&slug=$2&code=$3 [L,QSA]
+RewriteRule ^get/still/r/([a-f0-9]{8})/?$ auth/get-still.php?render=$1 [L,QSA]
+RewriteRule ^get/still/([mos])/([a-z0-9-]+)/([a-f0-9]{8})/?$ auth/get-still.php?kind=$1&slug=$2&code=$3 [L,QSA]
 RewriteRule ^get/outfit/([a-z0-9-]+)/([0-9]+)/?$ auth/get.php?type=outfit&model=$1&n=$2 [L,QSA]
+RewriteRule ^get/scene/([a-z0-9-]+)/([0-9]+)/?$ auth/get.php?type=scene&model=$1&n=$2 [L,QSA]
 RewriteRule ^get/([a-z0-9-]+)/([0-9]+)/?$ auth/get.php?model=$1&n=$2 [L,QSA]
 
 # Unknown pages → friendly 404
@@ -59,7 +74,7 @@ ErrorDocument 404 /404.php
 
 <IfModule mod_headers.c>
   # Assets carry ?v=<version> in their URL, so they can be cached for a long time
-  <FilesMatch "\.(css|js|woff2|webp|avif|jpg|jpeg|png|gif|svg|ico)$">
+  <FilesMatch "\.(css|js|json|woff2|webp|avif|jpg|jpeg|png|gif|svg|ico)$">
     Header set Cache-Control "public, max-age=31536000, immutable"
   </FilesMatch>
   Header always set X-Content-Type-Options "nosniff"
